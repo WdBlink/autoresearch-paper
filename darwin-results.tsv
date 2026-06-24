@@ -1,3 +1,4 @@
 timestamp	commit	skill	old_score	new_score	status	dimension	note	eval_mode
 2026-06-24T03:58:21Z	c43254e	autoresearch-paper	-	84.3	baseline	all	dim1:9 dim2:9 dim3:10 dim4:8 dim5:8 dim6:8 dim7:9 dim8:7.3 dim9:10	dry_run
 2026-06-24T04:21:44Z	cc5dfa1	autoresearch-paper	84.3	84.7	keep	dim6	+0.4 round 1 of 3 (codex verdict A): scripts in references/scripts + launchd plist bundled, bootstrap installs both	improved
+2026-06-24T04:22:30Z	pending	autoresearch-paper	84.7	85.84	keep	dim8	+1.14 round 2 of 3 (codex verdict A): dry_run_no_full_test (mavis agent constraint); prompts 1+2 strong, prompt 3 weak	improved
