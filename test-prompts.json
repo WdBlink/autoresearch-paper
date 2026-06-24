@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "prompt": "帮我把'UAV 集群 5-layer agent harness'这个课题写成论文,目标 ICRA 2027。我手头有 v3 paper draft 跟 PyFlyt 实验数据。",
+    "expected": "Skill 应该: (a) 触发 autoresearch-paper skill; (b) 通过 channel A 关键词匹配命中 'conference' tier; (c) 给出 tier + plan task count + wall-clock estimate + STOP 确认,让 user 确认才能 spawn plan; (d) 引用 references/plan-template-conference.md; (e) 不直接生成 plan.yaml,等 user 确认 tier。"
+  },
+  {
+    "id": 2,
+    "prompt": "plan engine 卡住了,显示'Engine auto-paused: max cycles reached',我人在睡觉没法手拍板。怎么办?",
+    "expected": "Skill 应该: (a) 触发 autoresearch-plan-rescue skill (trigger: 'paused', 'auto-paused'); (b) 解释 Rescue Layer 已经接管:auto-judge via local gpt-5.5 + xhigh,60s 一轮 patrol; (c) 给 user 三个 user-facing command: 'pause plan X' / 'resume plan X' / 'show rescue status'; (d) 解释 launchd 比 mavis cron 更 sleep-resilient; (e) 不让 user 手动 mavis team plan decision(那是 fallback,不是首选)。"
+  },
+  {
+    "id": 3,
+    "prompt": "论文图画得太简陋了,v3 用的 matplotlib 临时画,scientific-schematics skill API key 缺失。我要学术风格的 vector PDF。",
+    "expected": "Skill 应该: (a) 触发 autoresearch-paper (在 plan workflow 的 T6/T7 阶段); (b) 引用 fig quality 在 v7 review 是 P0; (c) 建议 huashu-design 或 /huashu-design skill 触发,因为 huashu 是花叔生态的 HTML design; (d) 给具体改进路径:把 4 张 matplotlib 临时图替换为 huashu-design 渲染的学术风格 vector PDF + numbered callouts; (e) 不重复 v3 已经做对的: §3.6 protocol table / §3.0.1 coupling disclosure / L5 dual-format schema,这些是 v3 已落地不要重做。"
+  }
+]
