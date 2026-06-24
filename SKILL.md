@@ -237,6 +237,21 @@ If the watchdog reports an abort-worthy condition, surface it to the user
 and ask before taking destructive action. 🛑 **STOP — never auto-abort.**
 The user owns the abort decision; the skill only surfaces recommendations.
 
+🔴 **STOP · ABORT GATE.** Before calling `mavis team plan abort`, the
+skill **must** show the user: (a) the abort-worthy finding verbatim,
+(b) the proposed alternative actions (`steer` / `manual_retry` /
+`override_accept` / `nudge`), and (c) the expected wall-clock to recover
+vs. abort+restart. Only proceed with abort after explicit user
+confirmation. The watchdog's recommendation is advisory; the human
+owner is the only entity with destructive-action authority.
+
+🔴 **STOP · WORKSPACE ISOLATION.** Before Step 5 (`mavis team plan run`),
+verify `<scratchpad>/autoresearch/<slug>/` exists and is writable. If the
+scratchpad path is on a read-only mount or its parent directory was
+created by a different user, surface the error and **do not** call
+`mavis team plan run` — the plan engine will fail mid-task with cryptic
+permission errors that are hard to recover from.
+
 ### Step 7 — Deliver
 
 **INPUT:** finished plan (or user manual end); `<plan-dir>/out/*` from worker agents.
