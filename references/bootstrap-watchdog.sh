@@ -243,17 +243,43 @@ EOF
 # via local Codex gpt-5.5 + xhigh). Skipped unless --rescue flag is passed
 # OR \`~/.mavis/agents/mavis/scripts/plan-rescue-daemon.py\` already exists
 # (idempotent opt-in).
+#
+# v0.3.1+ also copies skill-bundled scripts from references/scripts/ to
+# \`~/.mavis/agents/mavis/scripts/\` so the skill is self-contained — no
+# external user-scope script dependencies required for fresh installs.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"  # parent of references/
 
 if [[ "${RESCUE:-0}" == "1" ]] || [[ -f "${HOME}/.mavis/agents/mavis/scripts/plan-rescue-daemon.py" ]]; then
-  PLIST_SRC="${HOME}/.mavis/agents/mavis/scripts/com.mavis.plan-rescue-daemon.plist"
+  # Step 6a: copy skill-bundled scripts to runtime path (idempotent)
+  RUNTIME_SCRIPTS="${HOME}/.mavis/agents/mavis/scripts"
+  mkdir -p "${RUNTIME_SCRIPTS}"
+  if [[ -d "${SKILL_ROOT}/scripts" ]]; then
+    log "syncing Rescue Layer scripts: ${SKILL_ROOT}/scripts → ${RUNTIME_SCRIPTS}"
+    for f in local_llm_judge.py plan-rescue-daemon.py pause-plan.sh resume-plan.sh stop-plan.sh; do
+      if [[ -f "${SKILL_ROOT}/scripts/${f}" ]]; then
+        cp "${SKILL_ROOT}/scripts/${f}" "${RUNTIME_SCRIPTS}/${f}"
+        chmod +x "${RUNTIME_SCRIPTS}/${f}"
+      fi
+    done
+  fi
+
+  # Step 6b: copy launchd plist (prefer skill-bundled over user-scope copy)
   PLIST_DST="${HOME}/Library/LaunchAgents/com.mavis.plan-rescue-daemon.plist"
-  if [[ -f "${PLIST_SRC}" ]]; then
-    log "installing Rescue Layer launchd plist"
+  PLIST_SRC=""
+  if [[ -f "${SKILL_ROOT}/launchd/com.mavis.plan-rescue-daemon.plist" ]]; then
+    PLIST_SRC="${SKILL_ROOT}/launchd/com.mavis.plan-rescue-daemon.plist"
+  elif [[ -f "${HOME}/.mavis/agents/mavis/scripts/com.mavis.plan-rescue-daemon.plist" ]]; then
+    PLIST_SRC="${HOME}/.mavis/agents/mavis/scripts/com.mavis.plan-rescue-daemon.plist"
+  fi
+  if [[ -n "${PLIST_SRC}" ]]; then
+    log "installing Rescue Layer launchd plist from ${PLIST_SRC}"
     cp "${PLIST_SRC}" "${PLIST_DST}"
     launchctl load -w "${PLIST_DST}" 2>/dev/null || log "  launchctl load failed (may already be loaded)"
     log "  Rescue daemon will patrol every 60s (sleep-resilient)"
   else
-    log "  rescue scripts not found at ${PLIST_SRC} — skipping Rescue Layer install"
+    log "  no launchd plist found in ${SKILL_ROOT}/launchd/ or ${HOME}/.mavis/agents/mavis/scripts/ — skipping"
   fi
 else
   log "Rescue Layer not requested (pass --rescue to enable)"

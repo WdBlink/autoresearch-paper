@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mavis.plan-rescue-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/Users/wdblink/.mavis/agents/mavis/scripts/plan-rescue-daemon.py</string>
+        <string>--once</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/wdblink/.mavis/agents/mavis/logs/plan-rescue-daemon.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/wdblink/.mavis/agents/mavis/logs/plan-rescue-daemon.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/wdblink</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/wdblink/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/wdblink/.mavis/agents/mavis/scripts</string>
+    </dict>
+</dict>
+</plist>

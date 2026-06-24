@@ -341,7 +341,9 @@ fall back to nudge-only (no LLM calls).
 
 ### Components
 
-The Rescue Layer ships as **user-scope scripts** in `~/.mavis/agents/<agent>/scripts/`:
+The Rescue Layer ships as **skill-bundled scripts** in
+`references/scripts/` of this skill (also mirrored at
+`~/.mavis/agents/mavis/scripts/` for the running daemon to find them):
 
 - `local_llm_judge.py` — wraps `codex exec -m gpt-5.5 -c model_reasoning_effort=xhigh`
   with retry, JSON-mode parsing, and graceful fallback when ChatGPT account
@@ -352,8 +354,16 @@ The Rescue Layer ships as **user-scope scripts** in `~/.mavis/agents/<agent>/scr
 - `pause-plan.sh` / `resume-plan.sh` / `stop-plan.sh` — write/delete signal
   files in the plan directory; the daemon reads them on its next patrol.
 
+When this skill is installed on a fresh machine, `bootstrap-watchdog.sh`
+copies the bundled scripts to `~/.mavis/agents/mavis/scripts/` (the
+daemon's runtime path) so the user doesn't have to do it manually. The
+skill itself stays self-contained — no external dependencies beyond the
+local Codex CLI.
+
 The daemon is **launchd-managed** (not mavis cron) to avoid spawning an LLM
-session every 60 s — it runs as a pure Python process:
+session every 60 s — it runs as a pure Python process. The launchd plist
+ships at `references/launchd/com.mavis.plan-rescue-daemon.plist`; the
+bootstrap script copies + loads it on opt-in:
 
 ```xml
 ~/Library/LaunchAgents/com.mavis.plan-rescue-daemon.plist
@@ -438,7 +448,15 @@ skills/autoresearch-paper/
 │   ├── watchdog-prompt-template.md   # per-topic watchdog system prompt
 │   ├── bootstrap-watchdog.sh         # one-shot agent + cron + hook setup
 │   ├── first-action-last-seen.json   # hook config
-│   └── reviewer-readiness-rubric.md  # 6-dimension self-check
+│   ├── reviewer-readiness-rubric.md  # 6-dimension self-check
+│   ├── scripts/                      # Rescue Layer scripts (skill-bundled)
+│   │   ├── local_llm_judge.py        # gpt-5.5 + xhigh wrapper
+│   │   ├── plan-rescue-daemon.py     # 60s patrol + 5 verdicts
+│   │   ├── pause-plan.sh
+│   │   ├── resume-plan.sh
+│   │   └── stop-plan.sh
+│   └── launchd/
+│       └── com.mavis.plan-rescue-daemon.plist  # opt-in launchd installer
 └── tests/
     └── e2e-uav-coverage.md           # end-to-end test scenario
 ```
