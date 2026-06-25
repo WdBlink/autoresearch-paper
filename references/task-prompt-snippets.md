@@ -217,6 +217,24 @@ Anti-patterns to avoid:
 - Do NOT cherry-pick seeds. Run all of them, report all of them.
 - Do NOT silently drop outliers. If you drop them, log why in
   results-raw/ and report the un-dropped count in results.md.
+- **0% / negative-result honest framing recipe** (V6 lesson). If your
+  experiments produce M_success=0 uniformly (e.g., on a real physics
+  simulator where heuristic policies can't reach waypoints in step
+  budget), DO NOT report this as "failure". Distinguish:
+    (a) **Heuristic-policy ceiling** — bound on what the policy can do,
+        not what the architecture can do. Report as such.
+    (b) **Architecture failure** — the proposed method genuinely doesn't
+        work. Only claim this with quantitative evidence.
+  The three legitimate contribution types when (a) is the case:
+    1. **Structural verification** — the architecture's L1-L5 wiring is
+       correct (e.g., L5 marker discriminates ablations via McNemar
+       p < 0.0001).
+    2. **Overhead measurement** — the architecture's per-layer cost is
+       measurable (e.g., Wilcoxon M_time p < 0.001 across ablations).
+    3. **Fault-ladder discrimination** — the fault-injection ladder
+       cleanly differentiates ablations on at least one scenario.
+  §5 Discussion MUST explicitly reframe-as-contribution using one of
+  these three framings. NEVER claim "policy succeeds" when M_success=0.
 ```
 
 ## T7-write-iter1 — first writing pass
@@ -263,6 +281,15 @@ Outputs (write to {OUT_DIR}):
 
 Gate: ≥ 80% of low dimensions are lifted. Hard fail otherwise —
 surface to user.
+
+Page-budget fold regression guard (V6 lesson): If you are tempted to
+fold a dedicated section (§6 Limitations/Ethics, §3 Method sub-section,
+§5 multi-voice, etc.) into another section to hit a venue page limit,
+STOP and run the Step 7.5 pre-flight check from SKILL.md first. Folding
+§6 Limitations/Ethics typically regresses Dim 6 Ethics by 2 points (6 → 4
+in V6); the fold is invisible until the next reviewer-readiness scoring
+pass. Prefer waiver request, short-paper track, or restructuring over
+silent fold.
 ```
 
 ## T9-ablation — ablation study (required for journal-q1, optional for conference)
@@ -309,6 +336,13 @@ Outputs (write to {OUT_DIR}):
     - supplementary rules
     - deadline and submission portal URL
     - co-author order and affiliations to verify
+
+Negative-result framing reminder (V6 lesson): If the paper has
+M_success=0 across all configs on real physics (heuristic-policy
+ceiling), the §6 Limitations MUST explicitly distinguish this from
+architecture failure and reframe as one of: structural verification,
+overhead measurement, or fault-ladder discrimination. See T6 anti-patterns
+section for the full recipe.
 ```
 
 ## T11-readiness — reviewer-readiness self-check

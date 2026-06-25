@@ -13,5 +13,20 @@
     "id": 3,
     "prompt": "论文图画得太简陋了,v3 用的 matplotlib 临时画,scientific-schematics skill API key 缺失。我要学术风格的 vector PDF。",
     "expected": "Skill 应该: (a) 触发 autoresearch-paper (在 plan workflow 的 T6/T7 阶段); (b) 引用 fig quality 在 v7 review 是 P0; (c) 建议 huashu-design 或 /huashu-design skill 触发,因为 huashu 是花叔生态的 HTML design; (d) 给具体改进路径:把 4 张 matplotlib 临时图替换为 huashu-design 渲染的学术风格 vector PDF + numbered callouts; (e) 不重复 v3 已经做对的: §3.6 protocol table / §3.0.1 coupling disclosure / L5 dual-format schema,这些是 v3 已落地不要重做。"
+  },
+  {
+    "id": 4,
+    "prompt": "T4 任务要在 Jetson AGX Orin 上跑 real PyFlyt 0.29.0 27-cell experiments,预估 wall-clock 60h。plan.yaml 我写了 timeout_ms: 7200000(120min)。但 engine 在 30min 就杀 session,data 丢失,worker 重新跑了 6 次。skill 应该怎么教 worker 写 T4 brief 才不会反复踩这个?",
+    "expected": "Skill 应该: (a) 触发 Step 4.5 'engine ceiling reality check' 章节,明确说明 plan.yaml timeout_ms 是装饰、engine ceiling 是 30 min 硬限制; (b) 教 producer 用 setsid+nohup+disown daemon pattern,4 文件 checkpoint (run.pid/run.log/exit.code/checkpoint.json); (c) 教 producer 立即写 GATE: PARTIAL deliverable.md 包含 daemon_pid + checkpoint paths,而不是等 worker session 完成; (d) 教 multi-session retry pattern: 每次 retry 用 checkpoint.json 续上,直到 exit.code 写入; (e) 提醒加 lockfile 防重复 daemon; (f) 引用 FM-10。"
+  },
+  {
+    "id": 5,
+    "prompt": "T11 verifier 收到 producer 的 deliverables: 27 JSONL files 共 585 rows,但 producer 自报 GATE: PASS。verifier 的 verify_prompt 只说'抽 1 个 JSONL cell 确认 13 fields 全部存在'。verifier 按这条通过。结果 downstream 用户发现 3/27 个 B3 PPO cell 的 record 是 'TypeError: run_episode() got an unexpected keyword argument jsonl_out'。同时 paper.pdf 里 airsim2018shah 和 flightmare2020song 两个 citation 渲染成 [?] 因为 .bib 里没这两条。Skill 应该怎么升级 verify_prompt?",
+    "expected": "Skill 应该: (a) 触发 Step 5.5 'verifier spot-check recipe' 三类硬规则; (b) Category A: JSONL 不只抽 1 cell,要 head -1 schema validation + wc -l 记录数 + grep -c ERROR/TypeError 错误率 + field completeness check; 任何 ERROR record = FAIL; (c) Category B: LaTeX 4-pass pdflatex+bibtex 编译,然后 pdftotext paper.pdf | grep -cF '[?]' 必须返回 0,检查 paper.blg 的 'Warning--I didn't find a database entry' 警告; (d) Category C: verifier 不在 producer 同一 session context(避免 ~46.4% LLM-as-judge 乐观偏差); fallback 用 codex exec -m gpt-5.5 + xhigh + --skip-git-repo-check; (e) 引用 FM-13 (JSONL ERROR) 和 FM-11 (LaTeX [?])。"
+  },
+  {
+    "id": 6,
+    "prompt": "ICRA 2027 6-page paper limit。T10 retry-2 worker 觉得'fold §6 Limitations/Broader Impact/Ethics 进 §5 Discussion + §7 Conclusion 能省 0.5 页'。它真的折了。结果 reviewer-readiness T11 跑下来 Dim 6 Ethics = 4(<6 threshold),GATE: FAIL。同时 T4 real PyFlyt data 显示 9 个 config × 3 mission 全 M_success=0,writer 不知道怎么 frame 这事(看起来像 failure)。Skill 应该怎么防护这两件事?",
+    "expected": "Skill 应该: (a) 触发 Step 7.5 'page-budget fold regression guard' —— 折任何 dedicated section 前必须先算 reviewer-readiness dimension regression,fail-to-pass 不准折,改走 waiver/short-paper track; (b) 引用 FM-12; (c) 对 0% M_success 触发 'negative-result honest framing recipe'——区分 heuristic-policy ceiling vs architecture failure,命名 3 种贡献类型(structural verification / overhead measurement / fault-ladder discrimination),§5 Discussion 必须 explicit reframe-as-contribution,禁止 'policy succeeds' 这类 claim when M_success=0; (d) 这个 recipe 要 propagate 到 task-prompt-snippets.md 的 T6/T8/T10,不能只放 plan-template-conference.md(否则生成的 plan 不会自动继承); (e) 引用 FM-12。"
   }
 ]

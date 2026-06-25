@@ -206,6 +206,68 @@ The watchdog agent's system prompt comes from
 `references/watchdog-prompt-template.md` with placeholders for topic, tier,
 expected wall-clock, and known evaluator signal.
 
+### Step 4.5 — Engine ceiling reality check (long-running compute)
+
+**INPUT:** `<plan-dir>` + list of tasks expected to exceed 30 min wall-clock
+(installing heavy deps on aarch64, full-physics-simulator experiment sweeps,
+multi-cell ablations, fault-ladder runs).
+**OUTPUT:** explicit per-task daemon pattern instructions shipped in the
+producer's task prompt; no plan.yaml `timeout_ms` change required.
+
+The plan engine kills an individual worker session at **30 min wall-clock** —
+**regardless of `plan.yaml timeout_ms`** (the field is decorative, not
+honored). This is independent of the Rescue Layer, which only handles
+plan-level pauses. Any task expected to exceed 30 min must use the daemon
+pattern below; otherwise the producer is silently killed mid-output and the
+data is lost.
+
+**Pattern — setsid + 4-file checkpoint + cron poll:**
+
+```bash
+# Producer session (~5 min of wall-clock):
+SSHPASS='...' sshpass -e ssh orin_agx@host 'bash -s' << 'EOF'
+mkdir -p /home/orin_agx/<run> && cd /home/orin_agx/<run>
+echo $$ > run.pid
+nohup setsid bash -c "python cell_runner.py > run.log 2>&1; echo EXIT=\$? > exit.code; date +%s > checkpoint.json" \
+    > /dev/null 2>&1 &
+disown
+sleep 3
+pgrep -f cell_runner.py | head -3
+EOF
+# Then immediately exit with deliverable.md (GATE: PARTIAL is fine):
+# - daemon_pid, kicked_off_at, checkpoint_file paths
+# - estimated_completion, daemon_log_tail
+```
+
+The daemon writes `run.pid`, `run.log`, `exit.code`, `checkpoint.json` so a
+subsequent producer session (or the next retry of the same task) can `pgrep`,
+`tail run.log`, `cat checkpoint.json` to learn progress without owning the
+work. The cron self-reminder (`mavis cron create` with `--every 5m`) catches
+`exit.code` non-zero or `checkpoint.json` finalization and triggers the next
+producer session.
+
+🔴 **STOP — never put a >30 min command in a foreground SSH call.** A 90-min
+`mavis team plan extend-timeout` extends only the producer session wall-clock
+ceiling; it does NOT raise the 30-min cap. The daemon is the only way to do
+work that exceeds the cap.
+
+**Cleanup (CRITICAL — prevents Jetson resource leaks):**
+
+- Producer must `rm run.pid` and `rm checkpoint.json` after `cat`-ing the
+  final results. Leaving them confuses the next retry.
+- Verify `pgrep -f cell_runner.py` returns empty before exit. If still
+  alive, `kill -TERM <pid>` (single process, not process group — don't `pkill -KILL`).
+- Add `<plan-dir>/cleanup.sh` to the deliverables so future retries can
+  rerun cleanup idempotently.
+- Stale crons set by the producer (`baseline-pyflyt-poll`,
+  `t4-cell27-poll`) MUST be deleted via `mavis cron delete <agent> <cron>`
+  before the producer exits; otherwise they keep firing and pollute logs.
+
+🔴 **STOP — LOCKFILE discipline.** Before kicking off a daemon, write
+`<run>/lock` (`echo $$ > lock`). The next producer session reads it; if
+present, the daemon is already running — do NOT launch a duplicate. Remove
+the lock only after `exit.code` is written.
+
 ### Step 5 — Run the team
 
 **INPUT:** validated `<plan-dir>/plan.yaml` (Step 3) + Step-4 watchdog resources + user "go".
@@ -214,6 +276,85 @@ expected wall-clock, and known evaluator signal.
 Call `mavis team plan run --plan <scratchpad>/autoresearch/<slug>/plan.yaml`
 and capture the plan id. Print the plan id and the dashboard URL back to
 the user. The skill is now in **observe mode**.
+
+### Step 5.5 — Verifier spot-check recipe
+
+**INPUT:** verifier session inspecting a producer's `<plan-dir>/out/*` artifacts.
+**OUTPUT:** explicit PASS/FAIL verdict grounded in numerical evidence, not
+producer self-claims.
+
+The producer's self-reported GATE: PASS is not sufficient. The verifier
+**must independently re-measure** three categories of artifacts. Apply all
+three — skipping any one invites the regressions that bit V6 plan_e7ae7abe:
+
+**Category A — JSONL / result files (do NOT spot-check 1 cell):**
+
+```bash
+# 1. Schema validation across ALL files, not just one cell
+for f in out/results-raw-*/cell_*.jsonl; do
+    head -1 "$f" | python3 -c "import json,sys; json.loads(sys.stdin.read())" || echo "BAD_JSON: $f"
+done
+
+# 2. Record count vs expected
+expected=$(grep "expected_records\|n_per_cell" plan.yaml | head -1)
+wc -l out/results-raw-*/*.jsonl  # sum should match
+
+# 3. Error rate — any record containing ERROR or TypeError FAILS
+grep -c '"ERROR"\|"TypeError"' out/results-raw-*/*.jsonl  # must be 0
+
+# 4. Field completeness — verify ALL required fields present in ALL rows
+python3 -c "
+import json, glob, sys
+required = ['scenario_id','fault_step','recovery_status','seed','success','completion_time']
+for f in glob.glob('out/results-raw-*/*.jsonl'):
+    for i, line in enumerate(open(f)):
+        rec = json.loads(line)
+        missing = [k for k in required if k not in rec]
+        if missing: print(f'{f}:{i} MISSING {missing}')
+"
+```
+
+A single ERROR record or missing field across the whole run = FAIL, unless
+explicitly classified as "out-of-scope" with reason in the verifier report.
+
+**Category B — LaTeX (4-pass compile + pdftotext grep, NOT binary PDF grep):**
+
+```bash
+# 1. 4-pass compile (NOT 3-pass — bibtex needs its own pass)
+cd out/package && pdflatex -interaction=nonstopmode paper.tex && \
+    bibtex paper && \
+    pdflatex -interaction=nonstopmode paper.tex && \
+    pdflatex -interaction=nonstopmode paper.tex
+
+# 2. Visible [?] markers in RENDERED TEXT (compressed PDFs fool raw grep)
+pdftotext paper.pdf - | grep -cF '[?]'   # must be 0
+
+# 3. BibTeX warnings (catches missing entries before they become visible [?])
+grep -E "Warning--I didn't find a database entry" paper.blg
+# 0 hits = PASS
+
+# 4. Cross-reference resolution (no ?? in any rendered page)
+pdftotext paper.pdf - | grep -cF '??'   # must be 0
+```
+
+A verifier that only checks "pdflatex exit 0" misses bib-regression. Always
+run all 4 checks.
+
+**Category C — Verifier independence:**
+
+The verifier MUST NOT run in the same worker session as the producer it is
+verifying. If Mavis agent routing forces same-context reuse, the verifier
+**must still use a fresh context** — artifact-only inputs (read the files)
+plus a command transcript, never live agent continuation of the producer's
+session. This avoids the "I just wrote this, it must be good" optimism
+bias that empirical SkillLens LLM-as-judge studies measure at ~46.4%
+accuracy.
+
+🔴 **STOP — never reuse the producer's session for verification.** If the
+runtime doesn't offer a fresh session, fall back to `codex exec -m gpt-5.5`
+with `--skip-git-repo-check` and feed it the producer's `deliverable.md`
+plus the artifact paths; never `mavis communication send` a "verify this"
+prompt back into the producer's own session.
 
 ### Step 6 — Observe and patrol
 
@@ -278,6 +419,45 @@ The skill then summarizes:
 
 The user reviews `paper.tex` and `reviewer-readiness.md` and decides whether
 to invoke another iteration.
+
+#### Step 7.5 — Page-budget fold regression guard (camera-ready)
+
+**INPUT:** finished paper at 7-9 pages, ICRA / conference camera-ready
+submission deadline pressing, proposal to trim prose or fold a dedicated
+section.
+**OUTPUT:** explicit dimension-regression calculation before any deletion;
+waiver request fallback if the fold would push a reviewer-readiness
+dimension below threshold.
+
+🔴 **STOP — before deleting any dedicated section (§6 Limitations/Ethics,
+§3 Method sub-section, etc.) to fit camera-ready page budget, run this
+regression check.** V6 plan_e7ae7abe T10 retry-2 folded §6 into §5+§7
+unthinkingly, regressing the Ethics dimension 6 → 4 — the verifier caught
+it only on the second pass. Don't repeat.
+
+```bash
+# 1. Read the current 6-dim scores from reviewer-readiness.md
+grep -A 1 "Ethics\|Limitations\|Reproducibility\|Clarity" reviewer-readiness.md | head -20
+
+# 2. For each section you propose to fold, ask:
+#    Which reviewer-readiness dimension depends on this section being dedicated?
+#    - §6 Limitations/Broader Impact/Ethics → Dim 6 Ethics
+#    - §3 Method sub-section → Dim 2 Evidence / Dim 1 Novelty
+#    - §5 Discussion multi-voice → Dim 4 Clarity
+
+# 3. If any dimension is at threshold (e.g., Ethics = 6) and the fold
+#    would push it below, do NOT fold. Instead:
+#    (a) Request waiver from venue program chairs (ICRA accepts 1-page
+#        waivers for camera-ready, esp. for honest-disclosure sections)
+#    (b) Restructure as short-paper / workshop track (4-page version)
+#    (c) Move ethics discussion to supplementary material — but be aware
+#        that supplementary does NOT count toward reviewer-readiness rubric
+#    (d) Compress §5 multi-voice from 4 paragraphs to 2 (cut 200 words
+#        without losing dimensions), THEN check if fold is still needed
+```
+
+The fold-to-fit reflex is dangerous because it's invisible until the
+verifier scores. A 30-second pre-flight check saves a full retry cycle.
 
 ## Tier reference
 
@@ -425,6 +605,11 @@ current cycle, the engine idles, and no new tasks are spawned until
 | FM-7 | `local_llm_judge.py` exits non-zero (codex unavailable / model rejected) | Daemon emits `judge_failed` finding, falls back to `nudge` verdict, retries next cycle | If 5 cycles in a row fail, daemon writes `local_llm_disabled` automatically and escalates to user |
 | FM-8 | `pause_requested.json` written but daemon never resumes | User runs `resume-plan.sh <plan_id>` manually; daemon observes `resume_signal.json` | Surface in `next-steps.md`: "paused at cycle N — run `resume-plan.sh` to continue" |
 | FM-9 | `stop_requested.json` triggers cancel but plan engine has producer still running | Daemon kills the plan engine; in-flight producers exit on their own (no SIGKILL needed) | Verify `state.json` status = `"cancelled"` within 60 s; if not, `mavis team plan cancel <plan_id>` manually |
+| FM-10 | Producer puts a >30 min command in a foreground SSH call (engine kills the session mid-output, data lost) | Refollow Step 4.5: `nohup + setsid + disown` daemon + 4-file checkpoint (`run.pid`/`run.log`/`exit.code`/`checkpoint.json`); write `cleanup.sh` for next retry | If the producer's session is already dead, the next retry must read whatever files exist on the target machine (Jetson) — partial run logs are usually salvageable |
+| FM-11 | LaTeX `[?]` markers visible in rendered PDF (cite in body but missing from `.bib`) | Run 4-pass pdflatex + bibtex; `pdftotext paper.pdf - \| grep -cF '[?]'` must return 0; check `paper.blg` for "Warning--I didn't find a database entry" | Manually grep paper.tex for `\cite{...}` keys, cross-reference against `bibliography.bib`; add missing entries by `\input` or copy from sibling skill's bib |
+| FM-12 | Page-budget fold regresses a reviewer-readiness dimension below threshold (e.g., fold §6 Ethics → Dim 6 = 4) | Run Step 7.5 pre-flight check BEFORE deleting any dedicated section; compute dimension regression from the fold | Request venue waiver for 1-2 extra pages; restructure as short-paper track (4 pages); move content to supplementary (note: supplementary does NOT count toward reviewer-readiness rubric scoring) |
+| FM-13 | Producer self-reports "all cells done" but JSONL contains ERROR / TypeError records hidden in raw counts | Run Category A verifier recipe: `head -1 schema` + `wc -l` + `grep -c '"ERROR"\|"TypeError"'` + field completeness check | If only a few cells errored, retry with cell-targeted fix (don't re-run the full sweep); if systematic, pause and ask user whether to patch the helper function |
+| FM-14 | Verifier runs in same session context as producer (loses independence, ~46.4% accuracy per SkillLens) | Spawn fresh producer session via `mavis session new`; verifier reads only artifact files (no shared scratchpad memory) | Fallback: use `codex exec -m gpt-5.5 -c model_reasoning_effort=xhigh --skip-git-repo-check` with artifact paths as input |
 
 ## Environment constraints
 
@@ -572,6 +757,63 @@ column is mandatory; never leave a row without an escalation path.
     continue to work — the layer is opt-in via the launchd plist load.
     No changes to `bootstrap-watchdog.sh` (single-L1-cron path remains
     the default for non-rescue use cases).
+- 0.3.1 — V6 evidence-driven: engine ceiling + verifier spot-check + 0% framing.
+  - **Why.** plan_e7ae7abe (12-task UAV-Swarm real-PyFlyt ICRA 2027 plan,
+    Jun 24-25 2026) ran end-to-end but exposed 3 specific skill weaknesses
+    the Rescue Layer didn't address: (a) T2/T4/T9 each killed 3-6 times by
+    the 30-min engine ceiling because plan.yaml `timeout_ms` is decorative;
+    (b) T8 verifier approved GATE: PASS with `[?]` markers in rendered PDF
+    (airsim/flightmare citations missing from `.bib`) and T4 retry-4 reported
+    "27/27 cells" while 3 B3 PPO cells contained ERROR records; (c) T10 retry-2
+    folded §6 Ethics into §5+§7 to hit ICRA 6-page limit, regressing Dim 6
+    Ethics 6 → 4. Codex gpt-5.5 + xhigh judgment APPROVE-WITH-MODIFICATIONS,
+    predicted score 86.44 → 91.31 with these edits.
+  - **New section: Step 4.5 — Engine ceiling reality check.** Explicit
+    statement that engine kills worker sessions at 30 min regardless of
+    `plan.yaml timeout_ms`. Daemon pattern: `setsid + nohup + disown`
+    with 4-file checkpoint (`run.pid`/`run.log`/`exit.code`/`checkpoint.json`),
+    `cleanup.sh` for next retry, lockfile discipline to prevent duplicate
+    Jetson runs. Multi-session retry cycle explicit.
+  - **New section: Step 5.5 — Verifier spot-check recipe.** 3 categories
+    of hard rules: (A) JSONL — `head -1 schema` validation across ALL
+    files, `wc -l` record count, `grep -c '"ERROR"\|"TypeError"'` error
+    rate, field completeness check via Python; (B) LaTeX — 4-pass pdflatex +
+    bibtex compile, `pdftotext paper.pdf - | grep -cF '[?]'` must be 0,
+    `paper.blg` "Warning--I didn't find a database entry" check, `??`
+    cross-ref resolution; (C) Verifier independence — never reuse the
+    producer's session; fallback to `codex exec -m gpt-5.5 -c
+    model_reasoning_effort=xhigh --skip-git-repo-check`.
+  - **New section: Step 7.5 — Page-budget fold regression guard.**
+    Pre-flight check before deleting any dedicated section to fit
+    camera-ready page limit. Compute dimension regression from the fold
+    BEFORE cutting. If a dimension would push below threshold, prefer
+    waiver request, short-paper track, or restructure over silent fold.
+  - **5 new failure modes (FM-10 through FM-14).** FM-10: foreground SSH
+    >30 min killed by engine (Step 4.5 pattern + 4-file checkpoint
+    recovery). FM-11: LaTeX `[?]` markers visible in PDF (4-pass compile
+    + pdftotext grep + paper.blg check). FM-12: page-budget fold regresses
+    reviewer-readiness dimension (Step 7.5 pre-flight check; waiver /
+    short-paper track fallback). FM-13: producer self-reports "all cells
+    done" but JSONL contains ERROR / TypeError records hidden in raw
+    counts (Category A verifier recipe; cell-targeted fix fallback).
+    FM-14: verifier runs in same session context as producer (~46.4%
+    accuracy per SkillLens empirical studies; fresh session or codex
+    exec fallback).
+  - **task-prompt-snippets.md propagation** (codex mod #4): the
+    negative-result honest framing recipe goes into T6 anti-patterns,
+    the page-budget fold regression guard into T8 anti-patterns, and the
+    framing reminder into T10 packaging brief. Generated plans now
+    inherit the recipes automatically.
+  - **3 new test prompts (test-prompts.json id 4-6).** Derived from
+    V6 friction: Jetson 25-min install + 45-min experiment (engine
+    ceiling); 27 JSONL files / 585 rows / 3 ERROR + 2 missing bib
+    entries (verifier recipe); ICRA 6-page + M_success=0 + fold
+    proposal (page-budget guard + honest framing). Codex's 3 sharp
+    prompts preserved verbatim.
+  - Backwards compatibility: v0.3.0 plans continue to work. New steps
+    (4.5, 5.5, 7.5) are additive — they apply when the corresponding
+    trigger condition is hit. No changes to the Rescue Layer, plan
+    templates, or bootstrap script.
 - Future versions will add: cross-machine resumption, hardened liveness
   mode, and an opt-in "human in the loop every task" mode.
 
