@@ -343,6 +343,12 @@ ceiling), the §6 Limitations MUST explicitly distinguish this from
 architecture failure and reframe as one of: structural verification,
 overhead measurement, or fault-ladder discrimination. See T6 anti-patterns
 section for the full recipe.
+
+Wide-table camera-ready check: Before submitting paper.tex, scan for any
+`\begin{table}[t]` with ≥ 7 columns or `\small`/`\footnotesize` (signals
+overflow). Convert to `\begin{table*}[t]` / `\end{table*}` to span both
+columns of the IEEE 2-col layout — this gives ~0.5 page of body room
+without changing table content. See SKILL.md Step 7.5.a + FM-15.
 ```
 
 ## T11-readiness — reviewer-readiness self-check

@@ -28,5 +28,10 @@
     "id": 6,
     "prompt": "ICRA 2027 6-page paper limit。T10 retry-2 worker 觉得'fold §6 Limitations/Broader Impact/Ethics 进 §5 Discussion + §7 Conclusion 能省 0.5 页'。它真的折了。结果 reviewer-readiness T11 跑下来 Dim 6 Ethics = 4(<6 threshold),GATE: FAIL。同时 T4 real PyFlyt data 显示 9 个 config × 3 mission 全 M_success=0,writer 不知道怎么 frame 这事(看起来像 failure)。Skill 应该怎么防护这两件事?",
     "expected": "Skill 应该: (a) 触发 Step 7.5 'page-budget fold regression guard' —— 折任何 dedicated section 前必须先算 reviewer-readiness dimension regression,fail-to-pass 不准折,改走 waiver/short-paper track; (b) 引用 FM-12; (c) 对 0% M_success 触发 'negative-result honest framing recipe'——区分 heuristic-policy ceiling vs architecture failure,命名 3 种贡献类型(structural verification / overhead measurement / fault-ladder discrimination),§5 Discussion 必须 explicit reframe-as-contribution,禁止 'policy succeeds' 这类 claim when M_success=0; (d) 这个 recipe 要 propagate 到 task-prompt-snippets.md 的 T6/T8/T10,不能只放 plan-template-conference.md(否则生成的 plan 不会自动继承); (e) 引用 FM-12。"
+  },
+  {
+    "id": 7,
+    "prompt": "T10 包装完 paper.tex 7 页,ICRA 6 页限制下多出 1 页。T10 想 fold §6 进 §5+§7。但我检查发现 Table IV 是 8 列 ablation,内容塞得很紧,pdf 里能看到 body text 在 Table IV 周围明显被挤压。skill 怎么处理这个问题?",
+    "expected": "Skill 应该: (a) 触发 Step 7.5.a 'wide-table 2-column span recipe' —— 把 \\begin{table}[t] 改成 \\begin{table*}[t] 让 table 跨 IEEE 双列布局,~0.5 页 body room; (b) 这是 NOT a fold(保留 table 全部内容),只是 layout 变化; (c) 触发条件: table ≥ 7 列 + \\small 或 pdflatex log 有 Overfull \\hbox; (d) 这是 fold 之前的 first-line fix,先试这个再考虑 fold dedicated section; (e) 引用 FM-15。"
   }
 ]

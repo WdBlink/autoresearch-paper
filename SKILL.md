@@ -435,6 +435,42 @@ regression check.** V6 plan_e7ae7abe T10 retry-2 folded §6 into §5+§7
 unthinkingly, regressing the Ethics dimension 6 → 4 — the verifier caught
 it only on the second pass. Don't repeat.
 
+##### Step 7.5.a — Wide-table 2-column span recipe (camera-ready)
+
+Before folding any dedicated section, check whether a **wide LaTeX table**
+is the actual culprit. A table with 8+ columns or packed numeric content
+overruns the single-column width and visually crowds the surrounding body
+text. The fix is **two-character** but easy to miss:
+
+```latex
+% Before (single column, may overflow):
+\begin{table}[t]
+  ... 8-column tabular ...
+\end{table}
+
+% After (spans both columns of IEEE 2-col layout):
+\begin{table*}[t]
+  ... 8-column tabular ...
+\end{table*}
+```
+
+The `table*` (with asterisk) floats to the top of the next page (or
+wherever `[t]` allows); the surrounding body text gets ~0.5 page of
+breathing room. This is NOT a fold — the table keeps full content; only
+the layout changes. Apply this **before** any fold-to-fit reflex.
+
+**Trigger conditions** (any one → apply 2-column span):
+
+- Table has ≥ 7 columns
+- Table contains `\small` or `\footnotesize` (forced by overflow)
+- pdflatex log shows `Overfull \hbox` warnings near a `\begin{table}`
+- Body text around the table has visible justification stretch / hbox
+  warnings cascading from the table
+
+V6 plan_e7ae7abe Table IV (8-column ablation results) was converted
+this way and gained ~0.5 page of body room without changing the
+table content. See FM-15 for the failure-mode encoding.
+
 ```bash
 # 1. Read the current 6-dim scores from reviewer-readiness.md
 grep -A 1 "Ethics\|Limitations\|Reproducibility\|Clarity" reviewer-readiness.md | head -20
@@ -610,6 +646,7 @@ current cycle, the engine idles, and no new tasks are spawned until
 | FM-12 | Page-budget fold regresses a reviewer-readiness dimension below threshold (e.g., fold §6 Ethics → Dim 6 = 4) | Run Step 7.5 pre-flight check BEFORE deleting any dedicated section; compute dimension regression from the fold | Request venue waiver for 1-2 extra pages; restructure as short-paper track (4 pages); move content to supplementary (note: supplementary does NOT count toward reviewer-readiness rubric scoring) |
 | FM-13 | Producer self-reports "all cells done" but JSONL contains ERROR / TypeError records hidden in raw counts | Run Category A verifier recipe: `head -1 schema` + `wc -l` + `grep -c '"ERROR"\|"TypeError"'` + field completeness check | If only a few cells errored, retry with cell-targeted fix (don't re-run the full sweep); if systematic, pause and ask user whether to patch the helper function |
 | FM-14 | Verifier runs in same session context as producer (loses independence, ~46.4% accuracy per SkillLens) | Spawn fresh producer session via `mavis session new`; verifier reads only artifact files (no shared scratchpad memory) | Fallback: use `codex exec -m gpt-5.5 -c model_reasoning_effort=xhigh --skip-git-repo-check` with artifact paths as input |
+| FM-15 | Wide LaTeX table overflows single column (8+ columns, packed content) and crowds body text | Convert `\begin{table}[t]` → `\begin{table*}[t]` to span both columns of the IEEE 2-column layout; `\end{table}` → `\end{table*}`; figure stays at `[t]` placement. The `table*` floats to top of next page (or wherever `[t]` allows) — usually buys ~0.5 page of breathing room in the body | If the wide table still doesn't fit (rare for IEEE 2-col), split it into two stacked narrow tables or move sub-tables to supplementary |
 
 ## Environment constraints
 
