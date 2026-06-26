@@ -8,6 +8,18 @@ description: Channel A (keyword) + Channel B (ask_user fallback) tier decision t
 Two-channel tier detection, with explicit failure handling for the "user
 keeps refusing" case.
 
+## Execution Procedure
+
+```
+decide_tier(target_venue, user_reply_count) -> tier_decision
+
+call goal-keywords.detect_tier_by_keyword(target_venue)
+if tier hit -> return tier with confirmation_required
+if reject reason -> ask clarification, then Channel B
+if no hit -> ask Channel B three-option question
+if Other repeats 3 times -> block and ask for one venue sentence
+```
+
 ## Channel A — keyword match
 
 ```

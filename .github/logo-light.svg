@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="160" viewBox="0 0 720 160" role="img" aria-labelledby="title desc">
+  <title id="title">Autoresearch Paper</title>
+  <desc id="desc">Wordmark for the Autoresearch Paper skill.</desc>
+  <rect width="720" height="160" rx="24" fill="#f7f8fb"/>
+  <path d="M70 112c34-52 78-78 132-78 42 0 76 15 103 45 21 23 45 35 72 35 35 0 66-19 94-58" fill="none" stroke="#2f6f8f" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="202" cy="34" r="8" fill="#cc785c"/>
+  <circle cx="377" cy="114" r="8" fill="#cc785c"/>
+  <text x="86" y="93" font-family="Inter, Avenir, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#1f2933">Autoresearch Paper</text>
+  <text x="88" y="122" font-family="Inter, Avenir, Helvetica, Arial, sans-serif" font-size="18" fill="#53616d">research-first agent pipeline</text>
+</svg>

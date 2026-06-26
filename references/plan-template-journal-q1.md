@@ -5,27 +5,49 @@ description: 8-task plan.yaml template (deeper experiments, longer wall-clock, s
 
 # Plan Template — `journal-q1` Tier
 
-Same 8-task skeleton as `conference`, but with deeper experiments, longer
-wall-clock, and stricter gates. Targets SCI Q1 / Nature 子刊 / T-PAMI / T-RO.
+Same research-first skeleton as `conference`, but with deeper experiments,
+longer wall-clock, and stricter gates. Targets SCI Q1 / Nature 子刊 /
+T-PAMI / T-RO. T7 writing is blocked by `state/research_acceptance.md`.
+
+## Execution Procedure
+
+```
+render_journal_q1_plan(brief, materials, plan_dir) -> plan_yaml
+
+start from the conference research-first graph
+add deeper robustness, failure-analysis, and required ablation tasks
+load prompt bodies from ../assets/task-prompt-snippets.md
+apply journal-q1 reviewer-readiness thresholds before delivery
+```
 
 ## Plan shape
 
-Identical to `conference`:
+Same control flow as `conference`, with journal-specific robustness and
+failure-analysis tasks inserted before the research decision:
 
 ```
-T1 lit ─▶ T2 gap ─▶ T3 method ─▶ T4 impl ─▶ T5 plan ─▶ T6 expt
-                                                       │
-                                                       ▼
-                              T7 write-1 ◀───────────────┤
-                                  │
-                                  ▼
-                              T8 write-2 ◀──── T9 ablation (required)
-                                  │
-                                  ▼
-                              T10 pkg
-                                  │
-                                  ▼
-                              T11 readiness
+T0 evaluator-freeze ─▶ T1 lit ─▶ T2 gap ─▶ T3 method ─▶ T4 impl ─▶ T5 plan ─▶ T6 expt
+                                                                                   │
+                                                                                   ▼
+                                                        T6.5 robustness ─▶ T6.6 failure-analysis
+                                                                                   │
+                                                                                   ▼
+                                                                  T6.1 evaluate-candidate
+                                                                                   │
+                                                                                   ▼
+                                                                  T6.2 research-decision
+                                                                    │ PASS/WAIVE      │ FAIL
+                                                                    ▼                 ▼
+                                                                T7 write-1      T6.3 pivot-or-retry
+                                                                    │                 │
+                                                                    ▼                 └──▶ T3/T4/T5/T6
+                                                                T8 write-2 ◀──── T9 ablation (required)
+                                                                    │
+                                                                    ▼
+                                                                T10 pkg
+                                                                    │
+                                                                    ▼
+                                                                T11 readiness
 ```
 
 Total wall-clock target: 3–7 days.
@@ -50,10 +72,10 @@ Total wall-clock target: 3–7 days.
 
 ### Additional rigor tasks injected
 
-These are inserted between T6 and T7:
+These are inserted between T6 and T6.1:
 
 ```
-T6 expt ─▶ T6.5 robustness ─▶ T6.6 failure-analysis ─▶ T7 write-iter1
+T6 expt ─▶ T6.5 robustness ─▶ T6.6 failure-analysis ─▶ T6.1 evaluate-candidate
 ```
 
 - **T6.5 robustness**: stress-test the method on out-of-distribution
@@ -65,6 +87,20 @@ T6 expt ─▶ T6.5 robustness ─▶ T6.6 failure-analysis ─▶ T7 write-iter
 
 Both are required for journal reviewers, who routinely ask
 "what about distribution shift" and "show me where it fails".
+
+### Research acceptance is mandatory
+
+`T6.1 evaluate-candidate` must compare the method to the frozen T0
+baseline contract using all T6/T6.5/T6.6 evidence. `T6.2
+research-decision` writes `state/research_acceptance.md`.
+
+- `PASS`: all journal-q1 thresholds are met.
+- `FAIL`: increment `stale_count`, append DISCARD/PIVOT to the
+  candidate registry, and route to T6.3.
+- `WAIVED_BY_HUMAN`: only the human owner may write this.
+
+`T7 write-iter1` must hard fail unless `research_acceptance.md` contains
+`PASS` or `WAIVED_BY_HUMAN`.
 
 ### T7 write-iter1 has a longer format
 

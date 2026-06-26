@@ -33,5 +33,25 @@
     "id": 7,
     "prompt": "T10 包装完 paper.tex 7 页,ICRA 6 页限制下多出 1 页。T10 想 fold §6 进 §5+§7。但我检查发现 Table IV 是 8 列 ablation,内容塞得很紧,pdf 里能看到 body text 在 Table IV 周围明显被挤压。skill 怎么处理这个问题?",
     "expected": "Skill 应该: (a) 触发 Step 7.5.a 'wide-table 2-column span recipe' —— 把 \\begin{table}[t] 改成 \\begin{table*}[t] 让 table 跨 IEEE 双列布局,~0.5 页 body room; (b) 这是 NOT a fold(保留 table 全部内容),只是 layout 变化; (c) 触发条件: table ≥ 7 列 + \\small 或 pdflatex log 有 Overfull \\hbox; (d) 这是 fold 之前的 first-line fix,先试这个再考虑 fold dedicated section; (e) 引用 FM-15。"
+  },
+  {
+    "id": 8,
+    "prompt": "T6 实验跑完了,但是最强 baseline 还是赢,worker 准备直接开始写论文并在 limitations 里承认 theoretical contribution is essentially zero。skill 应该怎么处理?",
+    "expected": "Skill 应该: (a) 阻止 T7,因为 conference/journal 必须先有 state/research_acceptance.md: PASS 或 WAIVED_BY_HUMAN; (b) 触发 T6.1 evaluate-candidate 和 T6.2 research-decision; (c) 将失败方向写入 candidate_registry.jsonl / scoreboard.tsv / directions_tried.json; (d) stale_count 增加,若 >=2 触发 T6.3 structural pivot; (e) 不允许用诚实 limitations 替代研究贡献闸门。"
+  },
+  {
+    "id": 9,
+    "prompt": "我发现这个 skill 跑一晚上以后没有死,但似乎在同一个方向小修小补试了很多次,没有真正换算法路线。怎么防止它反复撞同一堵墙?",
+    "expected": "Skill 应该: (a) 读取 state/progress.json 和 directions_tried.json; (b) 解释 stale_count 规则: 无进展增加,stale_count >= 2 必须 structural pivot; (c) structural pivot 至少改变算法族/数据表示/目标函数/evaluator/baseline framing 之一; (d) stale_count >= 4 写 control/override_requested.json 并升级给人; (e) 引用 research-state-contract.md。"
+  },
+  {
+    "id": 10,
+    "prompt": "我点 stop 以后不想再手动找后台 cron、hook、agent team member、Jetson pid。这个 skill 应该怎么保证清理干净?",
+    "expected": "Skill 应该: (a) stop-plan.sh 写 control/stop_requested.json; (b) 调用 cleanup-plan-resources.sh; (c) cleanup 读取 resource_manifest.json,按顺序清理 plan cancel、local/remote processes、crons、hooks、run-scoped launchd、ephemeral agents/sessions、locks; (d) 写 cleanup_report.md 和 cleanup_history.jsonl; (e) 如果有 residual,列出精确资源名,不能只说 manual cleanup may be required。"
+  },
+  {
+    "id": 11,
+    "prompt": "实际运行时 skill 创建了大量 agent team 成员,旧成员也不清理。它需要这么做吗?",
+    "expected": "Skill 应该: (a) 明确不需要大量永久成员; (b) 推荐少量稳定 role agents + fresh sessions; (c) 临时成员必须在 resource_manifest.json 标记 ephemeral=true,带 plan_id 和 ttl; (d) stop/complete 时 cleanup 归档或删除临时成员; (e) 避免每个 retry/direction/section 创建一个永久 team member。"
   }
 ]

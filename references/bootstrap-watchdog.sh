@@ -2,7 +2,7 @@
 # bootstrap-watchdog.sh — one-shot setup of per-topic watchdog.
 #
 # Usage:
-#   bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir>
+#   bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir> [--rescue]
 #
 # Arguments:
 #   topic-slug   kebab-case, e.g. "uav-coverage"
@@ -22,18 +22,20 @@
 #      how the user can manually ping it.
 #
 # Idempotent: re-running with the same arguments detects existing
-# resources and skips creation (with a log line). Conflict on
-# agent/cron name is resolved by appending a numeric suffix.
+# resources and skips creation (with a log line). Runtime resources are
+# registered in <plan-dir>/resource_manifest.json so stop/resume/cleanup
+# can manage the full lifecycle.
 
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
+if [[ $# -lt 3 ]]; then
   cat >&2 <<EOF
-Usage: $0 <topic-slug> <tier> <plan-dir>
+Usage: $0 <topic-slug> <tier> <plan-dir> [--rescue]
 
   topic-slug   kebab-case, e.g. "uav-coverage"
   tier         arxiv | conference | journal-q1
   plan-dir     absolute path to the plan output directory
+  --rescue     install launchd-managed L0/L1 rescue scripts
 EOF
   exit 2
 fi
@@ -41,9 +43,29 @@ fi
 TOPIC_SLUG="$1"
 TIER="$2"
 PLAN_DIR="$3"
+shift 3
+RESCUE="${RESCUE:-0}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rescue)
+      RESCUE=1
+      shift
+      ;;
+    --no-rescue)
+      RESCUE=0
+      shift
+      ;;
+    *)
+      printf '[bootstrap-watchdog][ERROR] unknown arg: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Resolve script directory so we can find sibling reference files.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Agent names are capped at 20 chars by the Mavis daemon (validation
 # error 40002). We append `-wd` (2 chars) to a topic-slug that is
@@ -61,8 +83,11 @@ CRON_NAME="${TOPIC_SLUG_TRUNC}-wd-liveness"
 HOOK_FILE_NAME="first-action-last-seen-${TOPIC_SLUG_TRUNC}"
 
 PROMPT_FILE="${PLAN_DIR}/watchdog-system-prompt.md"
-HOOK_FILE="${SCRIPT_DIR}/first-action-last-seen.json"
+HOOK_FILE="${SKILL_ROOT}/assets/first-action-last-seen-hook.md"
 WATCHDOG_DOC="${PLAN_DIR}/WATCHDOG.md"
+STATE_DIR="${PLAN_DIR}/state"
+CONTROL_DIR="${PLAN_DIR}/control"
+MANIFEST_FILE="${PLAN_DIR}/resource_manifest.json"
 
 log() { printf '[bootstrap-watchdog] %s\n' "$*" >&2; }
 die() { printf '[bootstrap-watchdog][ERROR] %s\n' "$*" >&2; exit 1; }
@@ -73,11 +98,14 @@ command -v mavis >/dev/null 2>&1 || die "mavis CLI not found in PATH"
 [[ -d "${PLAN_DIR}" ]] || die "plan-dir does not exist: ${PLAN_DIR}"
 [[ -f "${PROMPT_FILE}" ]] || die "watchdog prompt not found: ${PROMPT_FILE} (the skill must write it before running this script)"
 [[ -f "${HOOK_FILE}" ]] || die "hook file not found: ${HOOK_FILE}"
+mkdir -p "${STATE_DIR}" "${CONTROL_DIR}"
 
 case "${TIER}" in
   arxiv|conference|journal-q1) ;;
   *) die "tier must be one of: arxiv, conference, journal-q1 (got: ${TIER})" ;;
 esac
+
+NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ----- 2. Watchdog agent (must exist before cron) --------------------
 #
@@ -133,7 +161,7 @@ log "  agent: ${AGENT_NAME}"
 # shellcheck disable=SC2086  # CRON_NAME is intentionally positional
 mavis cron create "${AGENT_NAME}" "${CRON_NAME}" \
   --schedule "0 * * * *" \
-  --prompt "Hourly watchdog patrol for ${TOPIC_SLUG} (tier=${TIER}). Run the patrol procedure described in your system prompt. Read \${PLAN_DIR}/last_seen.jsonl and \${PLAN_DIR}/watchdog-log.md, emit findings." \
+  --prompt "Hourly watchdog patrol for ${TOPIC_SLUG} (tier=${TIER}). Run the patrol procedure described in your system prompt. Read ${PLAN_DIR}/last_seen.jsonl and ${PLAN_DIR}/watchdog-log.md, emit findings." \
   --session-mode new \
   --keep-sessions 5 \
   --timezone "Asia/Shanghai" || \
@@ -160,7 +188,95 @@ mavis hook create "${HOOK_FILE_NAME}.json" \
   --timeout 5000 || \
   log "  hook create failed (likely already exists) — skipping"
 
-# ----- 5. WATCHDOG.md --------------------------------------------------
+# ----- 5. Resource manifest + research state ---------------------------
+#
+# Register every runtime resource this script creates. stop/resume/L0
+# scripts use this manifest instead of forcing the user to hunt through
+# Mavis agent, cron, and hook lists manually.
+
+log "writing resource manifest: ${MANIFEST_FILE}"
+
+python3 - "${MANIFEST_FILE}" "${PLAN_DIR}" "${TOPIC_SLUG}" "${TIER}" "${AGENT_NAME}" "${CRON_NAME}" "${HOOK_FILE_NAME}.json" "${SCRIPT_DIR}/bootstrap-watchdog.sh" "${NOW_UTC}" "${RESCUE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path, plan_dir, topic_slug, tier, agent_name, cron_name, hook_name, bootstrap_script, now, rescue = sys.argv[1:]
+data = {
+    "schema_version": 1,
+    "plan_id": None,
+    "plan_dir": plan_dir,
+    "topic_slug": topic_slug,
+    "tier": tier,
+    "status": "running",
+    "created_at": now,
+    "updated_at": now,
+    "bootstrap_script": bootstrap_script,
+    "agents": [
+        {"name": agent_name, "role": "watchdog", "ephemeral": True}
+    ],
+    "sessions": [],
+    "crons": [
+        {"agent": agent_name, "name": cron_name, "schedule": "0 * * * *", "ephemeral": True}
+    ],
+    "hooks": [
+        {"name": hook_name, "event": "PostToolUse", "ephemeral": True}
+    ],
+    "launchd": [],
+    "local_processes": [],
+    "remote_processes": [],
+    "locks": []
+}
+if rescue == "1":
+    data["launchd"].append({
+        "label": "com.mavis.plan-rescue-daemon",
+        "plist": "$HOME/Library/LaunchAgents/com.mavis.plan-rescue-daemon.plist",
+        "run_scoped": False
+    })
+Path(manifest_path).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+
+if [[ ! -f "${STATE_DIR}/progress.json" ]]; then
+  cat > "${STATE_DIR}/progress.json" <<EOF
+{
+  "status": "running",
+  "tier": "${TIER}",
+  "iteration": 0,
+  "best_score": null,
+  "stale_count": 0,
+  "research_status": "not_started",
+  "last_direction": null,
+  "last_heartbeat_ts": null,
+  "last_stale_heartbeat_ts": null,
+  "updated_at": "${NOW_UTC}"
+}
+EOF
+fi
+
+if [[ ! -f "${STATE_DIR}/research_acceptance.md" ]]; then
+  cat > "${STATE_DIR}/research_acceptance.md" <<EOF
+FAIL
+
+Research acceptance has not been granted yet. Conference and journal
+writing tasks must not start until T6.2 changes this file to PASS or
+WAIVED_BY_HUMAN. Arxiv negative-result writing may use
+WAIVED_NEGATIVE_RESULT.
+EOF
+fi
+
+if [[ ! -f "${STATE_DIR}/directions_tried.json" ]]; then
+  printf '{"directions":[]}\n' > "${STATE_DIR}/directions_tried.json"
+fi
+
+touch "${STATE_DIR}/candidate_registry.jsonl"
+
+if [[ ! -f "${STATE_DIR}/scoreboard.tsv" ]]; then
+  printf 'iteration\tdirection\tprimary_metric\tbaseline_delta\tverdict\treason\n' > "${STATE_DIR}/scoreboard.tsv"
+fi
+
+touch "${PLAN_DIR}/last_seen.jsonl" "${PLAN_DIR}/watchdog-log.md"
+
+# ----- 6. WATCHDOG.md --------------------------------------------------
 #
 # Human-readable summary of the watchdog setup. The user reads this
 # to understand what is watching the pipeline and how to interact
@@ -233,33 +349,31 @@ file. It only emits recommendations.
 ## Mac sleep caveat
 
 If this Mac sleeps, the hourly cron does not fire. The watchdog
-will resume patrols on next wake. If you need hardened liveness,
-re-bootstrap with \`--mode=hardened\` (not yet implemented in v0.1).
+will resume patrols on next wake. For stronger liveness, bootstrap
+with \`--rescue\`; the launchd-managed L0 guard patrols every 60s
+and resumes on wake.
 EOF
 
-# ----- 6. Rescue Layer (v0.3.0+) — opt-in -----
+# ----- 7. Rescue Layer (v0.3.0+) — opt-in -----
 #
 # Installs launchd plist for plan-rescue-daemon.py (auto-judge paused plans
 # via local Codex gpt-5.5 + xhigh). Skipped unless --rescue flag is passed
-# OR \`~/.mavis/agents/mavis/scripts/plan-rescue-daemon.py\` already exists
+# OR \`$HOME/.mavis/agents/mavis/scripts/plan-rescue-daemon.py\` already exists
 # (idempotent opt-in).
 #
 # v0.3.1+ also copies skill-bundled scripts from references/scripts/ to
-# \`~/.mavis/agents/mavis/scripts/\` so the skill is self-contained — no
+# \`$HOME/.mavis/agents/mavis/scripts/\` so the skill is self-contained — no
 # external user-scope script dependencies required for fresh installs.
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"  # parent of references/
 
 if [[ "${RESCUE:-0}" == "1" ]] || [[ -f "${HOME}/.mavis/agents/mavis/scripts/plan-rescue-daemon.py" ]]; then
   # Step 6a: copy skill-bundled scripts to runtime path (idempotent)
   RUNTIME_SCRIPTS="${HOME}/.mavis/agents/mavis/scripts"
   mkdir -p "${RUNTIME_SCRIPTS}"
-  if [[ -d "${SKILL_ROOT}/scripts" ]]; then
-    log "syncing Rescue Layer scripts: ${SKILL_ROOT}/scripts → ${RUNTIME_SCRIPTS}"
-    for f in local_llm_judge.py plan-rescue-daemon.py pause-plan.sh resume-plan.sh stop-plan.sh; do
-      if [[ -f "${SKILL_ROOT}/scripts/${f}" ]]; then
-        cp "${SKILL_ROOT}/scripts/${f}" "${RUNTIME_SCRIPTS}/${f}"
+  if [[ -d "${SCRIPT_DIR}/scripts" ]]; then
+    log "syncing Rescue Layer scripts: ${SCRIPT_DIR}/scripts -> ${RUNTIME_SCRIPTS}"
+    for f in local_llm_judge.py plan-rescue-daemon.py plan-l0-guard.py cleanup-plan-resources.sh research-state-guard.py resolve-plan-dir.py register-plan-id.py pause-plan.sh resume-plan.sh stop-plan.sh; do
+      if [[ -f "${SCRIPT_DIR}/scripts/${f}" ]]; then
+        cp "${SCRIPT_DIR}/scripts/${f}" "${RUNTIME_SCRIPTS}/${f}"
         chmod +x "${RUNTIME_SCRIPTS}/${f}"
       fi
     done
@@ -268,18 +382,38 @@ if [[ "${RESCUE:-0}" == "1" ]] || [[ -f "${HOME}/.mavis/agents/mavis/scripts/pla
   # Step 6b: copy launchd plist (prefer skill-bundled over user-scope copy)
   PLIST_DST="${HOME}/Library/LaunchAgents/com.mavis.plan-rescue-daemon.plist"
   PLIST_SRC=""
-  if [[ -f "${SKILL_ROOT}/launchd/com.mavis.plan-rescue-daemon.plist" ]]; then
-    PLIST_SRC="${SKILL_ROOT}/launchd/com.mavis.plan-rescue-daemon.plist"
+  if [[ -f "${SCRIPT_DIR}/launchd/com.mavis.plan-rescue-daemon.plist" ]]; then
+    PLIST_SRC="${SCRIPT_DIR}/launchd/com.mavis.plan-rescue-daemon.plist"
   elif [[ -f "${HOME}/.mavis/agents/mavis/scripts/com.mavis.plan-rescue-daemon.plist" ]]; then
     PLIST_SRC="${HOME}/.mavis/agents/mavis/scripts/com.mavis.plan-rescue-daemon.plist"
   fi
   if [[ -n "${PLIST_SRC}" ]]; then
     log "installing Rescue Layer launchd plist from ${PLIST_SRC}"
-    cp "${PLIST_SRC}" "${PLIST_DST}"
+    mkdir -p "$(dirname "${PLIST_DST}")"
+    LOG_DIR="${HOME}/.mavis/agents/mavis/logs"
+    mkdir -p "${LOG_DIR}"
+    python3 - "${PLIST_SRC}" "${PLIST_DST}" "${HOME}" "${RUNTIME_SCRIPTS}" "${LOG_DIR}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+src, dst, home, runtime_scripts, log_dir = sys.argv[1:]
+path_value = os.environ.get("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+text = Path(src).read_text()
+replacements = {
+    "{{HOME}}": home,
+    "{{RUNTIME_SCRIPTS}}": runtime_scripts,
+    "{{LOG_DIR}}": log_dir,
+    "{{PATH}}": path_value,
+}
+for key, value in replacements.items():
+    text = text.replace(key, value)
+Path(dst).write_text(text)
+PY
     launchctl load -w "${PLIST_DST}" 2>/dev/null || log "  launchctl load failed (may already be loaded)"
     log "  Rescue daemon will patrol every 60s (sleep-resilient)"
   else
-    log "  no launchd plist found in ${SKILL_ROOT}/launchd/ or ${HOME}/.mavis/agents/mavis/scripts/ — skipping"
+    log "  no launchd plist found in ${SCRIPT_DIR}/launchd/ or ${HOME}/.mavis/agents/mavis/scripts/ — skipping"
   fi
 else
   log "Rescue Layer not requested (pass --rescue to enable)"

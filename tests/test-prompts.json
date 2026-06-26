@@ -2,7 +2,7 @@
   {
     "id": 1,
     "name": "happy_path_conference_cvpr",
-    "prompt": "帮我把这个课题写成论文：想研究风场干扰下无人机集群的能效覆盖路径规划,目标 CVPR 2027。手头有 3 篇 PDF,放在 ~/Downloads/uav-refs/。",
+    "prompt": "帮我把这个课题写成论文：想研究风场干扰下无人机集群的能效覆盖路径规划,目标 CVPR 2027。手头有 3 篇 PDF,放在 <materials-dir>/uav-refs/。",
     "expected": "skill 触发 → 解析 3 段(课题=无人机集群路径规划;目标=CVPR 2027;素材=3 PDF) → Channel A 命中 CVPR → tier=conference → 显式 tier confirmation → plan preview(8 task 图 + watchdog 配置) → 等用户说 go",
     "covers": ["dim1 frontmatter触发词", "dim2 工作流", "dim4 检查点(tier confirm + plan preview go)", "dim5 具体性", "dim6 references引用"]
   },
@@ -19,5 +19,26 @@
     "prompt": "[测试环境]PATH=/usr/bin:/bin bash bootstrap-watchdog.sh uav-coverage conference /tmp/plan",
     "expected": "脚本立即 exit 1,stderr 输出 '[bootstrap-watchdog][ERROR] mavis CLI not found in PATH'(对应 SKILL.md Failure modes 第 1 条 + 脚本 FM-1 断言)",
     "covers": ["dim3 失败模式编码", "dim9 反例与黑名单(No mavis CLI 是明确的 danger zone)"]
+  },
+  {
+    "id": 4,
+    "name": "research_gate_blocks_writing",
+    "prompt": "T6 有结果但没超过 baseline,writer 想先写论文并诚实承认贡献不足。",
+    "expected": "conference/journal tier 必须阻止 T7,要求 state/research_acceptance.md 为 PASS 或 WAIVED_BY_HUMAN; 否则进入 T6.1/T6.2/T6.3 research loop",
+    "covers": ["dim2 工作流", "dim3 失败模式编码", "dim4 检查点", "dim9 反例(T6 done 直接写)"]
+  },
+  {
+    "id": 5,
+    "name": "l0_stale_pivot",
+    "prompt": "last_seen 已经 stale,同一个方向重复尝试两轮没有进展。",
+    "expected": "plan-l0-guard.py 增加 stale_count; stale_count >= 2 写 control/pivot_requested.json 并要求 structural pivot; stale_count >= 4 写 override_requested.json 升级给人",
+    "covers": ["dim3 失败模式编码", "dim7 架构", "dim8 测试表现"]
+  },
+  {
+    "id": 6,
+    "name": "cleanup_manifest",
+    "prompt": "用户执行 /autoresearch-paper stop 后检查是否还有 cron/hook/临时 agent/后台 pid。",
+    "expected": "stop-plan.sh 调用 cleanup-plan-resources.sh; cleanup 读取 resource_manifest.json,写 cleanup_report.md,并报告 residual resources; 不允许只提示手动清理",
+    "covers": ["dim3 失败模式编码", "dim4 检查点", "dim7 架构", "dim9 反例"]
   }
 ]

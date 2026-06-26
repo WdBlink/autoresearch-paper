@@ -6,12 +6,25 @@ description: Minimal 4-task plan.yaml template for the arxiv tier — literature
 # Plan Template — `arxiv` Tier
 
 Minimal 4-task plan. Used when the user wants a working paper, a tech
-report, a preprint, or explicitly opts out of a venue gate.
+report, a preprint, or explicitly opts out of a venue gate. Unlike
+conference/journal tiers, arxiv may proceed with a clean negative result,
+but the waiver must be explicit in `state/research_acceptance.md`.
+
+## Execution Procedure
+
+```
+render_arxiv_plan(brief, materials, plan_dir) -> plan_yaml
+
+create literature, method+experiment, research-decision, writing/package tasks
+load prompt bodies from ../assets/task-prompt-snippets.md
+initialize research_acceptance.md as FAIL
+allow writing only after PASS or WAIVED_NEGATIVE_RESULT
+```
 
 ## Plan shape
 
 ```
-[literature] ──▶ [method+expt fused] ──▶ [write-iter1+pkg fused]
+[literature] ──▶ [method+expt fused] ──▶ [research-decision] ──▶ [write-iter1+pkg fused]
                        │
                        └─▶ (optional) ablation
 ```
@@ -24,7 +37,7 @@ Total wall-clock target: 1–2 days.
 
 - **depends_on**: []
 - **agent**: literature-agent
-- **prompt_snippet**: see `task-prompt-snippets.md#T1`
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T1`
 - **inputs**: paragraph ① (topic), paragraph ③ (materials)
 - **outputs**:
   - `<plan-dir>/out/lit-review.md` — 10–25 papers, each with 1-paragraph
@@ -39,7 +52,7 @@ Total wall-clock target: 1–2 days.
 
 - **depends_on**: [T1]
 - **agent**: method-expt-agent
-- **prompt_snippet**: see `task-prompt-snippets.md#T2`
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T2`
 - **inputs**: T1 outputs, paragraph ①
 - **outputs**:
   - `<plan-dir>/out/method.md` — proposed method, 1–2 pages, with at
@@ -52,11 +65,27 @@ Total wall-clock target: 1–2 days.
 - **gate**: results table must be non-empty. The skill does not enforce
   statistical significance here — that is for the conference tier.
 
-### T3 — write-and-package
+### T2.5 — research-decision
 
 - **depends_on**: [T2]
+- **agent**: verifier-agent
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.2-research-decision`
+- **outputs**:
+  - `<plan-dir>/state/research_acceptance.md`
+  - `<plan-dir>/state/progress.json`
+  - `<plan-dir>/state/scoreboard.tsv`
+- **gate**: write one of:
+  - `PASS` if the result supports a clear positive claim.
+  - `WAIVED_NEGATIVE_RESULT` if the plan is intentionally writing an
+    honest negative-result or reproducibility preprint.
+  - `FAIL` if there is no interpretable result table.
+
+### T3 — write-and-package
+
+- **depends_on**: [T2.5]
 - **agent**: writer-agent
-- **prompt_snippet**: see `task-prompt-snippets.md#T3-arxiv`
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T7-write-iter1`
+  and `../assets/task-prompt-snippets.md#T10-pkg`
 - **inputs**: all T1 + T2 outputs
 - **outputs**:
   - `<plan-dir>/out/paper.tex` — single-column or two-column LaTeX.
@@ -65,12 +94,14 @@ Total wall-clock target: 1–2 days.
   - `<plan-dir>/out/reviewer-readiness.md` — `reviewer-readiness-rubric.md`
     scoring, 6 dimensions, each 0–10. Tier `arxiv` accepts ≥ 5 per
     dimension; nothing lower.
+- **gate**: `state/research_acceptance.md` must contain `PASS` or
+  `WAIVED_NEGATIVE_RESULT`.
 
 ### T4 — readiness-self-check
 
 - **depends_on**: [T3]
 - **agent**: verifier-agent
-- **prompt_snippet**: see `task-prompt-snippets.md#T4`
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T11-readiness`
 - **inputs**: T3 outputs
 - **outputs**:
   - `<plan-dir>/out/next-steps.md` — what a human should still do

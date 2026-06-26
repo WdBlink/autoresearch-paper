@@ -23,7 +23,7 @@ intentionally conservative — when in doubt, prefer nudge over cancel, prefer
 accept over reject (verifier might be strict).
 
 Run mode:
-  - Default: scan ~/.mavis/plans/*/state.json for status in
+  - Default: scan $HOME/.mavis/plans/*/state.json for status in
     {running, paused}
   - --plan-id <id>: only patrol one plan (debug)
   - --dry-run: show actions without applying
@@ -45,9 +45,12 @@ from typing import Any
 
 MAVIS_PLANS_DIR = Path.home() / ".mavis" / "plans"
 LOCAL_LLM_JUDGE = Path.home() / ".mavis" / "agents" / "mavis" / "scripts" / "local_llm_judge.py"
+L0_GUARD = Path.home() / ".mavis" / "agents" / "mavis" / "scripts" / "plan-l0-guard.py"
+CLEANUP_PLAN_RESOURCES = Path.home() / ".mavis" / "agents" / "mavis" / "scripts" / "cleanup-plan-resources.sh"
 RESCUE_HISTORY = "rescue_history.jsonl"
 PAUSE_REQUEST = "pause_requested.json"
 STOP_REQUEST = "stop_requested.json"
+RESUME_SIGNAL = "resume_signal.json"
 DISABLE_FLAG = "local_llm_disabled"
 
 # Thresholds (seconds)
@@ -64,41 +67,71 @@ def log(msg: str) -> None:
     print(f"[rescue-daemon {now_iso()}] {msg}", flush=True)
 
 
+def plan_roots() -> list[Path]:
+    roots = [MAVIS_PLANS_DIR]
+    for raw in os.environ.get("AUTORESEARCH_PLAN_ROOTS", "").split(os.pathsep):
+        if raw:
+            roots.append(Path(raw).expanduser())
+    roots.append(Path.home() / ".mavis" / "scratchpads")
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except FileNotFoundError:
+            resolved = root
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(root)
+    return out
+
+
 def find_active_plans() -> list[Path]:
     """Return plan directories with active state.json."""
-    if not MAVIS_PLANS_DIR.exists():
-        return []
     plans = []
-    for d in MAVIS_PLANS_DIR.iterdir():
-        if not d.is_dir():
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for root in plan_roots():
+        if not root.exists():
             continue
-        state_json = d / "state.json"
-        if not state_json.exists():
-            continue
+        if root == MAVIS_PLANS_DIR:
+            candidates.extend([d for d in root.iterdir() if d.is_dir()])
+        else:
+            candidates.extend([p.parent for p in root.rglob("resource_manifest.json")])
+    for d in candidates:
         try:
-            data = json.loads(state_json.read_text())
-            state = data.get("state", data)
-            status = state.get("status")
-            if status in ("running", "paused"):
-                plans.append(d)
-        except (json.JSONDecodeError, KeyError):
+            resolved = d.resolve()
+        except FileNotFoundError:
             continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        state = read_state(d)
+        status = state.get("status")
+        if status in ("running", "paused"):
+            plans.append(d)
     return plans
 
 
 def read_state(plan_dir: Path) -> dict[str, Any]:
     state_json = plan_dir / "state.json"
-    if not state_json.exists():
-        return {}
+    if state_json.exists():
+        try:
+            data = json.loads(state_json.read_text())
+            return data.get("state", data)
+        except json.JSONDecodeError:
+            pass
+    progress = plan_dir / "state" / "progress.json"
     try:
-        data = json.loads(state_json.read_text())
-        return data.get("state", data)
-    except json.JSONDecodeError:
+        data = json.loads(progress.read_text())
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
 def write_rescue_log(plan_dir: Path, entry: dict[str, Any]) -> None:
-    history_file = plan_dir / RESCUE_HISTORY
+    history_file = plan_dir / "state" / RESCUE_HISTORY
+    history_file.parent.mkdir(parents=True, exist_ok=True)
     with history_file.open("a") as f:
         f.write(json.dumps(entry) + "\n")
 
@@ -108,6 +141,55 @@ def append_watchdog_log(plan_dir: Path, severity: str, kind: str, msg: str) -> N
     line = f"[{now_iso()}] {severity} {kind}\nfinding: {msg}\nrecommendation: see rescue_history\n\n"
     with log_file.open("a") as f:
         f.write(line)
+
+
+def signal_paths(plan_dir: Path, name: str) -> list[Path]:
+    """Return compatibility + canonical locations for a control signal."""
+    return [
+        plan_dir / "control" / name,
+        plan_dir / "state" / name,
+        plan_dir / name,
+    ]
+
+
+def has_signal(plan_dir: Path, name: str) -> bool:
+    return any(p.exists() for p in signal_paths(plan_dir, name))
+
+
+def remove_signal(plan_dir: Path, name: str) -> None:
+    for path in signal_paths(plan_dir, name):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def call_l0_guard(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
+    """Delegate running-plan liveness/resource checks to the L0 guard."""
+    if not L0_GUARD.exists():
+        return {"action": "l0_missing", "reason": f"{L0_GUARD} not found"}
+    cmd = [
+        "python3",
+        str(L0_GUARD),
+        "--plan-dir",
+        str(plan_dir),
+        "--once",
+        "--repair-resources",
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return {"action": "l0_timeout", "reason": "plan-l0-guard timed out"}
+    if proc.returncode != 0:
+        return {"action": "l0_failed", "reason": proc.stderr[:300]}
+    for line in reversed(proc.stdout.splitlines()):
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return {"action": "l0_unparsed", "reason": proc.stdout[:300]}
 
 
 def call_local_llm_judge(prompt: str, system: str = "") -> tuple[int, dict[str, Any] | str]:
@@ -252,24 +334,66 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
     cycle = state.get("cycle")
     phase = state.get("phase")
 
-    # Honor user pause/stop requests
-    if (plan_dir / PAUSE_REQUEST).exists():
+    # Honor user pause/resume/stop requests. New scripts write under
+    # control/, but root/state paths remain supported for older runs.
+    if has_signal(plan_dir, RESUME_SIGNAL):
+        if dry_run:
+            return {"plan_id": plan_id, "action": "dry_run_resume",
+                    "reason": "resume_signal.json present"}
+        proc = subprocess.run(["mavis", "team", "plan", "resume", plan_id],
+                              capture_output=True, text=True, timeout=60)
+        remove_signal(plan_dir, RESUME_SIGNAL)
+        remove_signal(plan_dir, PAUSE_REQUEST)
+        action = "resumed" if proc.returncode == 0 else f"resume_failed: {proc.stderr[:200]}"
+        entry = {"ts": now_iso(), "plan_id": plan_id, "action": action,
+                 "reason": "resume_signal.json present"}
+        write_rescue_log(plan_dir, entry)
+        return entry
+
+    if has_signal(plan_dir, PAUSE_REQUEST):
         return {"plan_id": plan_id, "action": "pause_respected",
                 "reason": "pause_requested.json present; skipping auto-judge"}
-    if (plan_dir / STOP_REQUEST).exists():
-        action, cmd = apply_decision(plan_id, {"verdict": "cancel"},
-                                     "user requested stop via stop_requested.json")
-        return {"plan_id": plan_id, "action": action, "command": cmd,
-                "reason": "stop_requested.json present"}
 
-    # Honor local LLM disable flag
-    if (plan_dir / DISABLE_FLAG).exists():
-        return {"plan_id": plan_id, "action": "skipped",
-                "reason": f"{DISABLE_FLAG} present; local LLM disabled for this plan"}
+    if has_signal(plan_dir, STOP_REQUEST):
+        if dry_run:
+            action, cmd = "dry_run_cancel", f"mavis team plan cancel {plan_id}"
+        else:
+            action, cmd = apply_decision(plan_id, {"verdict": "cancel"},
+                                         "user requested stop via stop_requested.json")
+        cleanup_action = "cleanup_script_missing"
+        cleanup_cmd = ""
+        if CLEANUP_PLAN_RESOURCES.exists():
+            cleanup_cmd_list = [
+                str(CLEANUP_PLAN_RESOURCES),
+                str(plan_dir),
+                "--reason",
+                "rescue daemon observed stop_requested.json",
+            ]
+            if dry_run:
+                cleanup_action = "dry_run_cleanup"
+                cleanup_cmd = " ".join(cleanup_cmd_list)
+            else:
+                proc = subprocess.run(cleanup_cmd_list, capture_output=True, text=True, timeout=180)
+                cleanup_action = "cleanup_ok" if proc.returncode == 0 else f"cleanup_failed: {proc.stderr[:200]}"
+                cleanup_cmd = " ".join(cleanup_cmd_list)
+        entry = {"plan_id": plan_id, "action": action, "command": cmd,
+                 "cleanup_action": cleanup_action, "cleanup_command": cleanup_cmd,
+                 "reason": "stop_requested.json present"}
+        if not dry_run:
+            write_rescue_log(plan_dir, {"ts": now_iso(), **entry})
+        return entry
 
     if status != "paused":
-        return {"plan_id": plan_id, "action": "ok",
-                "reason": f"status={status} (not paused)"}
+        l0 = call_l0_guard(plan_dir, dry_run=dry_run)
+        return {"plan_id": plan_id, "action": f"l0_{l0.get('action', 'checked')}",
+                "reason": f"status={status}; delegated non-paused patrol to L0",
+                "l0": l0}
+
+    # Honor local LLM disable flag only for paused auto-judge. L0 liveness
+    # still runs above even when local LLM judging is disabled.
+    if has_signal(plan_dir, DISABLE_FLAG):
+        return {"plan_id": plan_id, "action": "skipped",
+                "reason": f"{DISABLE_FLAG} present; local LLM disabled for this plan"}
 
     # Plan is paused. Find pause age.
     # state.cycle_started_at is in milliseconds

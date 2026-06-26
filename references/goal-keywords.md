@@ -9,6 +9,18 @@ Single source of truth for the keyword table that maps user-supplied target
 venues to tiers. `SKILL.md` and `tier-decision-tree.md` both reference this
 file. **Update here, not in SKILL.md.**
 
+## Execution Procedure
+
+```
+detect_tier_by_keyword(target_venue) -> tier_hit_or_none
+
+normalize target_venue
+scan arxiv, conference, journal-q1 keyword groups
+if multiple groups hit -> choose the highest-priority final target
+if only reject-list terms hit -> return reject_reason
+if no terms hit -> return none
+```
+
 ## How this is used
 
 The skill scans paragraph ② ("目标") of the user brief against the

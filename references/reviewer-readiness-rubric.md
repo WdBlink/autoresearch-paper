@@ -9,6 +9,17 @@ Six-dimension self-check used by T11-readiness. Each dimension scored
 0–10, with explicit descriptors for 0/2/5/7/9/10. The skill uses the
 per-dimension tier thresholds in the plan templates.
 
+## Execution Procedure
+
+```
+score_reviewer_readiness(paper, artifacts, tier) -> reviewer_readiness_md
+
+score novelty, evidence, reproducibility, clarity, figures, ethics
+cite paper sections and artifact evidence for every score
+apply tier thresholds
+for harness/wrapper papers, check honest framing before assigning clarity/ethics scores
+```
+
 ## How to use this rubric
 
 The verifier agent (T11-readiness) reads the rubric, then walks through

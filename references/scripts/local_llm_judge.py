@@ -7,7 +7,7 @@ plan-rescue daemon. Designed to be called from cron / launchd / rescue
 daemon when plan engine pauses, verifier rejects, or owner-decision is
 pending.
 
-Defaults to gpt-5.5 + xhigh reasoning (matches user's ~/.codex/config.toml).
+Defaults to gpt-5.5 + xhigh reasoning (matches user's $HOME/.codex/config.toml).
 Falls back gracefully on ChatGPT-account restrictions.
 
 Exit codes:

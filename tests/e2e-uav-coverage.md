@@ -24,7 +24,7 @@ research is synthetic.
 - Mavis CLI installed and authenticated (`mavis session list` returns
   at least one entry).
 - Mavis GUI running (MiniMax Code.app) so the watchdog cron can fire.
-- A scratchpad directory: `~/.mavis/scratchpads/<root>/autoresearch/`.
+- A scratchpad directory: `<mavis-scratchpad-root>/autoresearch/`.
 
 ## Steps and assertions
 
@@ -46,13 +46,13 @@ paragraphs first.
 User provides all three in one message:
 
 > "想研究风场干扰下无人机集群的能效覆盖路径规划,目标 CVPR 2027。
-> 手头有 3 篇 PDF,放在 ~/Downloads/uav-refs/。"
+> 手头有 3 篇 PDF,放在 <materials-dir>/uav-refs/。"
 
 **Assert**:
 
 - Skill extracts topic from sentence 1.
 - Skill extracts "CVPR 2027" from sentence 2.
-- Skill extracts "~/Downloads/uav-refs/" from sentence 3.
+- Skill extracts "<materials-dir>/uav-refs/" from sentence 3.
 - Tier detection (Channel A): "CVPR" hits the conference keyword list.
   Returns `tier = conference`.
 - Skill shows the tier confirmation:
@@ -73,15 +73,19 @@ User replies "yes".
 
 ### Step 4 — Plan preview
 
-Skill generates `plan.yaml` (8 tasks + optional rebuttal) and shows:
+Skill generates `plan.yaml` (research-first graph + optional rebuttal) and shows:
 
 ```
+T0 evaluator-freeze       [evaluator-agent]
 T1 literature-review        [literature-agent]
 T2 gap-analysis             [gap-agent]
 T3 method-design            [method-agent]
 T4 implement                [implement-agent]
 T5 experiment-plan          [expt-plan-agent]
 T6 experiment               [expt-run-agent]
+T6.1 evaluate-candidate     [verifier-agent]
+T6.2 research-decision      [orchestrator-agent]
+T6.3 pivot-or-retry         [method-agent, only on FAIL]
 T7 write-iter1              [writer-agent]
 T8 write-iter2              [writer-agent]
 T9 ablation                 [ablation-agent]
@@ -89,10 +93,13 @@ T10 package                 [pkg-agent]
 T11 reviewer-readiness      [verifier-agent]
 T12 rebuttal-preview        [rebuttal-agent, opt-in]
 
-Dependencies: T1 → T2 → T3 → T4 → T5 → T6 → {T7 → T8 → T10} → T11
-                                                       ↘ T9 ↗
+Dependencies: T0 → T1 → T2 → T3 → T4/T5 → T6 → T6.1 → T6.2
+                                      PASS/WAIVE ↘ T7 → T8 → T10 → T11
+                                      FAIL       ↘ T6.3 → T3/T4/T5/T6
 
 Watchdog: uav-coverage-wd (hourly cron + PostToolUse hook)
+L0: plan-l0-guard.py (state/progress.json + resource_manifest.json)
+Research gate: state/research_acceptance.md required before T7
 
 Confirm to start? [yes / modify]
 ```
@@ -104,7 +111,7 @@ Confirm to start? [yes / modify]
 User replies "yes". Skill calls:
 
 ```
-mavis team plan run --plan ~/.mavis/scratchpads/.../plan.yaml
+mavis team plan run --plan <mavis-scratchpad-root>/.../plan.yaml
 ```
 
 **Assert**:
@@ -113,11 +120,15 @@ mavis team plan run --plan ~/.mavis/scratchpads/.../plan.yaml
 - `bootstrap-watchdog.sh` invoked with:
   - `topic-slug = uav-coverage`
   - `tier = conference`
-  - `plan-dir = ~/.mavis/scratchpads/.../`
+  - `plan-dir = <mavis-scratchpad-root>/.../`
 - After bootstrap:
   - `mavis cron list | grep uav-coverage-wd-liveness` shows the cron.
   - `mavis hook list | grep first-action-last-seen-uav-coverage` shows the hook.
   - `WATCHDOG.md` exists in plan-dir.
+  - `resource_manifest.json` exists and lists the watchdog agent, cron,
+    hook, and cleanup-owned resources.
+  - `state/progress.json` exists with `stale_count = 0`.
+  - `state/research_acceptance.md` exists and is not `PASS` before T6.2.
 
 ### Step 6 — Patrol tick (simulated)
 
@@ -139,7 +150,7 @@ For the e2e test, force the plan to complete by writing synthetic
 outputs to all expected paths:
 
 ```
-~/.mavis/scratchpads/<root>/autoresearch/uav-coverage/out/
+<mavis-scratchpad-root>/autoresearch/uav-coverage/out/
 ├── lit-review.md
 ├── lit-taxonomy.md
 ├── gap-statements.md
@@ -153,6 +164,7 @@ outputs to all expected paths:
 ├── results-raw/seed-002.json
 ├── results-raw/seed-003.json
 ├── significance.md
+├── candidate-evaluation.md
 ├── paper-iter1.tex
 ├── paper-iter2.tex
 ├── change-log.md
@@ -168,11 +180,20 @@ outputs to all expected paths:
 ├── reviewer-readiness.md
 ├── next-steps.md
 └── watchdog-log.md
+
+<mavis-scratchpad-root>/autoresearch/uav-coverage/state/
+├── research_acceptance.md
+├── progress.json
+├── directions_tried.json
+├── candidate_registry.jsonl
+└── scoreboard.tsv
 ```
 
 **Assert**:
 
-- All 27 expected files present.
+- All expected output + state files present.
+- `state/research_acceptance.md` contains `PASS` before `paper-iter1.tex`
+  is accepted for conference tier.
 - `reviewer-readiness.md` has scores for all 6 dimensions.
 - At least one dimension meets the conference threshold (≥ 7 for
   novelty / evidence / clarity; ≥ 6 elsewhere).
@@ -191,8 +212,9 @@ Top 3 items in next-steps.md:
 2. <item 2>
 3. <item 3>
 
-paper.tex: ~/.mavis/scratchpads/<root>/autoresearch/uav-coverage/out/paper.tex
-reviewer-readiness.md: ~/.mavis/scratchpads/<root>/autoresearch/uav-coverage/out/reviewer-readiness.md
+paper.tex: <mavis-scratchpad-root>/autoresearch/uav-coverage/out/paper.tex
+reviewer-readiness.md: <mavis-scratchpad-root>/autoresearch/uav-coverage/out/reviewer-readiness.md
+cleanup_report.md: <mavis-scratchpad-root>/autoresearch/uav-coverage/cleanup_report.md
 ```
 
 **Assert**:
@@ -200,6 +222,8 @@ reviewer-readiness.md: ~/.mavis/scratchpads/<root>/autoresearch/uav-coverage/out
 - Wall-clock is reported (synthetic: ~1 minute).
 - Steer / abort counts reported (synthetic: 0).
 - next-steps.md items listed.
+- cleanup report exists or the skill states that runtime cleanup is still
+  pending with exact residual resources.
 
 ## Failure-mode sub-tests
 
@@ -250,6 +274,44 @@ Run bootstrap twice with same args.
 **Assert**: second run logs "cron create failed (likely already
 exists) — skipping" and does not error out.
 
+### FM-7 — T7 blocked before research acceptance
+
+Create synthetic T6 outputs but leave `state/research_acceptance.md` as
+`FAIL`.
+
+**Assert**: T7 does not write or accept `paper-iter1.tex`; the skill
+routes to T6.1/T6.2 or T6.3.
+
+### FM-8 — L0 stale_count pivot
+
+Write a stale `last_seen.jsonl` timestamp and run:
+
+```
+python3 references/scripts/plan-l0-guard.py --plan-dir <plan-dir> --once --stale-sec 1
+```
+
+Repeat with a new stale heartbeat until `stale_count >= 2`.
+
+**Assert**: `state/progress.json` has
+`research_status = "pivot_required"` and `control/pivot_requested.json`
+exists.
+
+### FM-9 — Stop performs cleanup
+
+Run:
+
+```
+references/scripts/stop-plan.sh <plan-id> --reason e2e-cleanup
+```
+
+**Assert**:
+
+- `control/stop_requested.json` exists.
+- `cleanup_report.md` exists.
+- `resource_manifest.json.status` is `stopped_cleaned`,
+  `stopped_with_residuals`, or `cleanup_dry_run`.
+- If residuals remain, the skill reports their exact names.
+
 ## Cleanup
 
 After the e2e run:
@@ -257,7 +319,8 @@ After the e2e run:
 ```
 mavis cron delete uav-coverage-wd uav-coverage-wd-liveness
 mavis hook delete first-action-last-seen-uav-coverage.json
-rm -rf ~/.mavis/scratchpads/<root>/autoresearch/uav-coverage
+references/scripts/cleanup-plan-resources.sh <mavis-scratchpad-root>/autoresearch/uav-coverage --reason e2e-cleanup
+rm -rf <mavis-scratchpad-root>/autoresearch/uav-coverage
 ```
 
 The e2e test must leave the system in its pre-test state.

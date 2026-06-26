@@ -1,145 +1,216 @@
-# Autoresearch Paper
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset=".github/logo-light.svg">
+    <img alt="Autoresearch Paper" src=".github/logo-light.svg" width="440">
+  </picture>
+</div>
 
-![Version](https://img.shields.io/badge/version-0.2.0-CC785C)
+<div align="center">
 
-Turn a paragraph-level brief — topic, target venue, reference materials —
-into a publication-grade academic paper through a fully orchestrated Mavis
-agent team, an evidence-anchored plan, and a per-topic watchdog. The user
-never writes `plan.yaml`, never schedules a cron, and never registers a
-hook — the skill does all of that.
+[![License: MIT][license-shield]][license-url]
+[![Version][version-shield]][repo-url]
+[![Agent Skills][skills-shield]][skills-url]
 
-Part of WdBlink LLM Skills.
+</div>
 
-## What it does
+Autoresearch Paper helps AI researchers keep long-running paper projects
+honest: it makes agents prove the algorithm or experiment works before they
+start writing.
+
+## Why
+
+Long-running AI research runs often fail in the same way: agents explore for
+hours, lose the thread, retry the same weak direction, then write an honest
+paper about a near-zero contribution. Autoresearch Paper makes that failure
+visible and recoverable with evaluator freeze, research acceptance gates,
+heartbeat watchdogs, and manifest-driven cleanup.
+
+## Features
+
+- Blocks writing until the research gate passes or the human owner waives it.
+- Tracks failed directions so agents pivot structurally instead of repeating
+  the same dead end.
+- Runs L0/L1/L2 heartbeat checks across launchd, Mavis cron, and per-task
+  `last_seen.jsonl`.
+- Keeps pause, resume, stop, and cleanup state in the plan directory.
+- Cleans ephemeral agents, crons, hooks, locks, and background processes from
+  a `resource_manifest.json`.
+- Verifies paper packages with artifact-only reviewer checks, not producer
+  self-claims.
+
+## Quick Start
+
+```text
+/autoresearch-paper — turn a research brief into a gated paper pipeline.
+/autoresearch-paper status — inspect a running plan and its watchdog state.
+/autoresearch-paper stop — cancel when possible and clean runtime resources.
+```
+
+## What It Does
 
 ```
-you: 3 paragraphs (topic + target venue + materials)
-skill: tier → plan.yaml → agents → cron + hooks → /mavis-team plan run
-you: paper.tex + reviewer-readiness.md (and a watchdog that never sleeps)
+brief -> tier -> T0 evaluator -> method/experiment loop -> research gate -> paper
+                         |
+                         v
+              L0/L1/L2 heartbeat + manifest cleanup
 ```
 
-Three tiers, with a 2-channel fallback for tier detection:
+The skill is for multi-hour or multi-day research runs, not single-pass
+drafting. For `conference` and `journal-q1` tiers, writing is blocked until
+`state/research_acceptance.md` records `PASS` or `WAIVED_BY_HUMAN`.
 
-| Tier | When | Tasks | Wall-clock |
-|---|---|---|---|
-| `arxiv` | preprint, working paper, no venue gate | 4 | 1–2 days |
-| `conference` | CVPR / NeurIPS / ICRA / IROS / ACL / ... | 8 (+ optional rebuttal) | 1–2 weeks |
-| `journal-q1` | SCI Q1 / Nature 子刊 / T-PAMI / T-RO | 8 (deeper experiments) | 3–7 days |
+## When To Use
+
+Use this when you have a research idea, a target venue, and enough material
+or infrastructure to define an evaluator. Do not use it for one-off drafts,
+blog posts, slide decks, or camera-ready submission automation.
 
 ## Install
 
-### Mavis / MiniMax Code (recommended for this skill)
+Primary install path:
 
 ```bash
-mkdir -p ~/.mavis/skills/autoresearch-paper
-rsync -a skills/autoresearch-paper/ ~/.mavis/skills/autoresearch-paper/
+npx skills add WdBlink/autoresearch-paper -g
 ```
 
-After install, restart the Mavis daemon or reload skills; then
-`/autoresearch-paper` is invokable from any MiniMax Code session.
-
-### Codex / Claude Code (works, but loses Mavis-only features)
+Then verify local runtime dependencies from the installed skill directory:
 
 ```bash
-mkdir -p ~/.codex/skills/autoresearch-paper
-rsync -a skills/autoresearch-paper/ ~/.codex/skills/autoresearch-paper/
-
-mkdir -p ~/.claude/skills/autoresearch-paper
-rsync -a skills/autoresearch-paper/ ~/.claude/skills/autoresearch-paper/
+scripts/setup.sh
 ```
 
-In Codex/Claude Code, the skill runs the agent team and the plan
-generation, but the watchdog cron and `mavis`-specific hooks degrade
-to "best effort" — the plan still completes, but the user has to
-self-patrol because the cron will not fire.
+For a project-level install, omit `-g`:
 
-### Requires
+```bash
+npx skills add WdBlink/autoresearch-paper
+```
 
-- `mavis` CLI on PATH (for full watchdog functionality)
-- A workspace with at least 2 GB free (for plan artifacts and
-  last_seen.jsonl growth)
-- Mavis GUI / MiniMax Code.app running (for the watchdog cron to fire)
+### Mavis Runtime Registration
+
+This skill can be invoked from Agent Skills-compatible runtimes after `npx`
+install. Full autonomous execution also requires the Mavis runtime because
+the plan engine, watchdog agent, cron, and hook APIs are Mavis-specific.
+
+If your Mavis build does not scan Agent Skills directories, register the
+installed source directory into your Mavis skill root as a symlink or copy.
+Keep one source of truth; avoid maintaining a stale manual copy.
+
+## Dependencies
+
+`scripts/setup.sh` checks the runtime surface and blocks with repair
+instructions if anything required is missing.
+
+| Dependency | Why it is needed |
+|---|---|
+| Mavis CLI | team plans, agents, cron, hooks |
+| Python 3 | bundled guards, cleanup, tests |
+| Codex CLI | optional local-LLM rescue judge |
+| Node.js / npx | GitHub skill installation |
+| jq | JSON validation during checks |
+| launchctl | macOS launchd L0 rescue mode |
+| pdflatex + bibtex | LaTeX package verification |
+| pdftotext | rendered PDF marker checks |
 
 ## Usage
 
 ```text
 /autoresearch-paper
 
-> 想研究风场干扰下无人机集群的能效覆盖路径规划,目标 CVPR 2027。
-  手头有 3 篇 PDF,放在 ~/Downloads/uav-refs/。
+Topic: energy-aware UAV swarm coverage under wind disturbance.
+Target: ICRA 2027.
+Materials: PDFs and simulator notes in a local folder.
 ```
 
-The skill walks through 7 steps; you only need to interact at steps 1
-(provide the 3 paragraphs) and 2 (confirm the tier). After that, the
-skill confirms the plan preview, then runs the team.
+The skill asks for missing fields, confirms the tier, shows a readable plan
+preview, and only starts the Mavis team after an explicit "go".
 
-During the run, three commands are exposed:
+During a run:
 
-- `/autoresearch-paper status` — show plan progress + last_seen.
-- `/autoresearch-paper pause` — pause the plan.
-- `/autoresearch-paper resume` — resume a paused plan.
+| Command | Action |
+|---|---|
+| `/autoresearch-paper status` | show plan progress, research gate, stale count, and resource health |
+| `/autoresearch-paper pause` | soft-pause through `control/pause_requested.json` |
+| `/autoresearch-paper resume` | resume and verify/repair watchdog resources |
+| `/autoresearch-paper stop` | cancel when possible and run manifest cleanup |
+| `/autoresearch-paper cleanup` | clean runtime resources without deleting outputs |
+| `/autoresearch-paper rescue-status` | show L0/watchdog health and rescue history |
 
 ## Workflow
 
-| Step | Description |
-|------|-------------|
-| Collect | Ask for topic, target venue, materials |
-| Tier | Detect tier via keyword + `ask_user` fallback |
-| Plan | Generate `plan.yaml` (user never sees the YAML, only the task graph) |
-| Bootstrap | `bootstrap-watchdog.sh` creates per-topic watchdog agent + cron + hook |
-| Run | `mavis team plan run` and capture plan id |
-| Patrol | Hourly cron checks `last_seen.jsonl` and emits findings |
-| Deliver | `paper.tex` + `reviewer-readiness.md` + `next-steps.md` |
+| Stage | What happens |
+|---|---|
+| Brief | parse topic, target venue, and materials |
+| Tier | choose `arxiv`, `conference`, or `journal-q1` with fallback confirmation |
+| Plan | generate `plan.yaml` from tier templates and prompt assets |
+| Bootstrap | create watchdog agent, cron, hook, state, and `resource_manifest.json` |
+| Run | start `mavis team plan run` and register the plan id |
+| Patrol | L0 guard, hourly watchdog, and `last_seen.jsonl` detect stalls |
+| Research Gate | T6.1/T6.2 decide KEEP, DISCARD, PIVOT, or waiver |
+| Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
+| Cleanup | stop/complete/abort runs `cleanup-plan-resources.sh` |
 
-## Boundary
-
-The skill produces a structured draft — `paper.tex`, figures, a
-reviewer-readiness self-check, and a `next-steps.md` listing what a
-human still has to do. It does **not** produce a camera-ready PDF,
-does **not** submit to any venue, and does **not** replace human
-authorship of novel scientific claims. The user owns novelty; the
-skill produces the work that surrounds it.
-
-If the topic has no measurable evaluator (no experiment, no
-simulator, no public benchmark), the skill downgrades to `arxiv`
-tier with a warning, or refuses to start if the user insists on a
-higher tier.
-
-## Files
+## Repository Layout
 
 ```
-skills/autoresearch-paper/
+autoresearch-paper/
 ├── SKILL.md
 ├── README.md
-└── references/
-    ├── goal-keywords.md              # tier keyword table
-    ├── tier-decision-tree.md         # 2-channel fallback
-    ├── plan-template-arxiv.md        # 4-task plan
-    ├── plan-template-conference.md   # 8-task plan
-    ├── plan-template-journal-q1.md   # 8-task deep plan
-    ├── task-prompt-snippets.md       # per-task prompt fragments
-    ├── watchdog-prompt-template.md   # per-topic watchdog system prompt
-    ├── bootstrap-watchdog.sh         # agent + cron + hook setup
-    ├── first-action-last-seen.json   # PostToolUse hook body
-    └── reviewer-readiness-rubric.md  # 6-dimension scoring
-
-tests/e2e-uav-coverage.md             # end-to-end test scenario
+├── scripts/
+│   └── setup.sh
+├── assets/
+│   ├── task-prompt-snippets.md
+│   └── first-action-last-seen-hook.md
+├── references/
+│   ├── goal-keywords.md
+│   ├── tier-decision-tree.md
+│   ├── plan-template-arxiv.md
+│   ├── plan-template-conference.md
+│   ├── plan-template-journal-q1.md
+│   ├── task-prompt-snippets.md
+│   ├── research-state-contract.md
+│   ├── lifecycle-contract.md
+│   ├── watchdog-prompt-template.md
+│   ├── first-action-last-seen.md
+│   ├── reviewer-readiness-rubric.md
+│   ├── bootstrap-watchdog.sh
+│   ├── launchd/
+│   └── scripts/
+└── tests/
 ```
+
+## Boundaries
+
+The skill produces a structured paper draft and evidence bundle. It does
+not submit to venues, does not promise a camera-ready PDF, and does not
+replace human authorship of novel claims. If the topic has no measurable
+evaluator, the skill downgrades to `arxiv` or stops for clarification.
+
+## Contributing
+
+Run `scripts/setup.sh test` before opening a pull request. Changes that touch
+watchdog, L0, cleanup, or research gate behavior should add or update runtime
+contract tests under `tests/`.
 
 ## Tests
 
-See `tests/e2e-uav-coverage.md` for the full e2e scenario. It runs the
-skill against a synthetic UAV coverage topic and asserts each layer
-(tier detection, plan generation, watchdog bootstrap, plan execution,
-deliverable) produces the expected artifacts.
+```bash
+scripts/setup.sh test
+```
 
-## Mac sleep caveat
-
-If your Mac sleeps, the hourly watchdog cron does not fire. The watchdog
-resumes patrols on wake. If you need hardened liveness (continuous
-patrol even during sleep), wait for `--mode=hardened` in a future
-version, or run the watchdog on a non-Mac box.
+The test path runs contract validation and unit tests for research gates,
+L0 dry-run behavior, plan-dir resolution, stop/cleanup JSON escaping, and
+manifest-based resource cleanup.
 
 ## License
 
 MIT
+
+Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted with [Readme Craft](https://github.com/motiful/readme-craft)
+
+[license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
+[license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
+[version-shield]: https://img.shields.io/badge/version-0.6.0-CC785C
+[repo-url]: https://github.com/WdBlink/autoresearch-paper
+[skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
+[skills-url]: https://skills.sh/

@@ -1,0 +1,18 @@
+description: >
+  Research-first Agent Skill that runs long-horizon paper pipelines with evaluator gates,
+  heartbeat watchdogs, resume controls, and manifest cleanup.
+topics:
+  - ai
+  - llm
+  - ai-agents
+  - agent-skills
+  - research-automation
+  - academic-writing
+  - paper-writing
+  - autonomous-research
+  - codex
+  - claude-code
+  - mavis
+  - watchdog
+  - workflow-automation
+homepage: ""

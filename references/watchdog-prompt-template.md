@@ -9,6 +9,17 @@ System prompt for the per-topic watchdog agent. The bootstrap script
 fills the placeholders. The watchdog runs on a separate agent so its
 state is isolated from the writer / implementer agents.
 
+## Execution Procedure
+
+```
+render_watchdog_prompt(topic, tier, plan_id, plan_dir, evaluator_signal) -> prompt_text
+
+fill placeholders in this template
+write <plan-dir>/watchdog-system-prompt.md
+bootstrap-watchdog.sh registers the prompt with mavis agent new
+watchdog remains read-only and writes findings to watchdog-log.md
+```
+
 ## Placeholders
 
 - `{TOPIC}` — the human-readable topic name
@@ -115,9 +126,11 @@ The bootstrap script writes this prompt (with placeholders filled) to
 `<plan-dir>/watchdog-system-prompt.md`, then calls:
 
 ```
-mavis session new {TOPIC_SLUG}-wd \
-    --system-prompt-file <plan-dir>/watchdog-system-prompt.md \
-    --title "{TOPIC} paper watchdog"
+mavis agent new {TOPIC_SLUG}-wd \
+    --display-name "{TOPIC_SLUG} watchdog" \
+    --description "{TIER} watchdog" \
+    --system-prompt "$(cat <plan-dir>/watchdog-system-prompt.md)" \
+    --persona "Watchdog patrol"
 ```
 
 The agent is then available for hourly cron invocations. The agent

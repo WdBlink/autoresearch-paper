@@ -9,7 +9,7 @@
     <array>
         <string>/usr/bin/env</string>
         <string>python3</string>
-        <string>/Users/wdblink/.mavis/agents/mavis/scripts/plan-rescue-daemon.py</string>
+        <string>{{RUNTIME_SCRIPTS}}/plan-rescue-daemon.py</string>
         <string>--once</string>
     </array>
 
@@ -23,20 +23,20 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/wdblink/.mavis/agents/mavis/logs/plan-rescue-daemon.out.log</string>
+    <string>{{LOG_DIR}}/plan-rescue-daemon.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/wdblink/.mavis/agents/mavis/logs/plan-rescue-daemon.err.log</string>
+    <string>{{LOG_DIR}}/plan-rescue-daemon.err.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/wdblink</string>
+    <string>{{HOME}}</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/wdblink/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>{{PATH}}</string>
         <key>PYTHONPATH</key>
-        <string>/Users/wdblink/.mavis/agents/mavis/scripts</string>
+        <string>{{RUNTIME_SCRIPTS}}</string>
     </dict>
 </dict>
 </plist>

@@ -50,7 +50,7 @@ verdict: 改,不要换 — 80% 是好的,20% 是结构洞
 |---|---|---|
 | L0 resident shell (不依赖 session) | ✅ `plan-rescue-daemon.py` + launchd plist | 全仓库唯一做到 L0 的 skill |
 | L1 hourly cron | ✅ `0 * * * *` cron + `--session-mode new` | 标准实现 |
-| L2 callback → last_seen | ✅ `first-action-last-seen.json` hook | 标准实现 |
+| L2 callback → last_seen | ✅ `assets/first-action-last-seen-hook.md` hook | 标准实现 |
 | Pause judge (owner-unavailable) | ✅ `local_llm_judge.py` (gpt-5.5 xhigh) | 比 AutoResearch 还强,有具体实现 |
 
 **评语**:这是仓库内最强的一块,直接胜过 AutoResearch 原生 (AutoResearch 的 L0 是手写 resident 脚本,这里是 launchd + judge)。**保留,不动。**
@@ -259,7 +259,7 @@ Orchestrator (watchdog) 每小时读 findings.jsonl,如果连续 3 个 iter:
 
 1. **骨架对**:plan 7-step 流程 + tier 3 档分级 + 三层 watchdog + rescue daemon — 这些是 AutoResearch 论文的核心,这个 skill 已经实现了,而且 rescue daemon + local_llm_judge 的组合在仓库里是独有的优势。
 
-2. **仓库里没有替代品**:grep 了一遍 `~/.claude/skills` 和 `~/.minimax/skills`,没有其它长程 paper-writing skill。`karpathy-autoresearch-adapter` 是单-session evaluator loop,跟 multi-day paper writing 是不同场景。
+2. **仓库里没有替代品**: grep 了一遍 `$HOME/.claude/skills` 和 `$HOME/.minimax/skills`, 没有其它长程 paper-writing skill。`karpathy-autoresearch-adapter` 是 single-session evaluator loop, 跟 multi-day paper writing 是不同场景。
 
 3. **替换成本太高**:新写一个 skill,要从 7-step 流程 + 三层 watchdog + 跨 4-5 agents 的 mavis team plan + rescue daemon 重新搭,2 个月打底。改这个 skill 2-3 周。
 
@@ -284,7 +284,7 @@ Orchestrator (watchdog) 每小时读 findings.jsonl,如果连续 3 个 iter:
 | 引用 | 文件 | 行号 |
 |---|---|---|
 | T6 gate 当前实现 | `references/plan-template-conference.md` | 217-219 |
-| T6 anti-patterns 段落 (教负结果重 framing) | `references/task-prompt-snippets.md` | 221-243 |
+| T6 anti-patterns 段落 (教负结果重 framing) | `assets/task-prompt-snippets.md` | 221-243 |
 | Watchdog prompt (EVALUATOR_SIGNAL placeholder) | `references/watchdog-prompt-template.md` | 18-19, 49-51 |
 | Rescue daemon (gpt-5.5 xhigh judge) | `references/scripts/plan-rescue-daemon.py` | 全文 |
 | Local LLM judge 调用 | `references/scripts/local_llm_judge.py` | 40-45 |
