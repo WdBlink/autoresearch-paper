@@ -1,3 +1,8 @@
+---
+name: task-prompt-snippets
+description: Per-task prompt fragments used by the plan generator to assemble plan.yaml — bracketed placeholders filled at generation time. Covers T0 literature → T10 package for all 3 tiers.
+---
+
 # Task Prompt Snippets
 
 Per-task prompt fragments used when the plan generator assembles

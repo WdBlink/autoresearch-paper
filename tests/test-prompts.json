@@ -1,0 +1,23 @@
+[
+  {
+    "id": 1,
+    "name": "happy_path_conference_cvpr",
+    "prompt": "帮我把这个课题写成论文：想研究风场干扰下无人机集群的能效覆盖路径规划,目标 CVPR 2027。手头有 3 篇 PDF,放在 ~/Downloads/uav-refs/。",
+    "expected": "skill 触发 → 解析 3 段(课题=无人机集群路径规划;目标=CVPR 2027;素材=3 PDF) → Channel A 命中 CVPR → tier=conference → 显式 tier confirmation → plan preview(8 task 图 + watchdog 配置) → 等用户说 go",
+    "covers": ["dim1 frontmatter触发词", "dim2 工作流", "dim4 检查点(tier confirm + plan preview go)", "dim5 具体性", "dim6 references引用"]
+  },
+  {
+    "id": 2,
+    "name": "tier_miss_channel_b_fallback",
+    "prompt": "想做一个端到端语音对话系统的 survey,投个顶会。手头没材料。",
+    "expected": "skill 触发 → 课题=端到端语音对话 survey;目标='顶会'(Channel A miss) → 走 Channel B ask_user(arxiv/conference/journal-q1 3 选项) → 用户选 conference 后 plan preview",
+    "covers": ["dim3 失败模式编码(tier 检测 miss 路径)", "dim7 整体架构(2 通道 fallback)", "dim5 具体性(ask_user 的 3 选项严格规范)"]
+  },
+  {
+    "id": 3,
+    "name": "fm1_no_mavis_cli",
+    "prompt": "[测试环境]PATH=/usr/bin:/bin bash bootstrap-watchdog.sh uav-coverage conference /tmp/plan",
+    "expected": "脚本立即 exit 1,stderr 输出 '[bootstrap-watchdog][ERROR] mavis CLI not found in PATH'(对应 SKILL.md Failure modes 第 1 条 + 脚本 FM-1 断言)",
+    "covers": ["dim3 失败模式编码", "dim9 反例与黑名单(No mavis CLI 是明确的 danger zone)"]
+  }
+]

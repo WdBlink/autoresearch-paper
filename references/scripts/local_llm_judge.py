@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-CODEX_BIN = "/Users/wdblink/.local/bin/codex"  # absolute path
+CODEX_BIN = os.environ.get("CODEX_BIN")  # override via env var if set
 CODEX_FALLBACK_BIN = "codex"  # PATH fallback
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_REASONING_EFFORT = "xhigh"
@@ -46,12 +46,20 @@ MAX_RETRIES = 2
 
 
 def find_codex() -> str:
-    if Path(CODEX_BIN).exists() and os.access(CODEX_BIN, os.X_OK):
-        return CODEX_BIN
+    # Honor explicit override first (e.g. CODEX_BIN=/custom/path/codex)
+    if CODEX_BIN:
+        candidate = Path(CODEX_BIN)
+        if candidate.exists() and os.access(CODEX_BIN, os.X_OK):
+            return str(candidate)
+        print(
+            f"WARN: CODEX_BIN env var set to {CODEX_BIN!r} but not executable; "
+            f"falling back to PATH lookup",
+            file=sys.stderr,
+        )
     found = shutil.which(CODEX_FALLBACK_BIN)
     if found:
         return found
-    print("ERROR: codex CLI not found in PATH or at default location", file=sys.stderr)
+    print("ERROR: codex CLI not found in PATH; set CODEX_BIN env var to override", file=sys.stderr)
     sys.exit(2)
 
 

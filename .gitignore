@@ -1,0 +1,42 @@
+# macOS / OS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.pytest_cache/
+
+# Node (in case any tooling slips in)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets / credentials — never commit
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# darwin-skill optimization artifacts (local-only)
+darwin-results.tsv
+out/
+results.tsv
+
+# OS temp / build
+*.log
+tmp/
+build/
+dist/

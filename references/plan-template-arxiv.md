@@ -1,3 +1,8 @@
+---
+name: plan-template-arxiv
+description: Minimal 4-task plan.yaml template for the arxiv tier — literature → gap → method → write. Used when SKILL.md Step 3 generates a preprint/tech-report plan.
+---
+
 # Plan Template — `arxiv` Tier
 
 Minimal 4-task plan. Used when the user wants a working paper, a tech

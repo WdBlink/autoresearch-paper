@@ -1,3 +1,8 @@
+---
+name: plan-template-conference
+description: Full 8-task plan.yaml template for the conference tier — literature → gap → method → impl → experiment → write-iter1 → write-iter2 → package. Optional rebuttal-preview task for IROS/ICRA/CVPR/NeurIPS-grade submissions.
+---
+
 # Plan Template — `conference` Tier
 
 Full 8-task plan, plus an optional rebuttal-preview task. Used for

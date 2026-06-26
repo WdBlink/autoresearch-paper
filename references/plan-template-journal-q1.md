@@ -1,3 +1,8 @@
+---
+name: plan-template-journal-q1
+description: 8-task plan.yaml template (deeper experiments, longer wall-clock, stricter gates) for SCI Q1 / Nature 子刊 / T-PAMI / T-RO / IJRR / JFR submissions.
+---
+
 # Plan Template — `journal-q1` Tier
 
 Same 8-task skeleton as `conference`, but with deeper experiments, longer

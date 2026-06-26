@@ -1,3 +1,8 @@
+---
+name: goal-keywords
+description: Channel A tier-detection keyword table — maps target venue strings (CVPR/NeurIPS/arXiv/SCI Q1) to arxiv/conference/journal-q1 tiers. Single source of truth for SKILL.md Step 2.
+---
+
 # Goal Keywords — Channel A Tier Detection
 
 Single source of truth for the keyword table that maps user-supplied target

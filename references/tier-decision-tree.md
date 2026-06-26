@@ -1,3 +1,8 @@
+---
+name: tier-decision-tree
+description: Channel A (keyword) + Channel B (ask_user fallback) tier decision tree for SKILL.md Step 2. Handles repeated "Other" selections.
+---
+
 # Tier Decision Tree
 
 Two-channel tier detection, with explicit failure handling for the "user

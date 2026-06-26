@@ -1,3 +1,8 @@
+---
+name: watchdog-prompt-template
+description: System prompt template for the per-topic watchdog agent — hourly cron patrol + per-task last_seen staleness detection. Filled by bootstrap-watchdog.sh with topic/tier/wall-clock placeholders.
+---
+
 # Watchdog Prompt Template
 
 System prompt for the per-topic watchdog agent. The bootstrap script
