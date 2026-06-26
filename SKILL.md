@@ -221,23 +221,47 @@ plan-level pauses. Any task expected to exceed 30 min must use the daemon
 pattern below; otherwise the producer is silently killed mid-output and the
 data is lost.
 
-**Pattern — setsid + 4-file checkpoint + cron poll:**
+**Pattern — platform-portable daemon launch + 4-file checkpoint + cron poll:**
+
+🔴 **STOP — `setsid` is Linux-only.** macOS (darwin) does NOT ship `setsid`
+(it's a util-linux package command). On darwin the daemon will fail to
+launch with "command not found" and the engine cap will hit before any
+work runs. Use the **macOS-compatible form** below. Auto-detect platform
+at task-prompt generation time:
 
 ```bash
 # Producer session (~5 min of wall-clock):
 SSHPASS='...' sshpass -e ssh orin_agx@host 'bash -s' << 'EOF'
 mkdir -p /home/orin_agx/<run> && cd /home/orin_agx/<run>
 echo $$ > run.pid
-nohup setsid bash -c "python cell_runner.py > run.log 2>&1; echo EXIT=\$? > exit.code; date +%s > checkpoint.json" \
-    > /dev/null 2>&1 &
-disown
+
+# Detect platform (Linux has setsid; macOS doesn't):
+if command -v setsid >/dev/null 2>&1; then
+    # Linux / WSL: setsid creates a new session (detach from controlling TTY)
+    nohup setsid bash -c "python cell_runner.py > run.log 2>&1; echo EXIT=\$? > exit.code; date +%s > checkpoint.json" \
+        > /dev/null 2>&1 &
+else
+    # macOS (darwin): no setsid; nohup + disown is sufficient (detach from
+    # controlling TTY + ignore SIGHUP). Verified on darwin: PID alive, cron
+    # can monitor. Equivalent alt: `( cmd & )` subshell fork.
+    nohup bash -c "python cell_runner.py > run.log 2>&1; echo EXIT=\$? > exit.code; date +%s > checkpoint.json" \
+        > /dev/null 2>&1 &
+    disown
+fi
+
 sleep 3
 pgrep -f cell_runner.py | head -3
 EOF
 # Then immediately exit with deliverable.md (GATE: PARTIAL is fine):
 # - daemon_pid, kicked_off_at, checkpoint_file paths
 # - estimated_completion, daemon_log_tail
+# - platform detected: linux / darwin
 ```
+
+**Producer-side alternative when on macOS host (not Jetson):** Python's
+`os.setsid()` works on darwin too — if the launcher script is Python
+instead of bash, prefer `python3 -c "import os; os.setsid(); os.execvp(...)"`.
+Don't reach for `setsid` from a `bash` shell on darwin.
 
 The daemon writes `run.pid`, `run.log`, `exit.code`, `checkpoint.json` so a
 subsequent producer session (or the next retry of the same task) can `pgrep`,
@@ -267,6 +291,95 @@ work that exceeds the cap.
 `<run>/lock` (`echo $$ > lock`). The next producer session reads it; if
 present, the daemon is already running — do NOT launch a duplicate. Remove
 the lock only after `exit.code` is written.
+
+**Pre-flight checklist before launching the full daemon (Producer exit ≤ 5 min):**
+
+🔴 **STOP — do NOT over-test in the producer session.** The producer
+session itself has a 30-min wall-clock cap, the same as any worker.
+Tempting to "dry-run 3-5 times to validate the daemon" burns the entire
+budget on validation — the cap hits before the real sweep launches.
+
+**Rule of thumb:**
+
+- **1 dry-run (≤ 8 cells) is enough** to validate daemon code + checkpoint
+  files. After that, **immediately launch the full sweep + exit** the
+  producer session in ≤ 5 min from session start.
+- Do NOT run a 2nd dry-run "just to be safe".
+- Do NOT pre-aggregate on partial dry-run data (the aggregator will wait
+  for data that never comes if the launch never happens).
+- Do NOT write the aggregator script before the daemon has launched — the
+  aggregator slot is a separate cron-reminded session.
+
+**Pre-flight checklist (all 5 must be true before launching the full daemon):**
+
+1. ✅ Corruption module / cache built (`<run>/corruption_module.pyc` or
+   equivalent warm-cache present on target machine).
+2. ✅ Daemon launcher script tested **once** (≤ 8 cells ok).
+3. ✅ Lockfile / progress.json / `exit.code` paths defined and reachable
+   via `pgrep`, `cat`, `tail` from the producer session.
+4. ✅ Aggregator slot ready: a separate cron-registered session
+   (e.g. `<slug>-aggregator`) can be invoked later without producer
+   involvement.
+5. ✅ `mavis cron self <name> --every 5m --prompt "..."` registered to
+   catch `exit.code` non-zero / `checkpoint.json` finalization.
+
+→ Once all 5 are checked, launch the full daemon and **exit the producer
+session within 5 min**. Let the cron poll the daemon.
+
+**Anti-pattern (what burned the V2M-Harness T6.5 first attempt):**
+
+```python
+# WRONG: producer spent 30 min cap on dry-runs, never launched real sweep
+for size in [8, 50, 600]:
+    run_dry_sweep(size)        # each "for safety" burns ~5-10 min
+launch_full_sweep()            # never reached — cap hit first
+```
+
+```python
+# CORRECT: 1 dry-run, then launch + exit
+run_dry_sweep(8)               # ≤ 5 min, validates infra only
+launch_full_sweep_in_background()
+write_deliverable_partial(daemon_pid, checkpoint_paths)
+exit_producer_session()        # total ≤ 5 min from session start
+# Cron polls daemon; next producer session reads exit.code when ready
+```
+
+See **FM-16** for the failure-mode encoding.
+
+**Model-based pipelines: pre-load the model once (4× speedup vs per-cell reload):**
+
+For model-based cell pipelines (VGGT-Ω / DUSt3R / SAM / DINO / NeRF /
+Gaussian Splatting / any NN inference), do **NOT** reload the model
+inside the per-cell loop. The standard anti-pattern:
+
+```python
+# WRONG: model reload every cell (~5s × N cells = N× reload cost)
+for cell in cells:
+    model = load_model()       # 5s reload every cell
+    result = model.infer(cell)
+```
+
+Correct pattern:
+
+```python
+# CORRECT: load once at daemon startup, pass to every cell
+model = load_model()           # ONCE, pre-load (5s)
+device = get_device()
+for cell in cells:
+    result = model.infer(cell, model=model, device=device)
+    save_result(cell, result)
+```
+
+**Impact:** ~43 cells/min in-process vs ~10 cells/min per-cell reload
+(4× speedup). Bonus: keeps memory stable (no model churn — important on
+MPS / shared GPUs). Implementation: patch `l2_execute()` to accept
+`preloaded_model` and `preloaded_device` kwargs; the daemon loads once
+at startup and passes them to every cell.
+
+The skip-if-exists check on `<cell>.jsonl` is also a hidden trap: see
+**FM-17** for the pretty-printed JSON `splitlines()[0]` bug that breaks
+auto-resume. Apply both fixes (preload + correct skip-check) **before**
+launching the full sweep, not after.
 
 ### Step 5 — Run the team
 
@@ -641,12 +754,16 @@ current cycle, the engine idles, and no new tasks are spawned until
 | FM-7 | `local_llm_judge.py` exits non-zero (codex unavailable / model rejected) | Daemon emits `judge_failed` finding, falls back to `nudge` verdict, retries next cycle | If 5 cycles in a row fail, daemon writes `local_llm_disabled` automatically and escalates to user |
 | FM-8 | `pause_requested.json` written but daemon never resumes | User runs `resume-plan.sh <plan_id>` manually; daemon observes `resume_signal.json` | Surface in `next-steps.md`: "paused at cycle N — run `resume-plan.sh` to continue" |
 | FM-9 | `stop_requested.json` triggers cancel but plan engine has producer still running | Daemon kills the plan engine; in-flight producers exit on their own (no SIGKILL needed) | Verify `state.json` status = `"cancelled"` within 60 s; if not, `mavis team plan cancel <plan_id>` manually |
-| FM-10 | Producer puts a >30 min command in a foreground SSH call (engine kills the session mid-output, data lost) | Refollow Step 4.5: `nohup + setsid + disown` daemon + 4-file checkpoint (`run.pid`/`run.log`/`exit.code`/`checkpoint.json`); write `cleanup.sh` for next retry | If the producer's session is already dead, the next retry must read whatever files exist on the target machine (Jetson) — partial run logs are usually salvageable |
+| FM-10 | Producer puts a >30 min command in a foreground SSH call (engine kills the session mid-output, data lost) | Refollow Step 4.5: `nohup + setsid + disown` daemon + 4-file checkpoint (`run.pid`/`run.log`/`exit.code`/`checkpoint.json`); write `cleanup.sh` for next retry. **macOS:** `setsid` is unavailable — use `nohup + disown` only, or Python `os.setsid()`; auto-detect platform. | If the producer's session is already dead, the next retry must read whatever files exist on the target machine (Jetson) — partial run logs are usually salvageable |
 | FM-11 | LaTeX `[?]` markers visible in rendered PDF (cite in body but missing from `.bib`) | Run 4-pass pdflatex + bibtex; `pdftotext paper.pdf - \| grep -cF '[?]'` must return 0; check `paper.blg` for "Warning--I didn't find a database entry" | Manually grep paper.tex for `\cite{...}` keys, cross-reference against `bibliography.bib`; add missing entries by `\input` or copy from sibling skill's bib |
 | FM-12 | Page-budget fold regresses a reviewer-readiness dimension below threshold (e.g., fold §6 Ethics → Dim 6 = 4) | Run Step 7.5 pre-flight check BEFORE deleting any dedicated section; compute dimension regression from the fold | Request venue waiver for 1-2 extra pages; restructure as short-paper track (4 pages); move content to supplementary (note: supplementary does NOT count toward reviewer-readiness rubric scoring) |
 | FM-13 | Producer self-reports "all cells done" but JSONL contains ERROR / TypeError records hidden in raw counts | Run Category A verifier recipe: `head -1 schema` + `wc -l` + `grep -c '"ERROR"\|"TypeError"'` + field completeness check | If only a few cells errored, retry with cell-targeted fix (don't re-run the full sweep); if systematic, pause and ask user whether to patch the helper function |
 | FM-14 | Verifier runs in same session context as producer (loses independence, ~46.4% accuracy per SkillLens) | Spawn fresh producer session via `mavis session new`; verifier reads only artifact files (no shared scratchpad memory) | Fallback: use `codex exec -m gpt-5.5 -c model_reasoning_effort=xhigh --skip-git-repo-check` with artifact paths as input |
 | FM-15 | Wide LaTeX table overflows single column (8+ columns, packed content) and crowds body text | Convert `\begin{table}[t]` → `\begin{table*}[t]` to span both columns of the IEEE 2-column layout; `\end{table}` → `\end{table*}`; figure stays at `[t]` placement. The `table*` floats to top of next page (or wherever `[t]` allows) — usually buys ~0.5 page of breathing room in the body | If the wide table still doesn't fit (rare for IEEE 2-col), split it into two stacked narrow tables or move sub-tables to supplementary |
+| FM-16 | Producer over-tests in the session (3+ dry-runs of 8/50/600 cells) — 30-min cap hits before the real full sweep launches; daemon infra is perfect but real work never runs | Follow Step 4.5 Pre-flight checklist: 1 dry-run (≤ 8 cells) validates infra, then **immediately launch the full sweep + exit the producer session in ≤ 5 min**. All 5 pre-flight items (corruption module / daemon tested / lockfile paths / aggregator slot / cron registered) must be true before launch — not "iteratively discovered during dry-runs" | If cap already hit, next producer session reads `<run>/checkpoint.json` and `<run>/exit.code` from the previous attempt (often partial work is salvageable); do NOT re-dry-run |
+| FM-17 | Model-based cell pipeline reloads model per cell (~10 cells/min) instead of pre-loading once (~43 cells/min, 4× speedup) — caused by copy-pasted single-cell inference loop | Patch `l2_execute()` to accept `preloaded_model` and `preloaded_device` kwargs; daemon loads model **once** at startup and passes to every cell. Memory stays stable on MPS / shared GPU | If model is too large to keep resident (OOM at startup), fall back to per-N-cell reload (e.g. reload every 50 cells) instead of every cell; document the trade-off in `cleanup.sh` |
+| FM-18 | Skip-if-exists check on `<cell>.jsonl` uses `path.read_text().splitlines()[0]` which fails on pretty-printed JSON (multi-line) — daemon re-runs every existing cell, ~5–10× slower than expected and lockup risk on long runs | Use `json.loads(path.read_text())` (full file) or `with open(path) as f: json.load(f)`. Pretty-printed JSON has `{\n  "cell_id": ...` so `splitlines()[0]` returns just `{` and json.loads chokes | Diagnostic when daemon is suspiciously slow despite skip-if-exists: `cat progress.json \| head -1` — if it's just `{` and not a JSON object, the producer is using `splitlines()[0]`; expected pace vs actual pace: 5× slower = red flag for broken skip-check |
+| FM-19 | Harness / wrapper / agent-loop paper claims "B5 (full system) beats B0 (SOTA-tuned backbone)" when in fact B5 == B0 on SOTA path — the headline is the **preventive gain on stress baselines** (B5 vs B4), not "beats SOTA". Burying the null regresses Dim 4 Clarity and Dim 6 Ethics (overclaim). | See `reviewer-readiness-rubric.md` § "Honest framing for harness / wrapper papers": surface B5 == B0 honestly as "preserves SOTA performance" while surfacing the real win (B5 vs B4 stress baseline). Separate "no regression on SOTA path" from "preventive gain on stress path" as distinct §4.x subsections. | If the paper has already been written with the wrong framing, do NOT silently rewrite — add a §6.1 "Honest scope clarification" paragraph that re-frames the result with both null and positive findings. Update `reviewer-readiness.md` evidence quotes accordingly. |
 
 ## Environment constraints
 
@@ -851,6 +968,67 @@ column is mandatory; never leave a row without an escalation path.
     (4.5, 5.5, 7.5) are additive — they apply when the corresponding
     trigger condition is hit. No changes to the Rescue Layer, plan
     templates, or bootstrap script.
+- 0.4.0 — platform-portable daemon + producer discipline + harness-paper framing.
+  - **Why.** Three independent evidence trails from real plans on 2026-06-26:
+    (a) darwin producers hitting "setsid: command not found" because
+    `setsid` is Linux-only (util-linux package, absent on macOS); the
+    daemon never launched and the 30-min cap was wasted on a failed
+    shell command. (b) producer sessions burning the entire 30-min cap
+    on iterative dry-runs (8 + 50 + 600 cells) before launching the
+    real 1760-cell full sweep, leaving the daemon infra perfect but the
+    real work never executed. (c) Harness / wrapper paper framing
+    pitfalls when B5 (full system) == B0 (SOTA-tuned baseline) on the
+    SOTA path but B5 >> B4 (stress baseline) on stress — burying the
+    null regresses Dim 4 Clarity and Dim 6 Ethics.
+  - **Patch A — Platform-portable daemon launch.** Step 4.5 daemon
+    pattern rewritten with `if command -v setsid` platform detection:
+    Linux keeps `nohup setsid ...`, macOS falls back to `nohup ... &
+    disown` (equivalent detach from controlling TTY + SIGHUP ignore).
+    Producer-side alternative noted: Python `os.setsid()` works on both
+    platforms. FM-10 first-line fix updated to call out the macOS
+    fallback. **Net effect:** darwin producers can now launch the
+    daemon cleanly without touching util-linux compatibility layers.
+  - **Patch B — Producer over-test guard + Pre-flight checklist.** New
+    "Pre-flight checklist before launching the full daemon" section
+    after Step 4.5 LOCKFILE discipline. 5-item checklist
+    (corruption module / daemon tested once / lockfile paths /
+    aggregator slot / cron registered) with explicit "Producer exit
+    ≤ 5 min" rule. Anti-pattern code block (3 dry-runs eating the cap)
+    shown alongside the correct pattern (1 dry-run ≤ 8 cells → launch
+    + exit). **Net effect:** daemon infra is validated in ≤ 5 min
+    instead of consuming the entire 30-min budget on iterative
+    validation.
+  - **Patch C — Model preload for NN-based cell pipelines.** New
+    "Model-based pipelines: pre-load the model once" section with
+    correct / wrong code blocks. ~43 cells/min vs ~10 cells/min
+    (4× speedup). Implementation hint: patch `l2_execute()` to accept
+    `preloaded_model` and `preloaded_device` kwargs.
+  - **Patch D — Honest framing for harness / wrapper papers.** New
+    FM-19 + new rubric section "Honest framing for harness / wrapper /
+    agent-loop papers" in `references/reviewer-readiness-rubric.md`.
+    Two-distinct-findings pattern: B5 == B0 on SOTA path + B5 >> B4 on
+    stress path. Maps back to rubric dimensions (Dim 2 / 4 / 6) and
+    provides the abstract-vs-Table-IV coherence test.
+  - **3 new failure modes (FM-16, FM-17, FM-18, FM-19).** FM-16:
+    producer over-tests and cap hits before full sweep launches
+    (Pre-flight checklist + 1 dry-run rule; partial checkpoint.json
+    salvage fallback). FM-17: model reload per cell instead of
+    pre-load (4× speedup recipe; per-N reload fallback if OOM).
+    FM-18: skip-if-exists check uses `splitlines()[0]` which fails on
+    pretty-printed JSON (use full-file `json.load`; diagnostic recipe
+    for suspiciously slow daemon). FM-19: harness paper claims B5
+    beats B0 when B5 == B0 on SOTA path (rubric section "Honest
+    framing"; §6.1 reframe fallback if already written wrong).
+  - **Cross-cutting change:** Step 4.5 is now the consolidated
+    "long-running compute" reference — daemon pattern + LOCKFILE +
+    Pre-flight + model preload all live there in priority order
+    (pattern → discipline → checklist → NN-specific tuning). v0.3.1's
+    Step 4.5 body is preserved verbatim; new sections append.
+  - Backwards compatibility: v0.3.x plans continue to work. Patches
+    are additive — existing producers that already use `nohup + setsid
+    + disown` on Linux are unaffected; only darwin producers and new
+    plans inherit the platform detection. No changes to plan
+    templates, bootstrap script, or Rescue Layer scripts.
 - Future versions will add: cross-machine resumption, hardened liveness
   mode, and an opt-in "human in the loop every task" mode.
 

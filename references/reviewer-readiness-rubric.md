@@ -1,3 +1,8 @@
+---
+name: reviewer-readiness-rubric
+description: Six-dimension self-check rubric for T11-readiness — Novelty / Evidence / Reproducibility / Clarity / Figures / Ethics. Includes Honest framing for harness / wrapper / agent-loop papers.
+---
+
 # Reviewer Readiness Rubric
 
 Six-dimension self-check used by T11-readiness. Each dimension scored
@@ -128,3 +133,59 @@ reviewer_readiness:
 If `overall_pass: false`, the verifier lists each under-threshold
 dimension in `next-steps.md` with a 1-paragraph "what to fix" suggestion
 and the matching section in `paper.tex`.
+
+---
+
+## Honest framing for harness / wrapper / agent-loop papers
+
+A class of papers — "Harness", "wrapper", "agent-loop", "controller-around-existing-backbone" — compare a full system **B5** against a baseline **B0** that is already a SOTA-tuned backbone. The empirical reality is often:
+
+```
+RQ1 (B5 vs B0 on SOTA path):  NULL  — B5 == B0 == 53.31 px
+RQ2 (B5 vs B4 stress path):   TRUE WIN — -231.20 px, p < 1e-4, d = -0.856 large
+```
+
+The headline is **not** "B5 beats B0 on the headline metric" (it doesn't).
+The headline is **"B5 preserves SOTA performance on well-tuned paths AND
+prevents blow-ups on stress baselines."** This is two findings, not one.
+
+**Wrong framing (regresses Dim 4 Clarity + Dim 6 Ethics via overclaim):**
+
+- "Our Harness outperforms SOTA-tuned baselines by X%"
+- "Harness overhead is free"
+- Burying the null in appendix / "future work"
+
+**Correct framing (two distinct subsections in §4):**
+
+- §4.1 "Preservation on SOTA-tuned paths" — state B5 == B0 with p-value,
+  Cohen's d, pass-rate. Frame as "no regression" not "improvement".
+- §4.2 "Preventive gain on stress baselines" — state B5 vs B4 with full
+  statistical evidence (p < 1e-4, d, pass-rate improvement, individual
+  failure-mode blow-ups avoided).
+- §6.3 "Honest discussion of overhead" — wall-clock cost (e.g. 17×,
+  0.41s → 7.32s) framed as "bounded and sub-budget; pays for itself only
+  on stress baselines (B4 case), amortized zero on well-tuned paths".
+
+**Why this matters for the rubric:**
+
+| Dim | Regresses if framing is wrong | Stays clean if framing is honest |
+|---|---|---|
+| Dim 1 Novelty | n/a | n/a — the framework itself is novel |
+| Dim 2 Evidence | B5 == B0 looks like "no contribution"; reader questions why the paper exists | Two RQs with independent evidence (RQ1 null + RQ2 strong positive) = substantial evidence |
+| Dim 4 Clarity | "Harness beats SOTA" is incoherent with the table | "Preserves SOTA / prevents blow-ups" is a coherent two-part claim |
+| Dim 6 Ethics | Overclaim = un-ethical framing; reviewer will flag it | Honest null + honest positive = mature scientific reporting |
+
+**Test the framing with this question:**
+
+> "If a reviewer reads only the abstract and Table IV, can they tell what
+> the paper actually shows — including the cases where B5 does NOT beat B0?"
+
+If the answer is "no, the abstract implies B5 > B0 everywhere", reframe.
+
+**Empirical-first principle:** The producer's T0.5 (initial plan-design
+task) must warn the user: "if B5 < B0 on some metric, report it
+honestly." This applies equally to B5 == B0 — surface it; don't bury it.
+The reviewer-readiness rubric scores the **honesty of framing**, not
+whether every result is positive.
+
+See FM-19 in `SKILL.md` for the failure-mode encoding.
