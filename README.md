@@ -154,29 +154,32 @@ During a run:
 
 ```
 autoresearch-paper/
-├── SKILL.md
 ├── README.md
-├── scripts/
-│   └── setup.sh
-├── assets/
-│   ├── task-prompt-snippets.md
-│   └── first-action-last-seen-hook.md
-├── references/
-│   ├── goal-keywords.md
-│   ├── tier-decision-tree.md
-│   ├── plan-template-arxiv.md
-│   ├── plan-template-conference.md
-│   ├── plan-template-journal-q1.md
-│   ├── task-prompt-snippets.md
-│   ├── research-state-contract.md
-│   ├── lifecycle-contract.md
-│   ├── watchdog-prompt-template.md
-│   ├── first-action-last-seen.md
-│   ├── reviewer-readiness-rubric.md
-│   ├── bootstrap-watchdog.sh
-│   ├── launchd/
-│   └── scripts/
-└── tests/
+├── skills/
+│   └── autoresearch-paper/
+│       ├── SKILL.md
+│       ├── scripts/
+│       │   └── setup.sh
+│       ├── assets/
+│       │   ├── task-prompt-snippets.md
+│       │   └── first-action-last-seen-hook.md
+│       ├── references/
+│       │   ├── goal-keywords.md
+│       │   ├── tier-decision-tree.md
+│       │   ├── plan-template-arxiv.md
+│       │   ├── plan-template-conference.md
+│       │   ├── plan-template-journal-q1.md
+│       │   ├── task-prompt-snippets.md
+│       │   ├── research-state-contract.md
+│       │   ├── lifecycle-contract.md
+│       │   ├── watchdog-prompt-template.md
+│       │   ├── first-action-last-seen.md
+│       │   ├── reviewer-readiness-rubric.md
+│       │   ├── bootstrap-watchdog.sh
+│       │   ├── launchd/
+│       │   └── scripts/
+│       └── tests/
+└── docs/
 ```
 
 ## Boundaries
@@ -195,6 +198,7 @@ contract tests under `tests/`.
 ## Tests
 
 ```bash
+cd skills/autoresearch-paper
 scripts/setup.sh test
 ```
 
