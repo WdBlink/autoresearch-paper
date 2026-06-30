@@ -292,7 +292,7 @@ while IFS= read -r line; do
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       name="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("id") or d.get("name") or "")' <<<"${line}")"
       if [[ "${ephemeral}" == "true" && -n "${name}" ]]; then
-        run_cmd "session:${name}" mavis session archive "${name}"
+        run_cmd "session:${name}" mavis session compress "${name}"
       else
         record "OK session:${name:-unknown}: non-ephemeral or unnamed; left in place"
       fi
@@ -305,7 +305,7 @@ while IFS= read -r line; do
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       name="$(json_field name <<<"${line}")"
       if [[ "${ephemeral}" == "true" && -n "${name}" ]]; then
-        run_cmd "agent-archive:${name}" mavis agent archive "${name}"
+        run_cmd "agent-archive:${name}" mavis agent delete "${name}"
       else
         record "OK agent:${name:-unknown}: non-ephemeral or unnamed; left in place"
       fi
