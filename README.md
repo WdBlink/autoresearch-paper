@@ -18,6 +18,38 @@ Autoresearch Paper helps AI researchers keep long-running paper projects
 honest: it makes agents prove the algorithm or experiment works before they
 start writing.
 
+## Status
+
+- **Current version:** v0.6.0 (Mavis-native, macOS / Linux)
+- **Stability:** Production for personal use, early for shared plans
+- **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
+- **Direction:** the orchestrator currently depends on the Mavis plan
+  engine; portable-runtime support (Codex / Claude Code adapter) is
+  on the wishlist but not scheduled. See the design notes in
+  [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md).
+- **Maintenance:** issues and PRs welcome; major refactors land in
+  feature branches first.
+
+## Table of Contents
+
+1. [Why](#why)
+2. [Features](#features)
+3. [Quick Start](#quick-start)
+4. [Architecture](#architecture)
+5. [When To Use](#when-to-use)
+6. [Install](#install)
+7. [Dependencies](#dependencies)
+8. [Usage](#usage)
+9. [Workflow](#workflow)
+10. [Repository Layout](#repository-layout)
+11. [FAQ](#faq)
+12. [Boundaries](#boundaries)
+13. [Contributing](#contributing)
+14. [Tests](#tests)
+15. [Changelog](#changelog)
+16. [Citation](#citation)
+17. [License](#license)
+
 ## Why
 
 Long-running AI research runs often fail in the same way: agents explore for
@@ -47,18 +79,45 @@ heartbeat watchdogs, and manifest-driven cleanup.
 /autoresearch-paper stop — cancel when possible and clean runtime resources.
 ```
 
-## What It Does
+## Architecture
+
+The skill is a thin orchestrator on top of a Mavis plan engine. Five
+components collaborate end-to-end:
 
 ```
-brief -> tier -> T0 evaluator -> method/experiment loop -> research gate -> paper
-                         |
-                         v
-              L0/L1/L2 heartbeat + manifest cleanup
+┌──────────────────────────────────────────────────────────────────┐
+│  Brief  →  Tier  →  Plan  →  Bootstrap  →  Run  →  Deliver      │
+│  LLM     arxiv/   YAML     watchdog     team     paper.tex        │
+│          conf/    gen      agent        plan     + bib + figs    │
+│          j-q1     (T0)     + cron       (T1-T8)  + readiness     │
+│                   evaluator + hook                                │
+└──────────────────────────────────────────────────────────────────┘
+                                    │
+                ┌───────────────────┼───────────────────┐
+                ▼                   ▼                   ▼
+         L0 guard (fs)      L1 hourly (cron)    L2 per-task (JSONL)
+         filesystem         watchdog agent      last_seen.jsonl
+         corruption         stall detection     producer liveness
+         check
 ```
 
-The skill is for multi-hour or multi-day research runs, not single-pass
-drafting. For `conference` and `journal-q1` tiers, writing is blocked until
-`state/research_acceptance.md` records `PASS` or `WAIVED_BY_HUMAN`.
+**Research gate (T6.1/T6.2):** A `KEEP / DISCARD / PIVOT / WAIVE` verdict is
+written to `state/research_acceptance.md`. For `conference` and `journal-q1`
+tiers, the writing stage (T7) refuses to start unless the verdict is `KEEP`
+or `WAIVED_BY_HUMAN`. This is the lever that prevents the "explore for hours,
+write a near-zero paper" failure mode.
+
+**Resource manifest:** Every ephemeral resource (agent, cron, hook, lock,
+background process) is recorded in `state/resource_manifest.json`. On stop,
+complete, or abort, `cleanup-plan-resources.sh` walks this manifest so
+nothing leaks across plans.
+
+**Pause / resume:** Pause writes a sentinel file; the next L1 tick stops
+issuing new subagent tasks but keeps the plan state and watchdog alive.
+Resume re-runs the bootstrap self-check to repair any drift.
+
+For the deeper plan structure, see
+[`skills/autoresearch-paper/SKILL.md`](skills/autoresearch-paper/SKILL.md).
 
 ## When To Use
 
@@ -182,6 +241,39 @@ autoresearch-paper/
 └── docs/
 ```
 
+## FAQ
+
+**Q: Can I run it on Codex CLI or Claude Code without Mavis?**
+A: Partially. The skill installs cleanly on any Agent Skills-compatible
+runtime, and the brief → plan → T0 evaluator path works. The autonomous
+run loop (T1–T8 with watchdog cron, hooks, and pause/resume) requires the
+Mavis plan engine. A portable-runtime abstraction is on the wishlist
+(see [Status](#status) for design notes) but not scheduled.
+
+**Q: The research gate rejected my run. Can I waive it?**
+A: Yes. `journal-q1` and `conference` tiers block writing without a `KEEP`
+or `WAIVED_BY_HUMAN` verdict in `state/research_acceptance.md`. Set the
+verdict explicitly; do not bypass silently. The skill logs the waiver
+author, reason, and timestamp so reviewers can audit it.
+
+**Q: What if the watchdog keeps reporting stalls?**
+A: Check `last_seen.jsonl` and the L0 corruption guard output. Common
+causes: a worker task exceeded the 30-minute ceiling, the plan dir
+moved, or the JSONL is being written outside the plan dir. The rescue
+daemon (`references/scripts/plan-rescue-daemon.py`) is the entry point
+for diagnosis.
+
+**Q: Does the skill write the final paper?**
+A: It produces a structured paper draft and evidence bundle. It does not
+submit to venues, does not promise a camera-ready PDF, and does not
+replace human authorship of novel claims. See [Boundaries](#boundaries).
+
+**Q: How is cleanup different from stop?**
+A: `stop` cancels the plan and runs cleanup together. `cleanup` runs the
+manifest-driven resource teardown without cancelling — useful when a
+plan is in an unrecoverable state but you want to free the runtime
+resources before restarting.
+
 ## Boundaries
 
 The skill produces a structured paper draft and evidence bundle. It does
@@ -205,6 +297,42 @@ scripts/setup.sh test
 The test path runs contract validation and unit tests for research gates,
 L0 dry-run behavior, plan-dir resolution, stop/cleanup JSON escaping, and
 manifest-based resource cleanup.
+
+## Changelog
+
+Per-version notes live in
+[`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
+Quick highlights:
+
+- **v0.6.0** — Agent Skills monorepo layout (`npx skills add` support),
+  cleanup-script subcommand fix, full test bundle under `tests/`.
+- **v0.4.0** — Platform-portable daemon pattern (no Linux `setsid`
+  dependency), producer discipline, model preload for in-process NN
+  pipelines.
+- **v0.3.1** — V6 evidence-driven optimization rounds (verifier
+  spot-check, 0% framing recipe, wide-table camera-ready fix).
+- **v0.3.0** — Rescue Layer (L0 guard, watchdog daemon, abort gate,
+  workspace isolation) and three failure-mode FMs.
+- **v0.2.0** — Three-tier plan templates and heartbeat contract.
+
+For the complete history, see the git log of
+`skills/autoresearch-paper/SKILL.md`.
+
+## Citation
+
+If this skill contributed to a paper or research artifact, you can cite the
+release as:
+
+```bibtex
+@software{autoresearch_paper,
+  title  = {Autoresearch Paper: A Research-First Brief-to-Paper Pipeline
+            with Evaluator Freeze and Heartbeat Watchdog},
+  author = {WdBlink},
+  year   = {2026},
+  url    = {https://github.com/WdBlink/autoresearch-paper},
+  version = {0.6.0}
+}
+```
 
 ## License
 

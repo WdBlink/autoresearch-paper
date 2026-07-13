@@ -296,6 +296,32 @@ On completion, report:
 - `references/reviewer-readiness-rubric.md` — reviewer-readiness scoring
 - `references/scripts/` — L0, rescue, cleanup, pause/resume/stop helpers
 
+## Versioning
+
+Per-release changelog. Versions follow semver-ish semantics within the
+Mavis skill family (major = breaking orchestrator contract, minor = new
+feature, patch = fixes). The full per-commit history is in the git log of
+this file.
+
+- **v0.6.0 (2026-06-26)** — Agent Skills monorepo layout. The skill bundle
+  moves to `skills/autoresearch-paper/` so `npx skills add` resolves it.
+  Cleanup-script subcommand fix (`mavis agent archive` → `delete`,
+  `mavis session archive` → `compress`).
+- **v0.4.0 (2026-06-26)** — Platform-portable daemon pattern: drop Linux
+  `setsid` dependency, add producer-discipline pre-flight checklist, and
+  add the harness-paper honest-framing pattern to the reviewer rubric.
+- **v0.3.1-r5 (2026-06-25)** — Wide-table 2-column span recipe
+  (Step 7.5.a + FM-15) for camera-ready LaTeX output.
+- **v0.3.1 (2026-06-25)** — V6 evidence: engine-ceiling handling, verifier
+  spot-check recipe, and the "0% framing" honesty pattern for negative
+  results.
+- **v0.3.0 (2026-06-24)** — Rescue Layer: L0 filesystem-corruption guard,
+  hourly watchdog cron, plan-rescue daemon, and three failure-mode FMs.
+  Also adds the abort-gate and workspace-isolation checkpoint contracts.
+- **v0.2.0 and earlier** — Three-tier plan templates
+  (`arxiv` / `conference` / `journal-q1`), heartbeat contract, and the
+  original brief-to-paper pipeline.
+
 ## License
 
 MIT.
