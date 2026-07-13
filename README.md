@@ -25,8 +25,9 @@ start writing.
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** the orchestrator currently depends on the Mavis plan
   engine; portable-runtime support (Codex / Claude Code adapter) is
-  on the wishlist but not scheduled. See the design notes in
-  [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md).
+  on the planning board but not scheduled. See the design notes in
+  [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
+  and forward-looking plans in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - **Maintenance:** issues and PRs welcome; major refactors land in
   feature branches first.
 
