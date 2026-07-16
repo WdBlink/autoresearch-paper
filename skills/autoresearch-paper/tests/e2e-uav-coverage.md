@@ -21,8 +21,11 @@ research is synthetic.
 
 ## Pre-conditions
 
-- Mavis CLI installed and authenticated (`mavis session list` returns
-  at least one entry).
+- Mavis CLI installed and authenticated (the `mavis team plan ...` subset
+  is the only CLI that remains in v0.7.0+; verify with
+  `mavis team plan list`). The native `mavis` tool must be available
+  inside the calling agent runtime for agent/cron/session/hook
+  operations.
 - Mavis GUI running (MiniMax Code.app) so the watchdog cron can fire.
 - A scratchpad directory: `<mavis-scratchpad-root>/autoresearch/`.
 
@@ -122,8 +125,12 @@ mavis team plan run --plan <mavis-scratchpad-root>/.../plan.yaml
   - `tier = conference`
   - `plan-dir = <mavis-scratchpad-root>/.../`
 - After bootstrap:
-  - `mavis cron list | grep uav-coverage-wd-liveness` shows the cron.
-  - `mavis hook list | grep first-action-last-seen-uav-coverage` shows the hook.
+  - The watchdog agent file `~/.mavis/agents/uav-coverage-wd/agent.md` exists.
+  - The watchdog cron file `~/.mavis/agents/uav-coverage-wd/crons/uav-coverage-wd-liveness.md` exists.
+  - The first-action-last-seen hook file `~/.mavis/hooks/first-action-last-seen-uav-coverage.json.md` exists.
+  - (In v0.7.0+ there is no `mavis cron list` or `mavis hook list` CLI;
+    verify by reading the files directly. The daemon picks them up
+    on its next scan.)
   - `WATCHDOG.md` exists in plan-dir.
   - `resource_manifest.json` exists and lists the watchdog agent, cron,
     hook, and cleanup-owned resources.
@@ -135,7 +142,7 @@ mavis team plan run --plan <mavis-scratchpad-root>/.../plan.yaml
 Manually trigger a watchdog patrol:
 
 ```
-mavis cron trigger uav-coverage-wd uav-coverage-wd-liveness
+mavis({ command: "cron trigger", args: { cron_id: "uav-coverage-wd/uav-coverage-wd-liveness" } })
 ```
 
 **Assert**:
@@ -236,7 +243,10 @@ assert the documented failure behavior.
 PATH=/usr/bin:/bin bash bootstrap-watchdog.sh uav-coverage conference /tmp/plan
 ```
 
-**Assert**: script exits 1 with `mavis CLI not found in PATH`.
+**Assert**: script exits 1 with `mavis CLI not found in PATH (needed for
+`mavis team plan ...`)`. (v0.7.0+: the only `mavis` subcommand that
+remains a CLI is `mavis team plan ...`. The script's other resource
+writes are direct file ops and do not need the CLI.)
 
 ### FM-2 — Bad tier
 
@@ -317,8 +327,12 @@ references/scripts/stop-plan.sh <plan-id> --reason e2e-cleanup
 After the e2e run:
 
 ```
-mavis cron delete uav-coverage-wd uav-coverage-wd-liveness
-mavis hook delete first-action-last-seen-uav-coverage.json
+# v0.7.0+: cron/hook/agent deletes are direct file operations. The
+# legacy `mavis cron delete`, `mavis hook delete`, `mavis agent delete`
+# CLIs are removed.
+rm -f ~/.mavis/agents/uav-coverage-wd/crons/uav-coverage-wd-liveness.md
+rm -f ~/.mavis/hooks/first-action-last-seen-uav-coverage.json.md
+rm -rf ~/.mavis/agents/uav-coverage-wd
 references/scripts/cleanup-plan-resources.sh <mavis-scratchpad-root>/autoresearch/uav-coverage --reason e2e-cleanup
 rm -rf <mavis-scratchpad-root>/autoresearch/uav-coverage
 ```

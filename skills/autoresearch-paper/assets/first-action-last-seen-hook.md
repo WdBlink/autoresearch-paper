@@ -5,7 +5,9 @@ agent into `<plan-dir>/last_seen.jsonl`. The watchdog reads this on
 each hourly patrol to detect liveness and staleness.
 
 This file is consumed by `bootstrap-watchdog.sh`. The script reads
-its contents and passes it to `mavis hook create -b`.
+its contents and writes them to `~/.mavis/hooks/<name>.json.md` (a
+plain markdown file with frontmatter). The legacy `mavis hook create -b`
+CLI is removed in v0.7.0; the daemon picks the file up on its next scan.
 
 ## Why PostToolUse and not SessionStart
 
@@ -15,7 +17,7 @@ common tools (`Read|Write|Edit|Bash`) gives us a heartbeat that
 approximates "the agent is still working" without firing on
 trivial internal events.
 
-## Hook body (markdown with code block — what `mavis hook create -b` expects)
+## Hook body (markdown with code block — what `~/.mavis/hooks/<name>.json.md` expects)
 
 ````markdown
 # First-Action Last-Seen — append a heartbeat line to the plan's last_seen.jsonl
@@ -63,6 +65,7 @@ On each patrol tick, the watchdog:
 4. Compares each `ts` against that task's expected wall-clock from
    plan.yaml. If older than 2× expected, emit `stale-task` finding.
 5. If a task has no entry at all in last_seen.jsonl but is in
-   `running` state per `mavis team plan status`, emit
+   `running` state per `mavis team plan status` (the only `mavis`
+   subcommand still exposed as a CLI in v0.7.0+), emit
    `no-heartbeat` finding (severity `critical`).
 ````

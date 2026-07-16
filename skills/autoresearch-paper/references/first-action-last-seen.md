@@ -14,7 +14,10 @@ runtime hook body lives in `assets/first-action-last-seen-hook.md`.
 register_last_seen_hook(plan_dir, topic_slug) -> hook_name
 
 read assets/first-action-last-seen-hook.md
-call mavis hook create <hook_name>.json with event PostToolUse
+write the body (with hookEvent=PostToolUse frontmatter) to
+  `~/.mavis/hooks/<hook_name>.json.md`
+  (v0.7.0+: the legacy `mavis hook create` CLI is removed; hooks
+  are plain files. The daemon picks them up on its next scan.)
 set PLAN_DIR for worker sessions before the hook runs
 assert <plan-dir>/last_seen.jsonl exists
 return hook_name

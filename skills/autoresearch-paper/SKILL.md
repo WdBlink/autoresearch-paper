@@ -1,10 +1,10 @@
 ---
 name: autoresearch-paper
-description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use when the user wants "帮我把这个课题写成论文", "autoresearch 写 paper", "先把算法做出来再写论文", or a multi-hour/multi-day Mavis plan with evaluator freeze, implementation/experiment loop, research acceptance gate, L0/L1/L2 heartbeat, pause/resume/stop, and manifest cleanup.
+description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use when the user wants "帮我把这个课题写成论文", "autoresearch 写 paper", "先把算法做出来再写论文", or a multi-hour/multi-day Mavis plan with evaluator freeze, implementation/experiment loop, research acceptance gate, L0/L1/L2 heartbeat, pause/resume/stop, and manifest cleanup. Targets Mavis / MiniMax Code environments where the runtime exposes the native `mavis` tool (agent / cron / session / team plan) and direct hook files under `~/.mavis/hooks/` — the legacy `mavis agent|cron|session|hook` CLI subcommands are removed.
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.6.0"
+  version: "0.7.0"
 ---
 
 # Autoresearch Paper
@@ -52,7 +52,7 @@ run references/bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir> [--rescue if
 run mavis team plan run --plan <plan-dir>/plan.yaml
 register plan id with references/scripts/register-plan-id.py
 while plan is running:
-    observe mavis status + last_seen.jsonl + state/progress.json + l0/watchdog health
+    observe mavis team plan status + last_seen.jsonl + state/progress.json + l0/watchdog health
     honor status, pause, resume, stop, cleanup, rescue-status commands
     surface watchdog/L0 findings without destructive action
 on finish or user stop:
@@ -171,9 +171,9 @@ references/bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir> [--rescue]
 
 The bootstrap script creates or verifies:
 
-- one stable watchdog agent using `mavis agent new`
-- one hourly Mavis cron for L1 patrol
-- one PostToolUse hook from `assets/first-action-last-seen-hook.md` for L2 heartbeats
+- one stable watchdog agent via the native `mavis` tool (`mavis({ command: "agent create", args: { name: "<topic>-wd", system_prompt: "..." } })`)
+- one hourly Mavis cron for L1 patrol (written to `~/.mavis/agents/<agent>/crons/<name>.md`)
+- one PostToolUse hook from `assets/first-action-last-seen-hook.md` for L2 heartbeats (written directly to `~/.mavis/hooks/<name>.json.md`; no daemon CLI call)
 - `resource_manifest.json`
 - initial research state and control directories
 - optional launchd-managed L0 rescue daemon
@@ -247,7 +247,7 @@ do not count as evidence.
 
 | ID | Trigger | First-line fix | Fallback |
 |---|---|---|---|
-| FM-1 | `mavis` missing | run `scripts/setup.sh` and install/activate Mavis | abort before Step 5 |
+| FM-1 | `mavis` missing (CLI for `team plan ...`) | run `scripts/setup.sh` and install/activate Mavis | abort before Step 5 |
 | FM-3a | malformed YAML | retry stricter YAML generation up to 3 total attempts | fill the tier template mechanically |
 | FM-3b | model refuses YAML | classify refusal; do not retry blindly | bypass model and fill template mechanically |
 | FM-4 | agent/cron/hook already exists | treat as idempotent; skip existing resource | ask user for a new slug suffix |
@@ -303,6 +303,14 @@ Mavis skill family (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.7.0 (2026-07-16)** — CLI → tool migration. The legacy
+  `mavis agent|cron|session|hook|archive` CLI subcommands are removed by
+  the runtime; the skill is rewired to use the native `mavis` tool for
+  agent/cron/session, direct file writes for hooks (`~/.mavis/hooks/...`),
+  and direct cron/agent file removal during cleanup. `mavis team plan ...`
+  remains a CLI (with the v0.7 flag rename `abort` → `cancel`).
+  `mavis communication send` is marked deprecated (no replacement
+  contract yet — surface as a finding instead of auto-sending).
 - **v0.6.0 (2026-06-26)** — Agent Skills monorepo layout. The skill bundle
   moves to `skills/autoresearch-paper/` so `npx skills add` resolves it.
   Cleanup-script subcommand fix (`mavis agent archive` → `delete`,

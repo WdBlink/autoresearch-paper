@@ -11,6 +11,10 @@ Designed to run every minute (cron or launchd). For each running/paused plan:
   2. Call local_llm_judge.py with the decision context (state + verifier
      feedback) to get a structured verdict.
   3. Apply the verdict via `mavis team plan decision` + `resume`/`cancel`.
+     v0.7.0+: `mavis team plan ...` remains a CLI; flag names may have
+     shifted (`abort` → `cancel`). This daemon is on the supported CLI
+     subset so it should still work, but check the plan-engine contract
+     if a flag starts failing.
   4. Log everything to plan/watchdog-log.md + state/rescue_history.jsonl.
 
 Honors:
@@ -279,7 +283,12 @@ Decide: take one action and emit strict JSON.
 
 
 def apply_decision(plan_id: str, verdict: dict[str, Any], reason: str) -> tuple[str, str]:
-    """Apply verdict via mavis team plan decision/resume/cancel."""
+    """Apply verdict via mavis team plan decision/resume/cancel.
+
+    v0.7.0+: the only `mavis` CLI subcommands still in the runtime are
+    the `team plan ...` family (status / cancel / resume / decision).
+    This function uses those, so it does not need a tool-form rewrite.
+    """
     v = verdict.get("verdict", "nudge")
     cmd_kind = {
         "accept": "accept",

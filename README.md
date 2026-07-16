@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.6.0 (Mavis-native, macOS / Linux)
+- **Current version:** v0.7.0 (Mavis-native, macOS / Linux; CLI → tool migration)
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** the orchestrator currently depends on the Mavis plan
@@ -305,6 +305,13 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.7.0** — CLI → tool migration. The legacy
+  `mavis agent|cron|session|hook|archive` CLI subcommands are removed by
+  the runtime; the skill is rewired to use the native `mavis` tool
+  (agent/cron/session) and direct file writes for hooks
+  (`~/.mavis/hooks/...`). Only `mavis team plan ...` remains a CLI
+  (with the v0.7 rename `abort` → `cancel`). `mavis communication send`
+  is marked deprecated.
 - **v0.6.0** — Agent Skills monorepo layout (`npx skills add` support),
   cleanup-script subcommand fix, full test bundle under `tests/`.
 - **v0.4.0** — Platform-portable daemon pattern (no Linux `setsid`
@@ -331,7 +338,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.6.0}
+  version = {0.7.0}
 }
 ```
 
@@ -343,7 +350,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.6.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.7.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

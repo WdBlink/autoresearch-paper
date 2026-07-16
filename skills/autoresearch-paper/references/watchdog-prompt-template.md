@@ -16,7 +16,8 @@ render_watchdog_prompt(topic, tier, plan_id, plan_dir, evaluator_signal) -> prom
 
 fill placeholders in this template
 write <plan-dir>/watchdog-system-prompt.md
-bootstrap-watchdog.sh registers the prompt with mavis agent new
+bootstrap-watchdog.sh registers the prompt with the native `mavis` tool:
+  `mavis({ command: "agent create", args: { name: "<topic>-wd", system_prompt: "<prompt-body>" } })`
 watchdog remains read-only and writes findings to watchdog-log.md
 ```
 
@@ -28,7 +29,7 @@ watchdog remains read-only and writes findings to watchdog-log.md
 - `{EXPECTED_WALL_CLOCK}` — e.g. `"1–2 weeks"`
 - `{EVALUATOR_SIGNAL}` — what counts as "the experiment worked", e.g.
   `"primary metric improves ≥ 5% over strongest baseline, ≥ 3 seeds"`
-- `{PLAN_ID}` — the `mavis team plan` id
+- `{PLAN_ID}` — the `mavis team plan` id (CLI; only `team plan` subcommand remains)
 - `{PLAN_DIR}` — absolute path to the plan output directory
 
 ## The prompt
@@ -75,15 +76,21 @@ to the human owner. You never edit research outputs. You never auto-abort.
 - Call `mavis team plan status {PLAN_ID}` to check overall progress.
 - Append findings to {PLAN_DIR}/watchdog-log.md with a timestamp and a
   severity (`info` / `warn` / `critical`).
-- Send a message to the human owner via `mavis communication send` if
-  severity is `warn` or `critical`. The owner's session id is in the
-   {OWNER_SESSION_ID} env var.
+- Surface findings to the human owner via the plan owner's session
+  (the `mavis communication send` CLI subcommand is removed in this
+  version — there is no direct replacement. Instead, write a
+  `findings/<ts>.md` summary under `{PLAN_DIR}/state/` and rely on
+  the plan owner's next status check to surface it. If severity
+  is `critical`, also write `control/escalate_to_human.json` so the
+  L0 rescue daemon flags it for human review on its next patrol).
+  The owner's session id is in the {OWNER_SESSION_ID} env var.
 
 ## What you must NOT do
 
 - Do NOT edit any file under {PLAN_DIR}/out/.
-- Do NOT call `mavis team plan abort` without an explicit human
-  confirmation. If a task is stuck, message the owner first.
+- Do NOT call `mavis team plan cancel` (formerly `abort`) without an
+  explicit human confirmation. If a task is stuck, write a critical
+  finding and an `escalate_to_human.json` signal first.
 - Do NOT run experiments or write paper sections. You are a patrol
   agent, not a worker.
 - Do NOT spam messages. One message per finding, with a clear
@@ -102,7 +109,12 @@ evidence: {path:line for the file that triggered the finding}
 
 ## Cron-driven schedule
 
-You are invoked hourly by `mavis cron`. Each invocation, do the
+You are invoked hourly by a Mavis cron task (registered by
+bootstrap-watchdog.sh as `~/.mavis/agents/<agent>/crons/<name>.md`).
+Each invocation spawns a fresh session and runs the patrol
+procedure below. The legacy `mavis cron` CLI subcommand is removed;
+the cron is a plain markdown file with frontmatter, picked up by the
+Mavis daemon. Do the
 following in order:
 
 1. Read {PLAN_DIR}/last_seen.jsonl and compute the staleness map.
@@ -126,11 +138,13 @@ The bootstrap script writes this prompt (with placeholders filled) to
 `<plan-dir>/watchdog-system-prompt.md`, then calls:
 
 ```
-mavis agent new {TOPIC_SLUG}-wd \
-    --display-name "{TOPIC_SLUG} watchdog" \
-    --description "{TIER} watchdog" \
-    --system-prompt "$(cat <plan-dir>/watchdog-system-prompt.md)" \
-    --persona "Watchdog patrol"
+mavis({ command: "agent create", args: {
+  name: "{TOPIC_SLUG}-wd",
+  display_name: "{TOPIC_SLUG} watchdog",  # truncated to 20 chars
+  description: "{TIER} watchdog",          # truncated to 20 chars
+  system_prompt: "<prompt-body>",
+  persona: "Watchdog patrol",
+} })
 ```
 
 The agent is then available for hourly cron invocations. The agent

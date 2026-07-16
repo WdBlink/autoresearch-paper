@@ -12,13 +12,18 @@
 #                filled in by the skill)
 #
 # What this script does, in order:
-#   1. Verify preconditions (mavis CLI, plan-dir, prompt file).
-#   2. Register an hourly cron task that, on each tick, spawns a fresh
-#      session running the watchdog patrol (using --session-mode new).
-#   3. Register a first-action-last-seen hook so every worker task
-#      writes a timestamp to {plan-dir}/last_seen.jsonl on first tool
-#      use.
-#   4. Write {plan-dir}/WATCHDOG.md describing the watchdog setup and
+#   1. Verify preconditions (mavis CLI for `team plan ...`, plan-dir, prompt file).
+#   2. Register the watchdog agent by writing `~/.mavis/agents/<name>/agent.md`
+#      + `config.yaml` directly (the daemon picks the file up on its next
+#      scan; the legacy `mavis agent new` CLI is removed in v0.7.0).
+#   3. Register an hourly cron task by writing
+#      `~/.mavis/agents/<agent>/crons/<name>.md` (markdown with frontmatter).
+#      The daemon picks it up; the legacy `mavis cron create` CLI is removed.
+#   4. Register a first-action-last-seen hook by writing
+#      `~/.mavis/hooks/<name>.json.md` (markdown with frontmatter). The
+#      legacy `mavis hook create` CLI is removed — hooks are plain files
+#      in v0.7.0+.
+#   5. Write {plan-dir}/WATCHDOG.md describing the watchdog setup and
 #      how the user can manually ping it.
 #
 # Idempotent: re-running with the same arguments detects existing
@@ -94,11 +99,14 @@ die() { printf '[bootstrap-watchdog][ERROR] %s\n' "$*" >&2; exit 1; }
 
 # ----- 1. Preconditions -----------------------------------------------
 
-command -v mavis >/dev/null 2>&1 || die "mavis CLI not found in PATH"
+# v0.7.0+: only `mavis team plan ...` is a CLI in v0.7+. The agent/cron/
+# session/hook subcommands are removed; the script writes those resources
+# directly to the runtime's well-known file paths.
+command -v mavis >/dev/null 2>&1 || die "mavis CLI not found in PATH (needed for `mavis team plan ...`)"
 [[ -d "${PLAN_DIR}" ]] || die "plan-dir does not exist: ${PLAN_DIR}"
 [[ -f "${PROMPT_FILE}" ]] || die "watchdog prompt not found: ${PROMPT_FILE} (the skill must write it before running this script)"
 [[ -f "${HOOK_FILE}" ]] || die "hook file not found: ${HOOK_FILE}"
-mkdir -p "${STATE_DIR}" "${CONTROL_DIR}"
+mkdir -p "${STATE_DIR}" "${CONTROL_DIR}" "${HOME}/.mavis/agents/${AGENT_NAME}" "${HOME}/.mavis/agents/${AGENT_NAME}/crons" "${HOME}/.mavis/hooks"
 
 case "${TIER}" in
   arxiv|conference|journal-q1) ;;
@@ -109,18 +117,19 @@ NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ----- 2. Watchdog agent (must exist before cron) --------------------
 #
-# `mavis cron create` requires the agent to already be registered.
-# We register it here with `mavis agent new` using the watchdog system
-# prompt as the agent's system prompt. This makes the watchdog a
-# first-class Mavis agent with hourly cron-driven patrols.
+# v0.7.0+: the legacy `mavis agent new` CLI is removed. The runtime
+# discovers agents by scanning `~/.mavis/agents/<name>/agent.md` on each
+# tick. We write that file directly. The cron and hook assets will
+# appear on the daemon's next scan (~30 s typical).
+#
+# `display-name`, `description`, and `persona` are still capped at 20
+# chars by the daemon (validation error 40002 — same constraint as agent
+# name). Truncate the human-readable labels to fit before writing.
 
 log "creating agent: ${AGENT_NAME} (display: ${TOPIC_SLUG} paper watchdog)"
 
 PROMPT_BODY="$(cat "${PROMPT_FILE}")"
 
-# `display-name` and `description` are both capped at 20 chars by the
-# Mavis daemon (validation error 40002 — same constraint as agent
-# name). Truncate the human-readable labels to fit.
 MAX_LABEL_LEN=20
 DISPLAY_NAME="${TOPIC_SLUG} paper watchdog"
 if [[ ${#DISPLAY_NAME} -gt ${MAX_LABEL_LEN} ]]; then
@@ -135,22 +144,55 @@ if [[ ${#PERSONA} -gt ${MAX_LABEL_LEN} ]]; then
   PERSONA="${PERSONA:0:${MAX_LABEL_LEN}}"
 fi
 
-# shellcheck disable=SC2086
-mavis agent new "${AGENT_NAME}" \
-  --display-name "${DISPLAY_NAME}" \
-  --description "${DESCRIPTION}" \
-  --system-prompt "${PROMPT_BODY}" \
-  --persona "${PERSONA}" \
-  || log "  agent create failed (likely already exists) — skipping"
+AGENT_DIR="${HOME}/.mavis/agents/${AGENT_NAME}"
+mkdir -p "${AGENT_DIR}"
+AGENT_FILE="${AGENT_DIR}/agent.md"
+CONFIG_FILE="${AGENT_DIR}/config.yaml"
+
+if [[ -f "${AGENT_FILE}" ]]; then
+  log "  agent file already exists: ${AGENT_FILE} — skipping"
+else
+  cat > "${AGENT_FILE}" <<EOF
+<!-- mavis:bootstrap-agent-md v0.7.0 -->
+<!--
+This file is created by autoresearch-paper/bootstrap-watchdog.sh.
+The Mavis daemon scans this directory and treats the file as a
+first-class agent (system_prompt is the file body).
+-->
+name: ${AGENT_NAME}
+display_name: ${DISPLAY_NAME}
+description: ${DESCRIPTION}
+persona: ${PERSONA}
+created_at: ${NOW_UTC}
+created_by: autoresearch-paper v0.7.0
+topic_slug: ${TOPIC_SLUG}
+tier: ${TIER}
+plan_dir: ${PLAN_DIR}
+---
+
+${PROMPT_BODY}
+EOF
+  log "  wrote ${AGENT_FILE}"
+fi
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  cat > "${CONFIG_FILE}" <<EOF
+channel:
+  default: silent
+EOF
+  log "  wrote ${CONFIG_FILE}"
+fi
 
 # ----- 3. Hourly cron --------------------------------------------------
 #
-# Each cron tick creates a fresh session (--session-mode new) and sends
-# the watchdog system prompt. The session runs the patrol procedure,
-# emits findings to {PLAN_DIR}/watchdog-log.md, and exits. No persistent
-# session means no per-session context bloat.
+# v0.7.0+: the legacy `mavis cron create` CLI is removed. Crons are
+# markdown files at `~/.mavis/agents/<agent>/crons/<name>.md`. Each
+# tick spawns a fresh session (session_mode: new) and sends the
+# watchdog system prompt. The session runs the patrol procedure,
+# emits findings to {PLAN_DIR}/watchdog-log.md, and exits. No
+# persistent session means no per-session context bloat.
 #
-# --keep-sessions 5 limits visible sessions to the most recent 5 patrols,
+# keep_sessions=5 limits visible sessions to the most recent 5 patrols,
 # so the agent's session list does not grow unbounded.
 
 log "creating hourly cron: ${CRON_NAME}"
@@ -158,35 +200,67 @@ log "  schedule: 0 * * * *"
 log "  session-mode: new"
 log "  agent: ${AGENT_NAME}"
 
-# shellcheck disable=SC2086  # CRON_NAME is intentionally positional
-mavis cron create "${AGENT_NAME}" "${CRON_NAME}" \
-  --schedule "0 * * * *" \
-  --prompt "Hourly watchdog patrol for ${TOPIC_SLUG} (tier=${TIER}). Run the patrol procedure described in your system prompt. Read ${PLAN_DIR}/last_seen.jsonl and ${PLAN_DIR}/watchdog-log.md, emit findings." \
-  --session-mode new \
-  --keep-sessions 5 \
-  --timezone "Asia/Shanghai" || \
-  log "  cron create failed (likely already exists) — skipping"
+CRON_DIR="${AGENT_DIR}/crons"
+mkdir -p "${CRON_DIR}"
+CRON_FILE="${CRON_DIR}/${CRON_NAME}.md"
+
+if [[ -f "${CRON_FILE}" ]]; then
+  log "  cron file already exists: ${CRON_FILE} — skipping"
+else
+  cat > "${CRON_FILE}" <<EOF
+---
+name: ${CRON_NAME}
+schedule: 0 * * * *
+timezone: Asia/Shanghai
+agent: ${AGENT_NAME}
+session_mode: new
+keep_sessions: 5
+created_at: ${NOW_UTC}
+---
+
+Hourly watchdog patrol for ${TOPIC_SLUG} (tier=${TIER}). Run the patrol
+procedure described in your system prompt. Read ${PLAN_DIR}/last_seen.jsonl
+and ${PLAN_DIR}/watchdog-log.md, emit findings.
+EOF
+  log "  wrote ${CRON_FILE}"
+fi
 
 # ----- 4. First-action-last-seen hook ---------------------------------
 #
-# PostToolUse hook that, on every tool invocation by any worker agent
-# in this plan, appends a line to {PLAN_DIR}/last_seen.jsonl. This is
-# how the watchdog detects liveness — if a task has not invoked a tool
-# in 2× its expected wall-clock, the watchdog flags it as stale.
+# v0.7.0+: the legacy `mavis hook create` CLI is removed. Hooks are
+# markdown files at `~/.mavis/hooks/<name>.json.md`. PostToolUse hook
+# that, on every tool invocation by any worker agent in this plan,
+# appends a line to {PLAN_DIR}/last_seen.jsonl. This is how the
+# watchdog detects liveness — if a task has not invoked a tool in 2×
+# its expected wall-clock, the watchdog flags it as stale.
 
 log "creating hook: ${HOOK_FILE_NAME}.json"
 log "  event: PostToolUse"
 
+HOOK_DIR="${HOME}/.mavis/hooks"
+mkdir -p "${HOOK_DIR}"
+HOOK_DEST="${HOOK_DIR}/${HOOK_FILE_NAME}.json.md"
 HOOK_BODY="$(cat "${HOOK_FILE}")"
 
-# shellcheck disable=SC2086
-mavis hook create "${HOOK_FILE_NAME}.json" \
-  -e PostToolUse \
-  -t script \
-  --body "${HOOK_BODY}" \
-  --matcher '^(Read|Write|Edit|Bash)$' \
-  --timeout 5000 || \
-  log "  hook create failed (likely already exists) — skipping"
+if [[ -f "${HOOK_DEST}" ]]; then
+  log "  hook file already exists: ${HOOK_DEST} — skipping"
+else
+  cat > "${HOOK_DEST}" <<EOF
+---
+hookEvent: PostToolUse
+type: script
+priority: 100
+matcher: ^(Read|Write|Edit|Bash)\$
+timeout: 5000
+created_at: ${NOW_UTC}
+created_by: autoresearch-paper v0.7.0
+plan_dir: ${PLAN_DIR}
+---
+
+${HOOK_BODY}
+EOF
+  log "  wrote ${HOOK_DEST}"
+fi
 
 # ----- 5. Resource manifest + research state ---------------------------
 #
@@ -316,8 +390,12 @@ autoresearch paper pipeline for topic **${TOPIC_SLUG}** at tier
 
 ## How to interact manually
 
-- **Ping the watchdog now** (force an out-of-band patrol):
-  \`mavis cron trigger ${AGENT_NAME} ${CRON_NAME}\`
+- **Ping the watchdog now** (force an out-of-band patrol) — v0.7.0+:
+  \`mavis({ command: "cron trigger", args: { cron_id: "${AGENT_NAME}/${CRON_NAME}" } })\`
+  (the legacy \`mavis cron trigger <agent> <name>\` CLI is removed; the
+  native tool form is the supported way. As a fallback, touching the
+  cron file at \`~/.mavis/agents/${AGENT_NAME}/crons/${CRON_NAME}.md\`
+  bumps its mtime and the daemon will re-fire on its next tick).
 - **Read recent findings**:
   \`cat ${PLAN_DIR}/watchdog-log.md | tail -40\`
 - **Check last_seen freshness**:
@@ -328,10 +406,12 @@ autoresearch paper pipeline for topic **${TOPIC_SLUG}** at tier
 The watchdog emits one of these recommendations per finding:
 
 - \`wait\` — no action needed; the watchdog will re-check in 1 hour.
-- \`steer\` — the worker task needs guidance; reply to the worker
-  via \`mavis communication send\` with a steer message.
-- \`abort\` — the plan is unlikely to recover; ask the user before
-  calling \`mavis team plan abort\`.
+- \`steer\` — the worker task needs guidance; write a steer message to
+  the worker via the plan owner's session using the native \`mavis\`
+  tool (\`mavis communication send\` is removed in v0.7.0; use the
+  owner's session API instead).
+- \`cancel\` — the plan is unlikely to recover; ask the user before
+  calling \`mavis team plan cancel\` (formerly \`abort\`).
 - \`reopen\` — the task completed but the watchdog detected a
   problem; reopen the task in plan.yaml and re-run.
 - \`escalate-to-human\` — the watchdog cannot decide; surface the
@@ -430,7 +510,7 @@ if [[ "${RESCUE:-0}" == "1" ]]; then
   log "  - launchd plist: com.mavis.plan-rescue-daemon (Rescue Layer enabled)"
 fi
 log ""
-log "Manual ping: mavis cron trigger ${AGENT_NAME} ${CRON_NAME}"
+log "Manual ping: mavis({ command: 'cron trigger', args: { cron_id: '${AGENT_NAME}/${CRON_NAME}' } })  # legacy 'mavis cron trigger' CLI removed in v0.7.0"
 log "Read findings: cat ${PLAN_DIR}/watchdog-log.md"
 log ""
 log "Rescue Layer commands (if enabled):"

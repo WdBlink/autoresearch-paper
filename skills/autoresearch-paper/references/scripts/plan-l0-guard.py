@@ -175,25 +175,43 @@ def verify_resources(plan_dir: Path, repair: bool, dry_run: bool) -> dict[str, A
         return result
 
     if mavis_available():
-        cron_list = run_cmd(["mavis", "cron", "list"], dry_run)
-        hook_list = run_cmd(["mavis", "hook", "list"], dry_run)
-        cron_text = cron_list.get("stdout", "") + cron_list.get("stderr", "")
-        hook_text = hook_list.get("stdout", "") + hook_list.get("stderr", "")
-
-        for cron in manifest.get("crons", []) or []:
-            if isinstance(cron, dict):
-                name = cron.get("name")
-                if name and name not in cron_text:
-                    result["missing"].append(f"cron:{name}")
-        for hook in manifest.get("hooks", []) or []:
-            if isinstance(hook, dict):
-                name = hook.get("name")
-                if name and name not in hook_text:
-                    result["missing"].append(f"hook:{name}")
-    else:
-        if manifest.get("crons") or manifest.get("hooks"):
-            result["missing"].append("mavis_cli")
-        result["notes"].append("mavis CLI unavailable; cron/hook health is unchecked")
+        # v0.7.0+: `mavis cron list` and `mavis hook list` are removed.
+        # Use the native `mavis` tool to list crons/hooks for the agent.
+        # For now, fall through to the direct-file branch below — it
+        # is sufficient and works whether or not the CLI subset is
+        # available. If a future tool form is required, plug it in here.
+        pass
+    # Direct file check (works with or without the `mavis team plan`
+    # CLI subset; in v0.7.0+ the CLI for cron/hook/list is removed,
+    # so the file-based check is the primary path).
+    cron_root = Path.home() / ".mavis" / "agents"
+    for cron in manifest.get("crons", []) or []:
+        if not isinstance(cron, dict):
+            continue
+        agent = cron.get("agent")
+        name = cron.get("name")
+        if not agent or not name:
+            continue
+        cron_file = cron_root / agent / "crons" / f"{name}.md"
+        if not cron_file.exists():
+            result["missing"].append(f"cron:{agent}/{name}")
+    hook_root = Path.home() / ".mavis" / "hooks"
+    for hook in manifest.get("hooks", []) or []:
+        if not isinstance(hook, dict):
+            continue
+        name = hook.get("name")
+        if not name:
+            continue
+        # v0.7.0+: canonical file is `<name>.md` (manifest stores
+        # `first-action-last-seen-<topic>.json`, file is
+        # `first-action-last-seen-<topic>.json.md`). Also accept the
+        # pre-v0.7 convention `<name>.json.md` and the bare `<name>`
+        # form for safety against older manifests.
+        hook_canonical = hook_root / f"{name}.md"
+        hook_pre_v07 = hook_root / f"{name}.json.md"
+        hook_legacy = hook_root / name
+        if not (hook_canonical.exists() or hook_pre_v07.exists() or hook_legacy.exists()):
+            result["missing"].append(f"hook:{name}")
 
     for proc in manifest.get("local_processes", []) or []:
         if not isinstance(proc, dict):

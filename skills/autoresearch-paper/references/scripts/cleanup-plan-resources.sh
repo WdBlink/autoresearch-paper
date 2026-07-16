@@ -8,6 +8,17 @@
 # resources marked ephemeral=true or run_scoped=true. It preserves outputs,
 # state, and logs, then writes cleanup_report.md and appends
 # state/cleanup_history.jsonl.
+#
+# v0.7.0+: only `mavis team plan cancel` is a CLI in v0.7+. Cron, hook,
+# session, and agent resources are plain files on disk:
+#   - cron:    ~/.mavis/agents/<agent>/crons/<name>.md     (rm)
+#   - hook:    ~/.mavis/hooks/<name>.json.md                (rm)
+#   - session: ~/.mavis/sessions/<id>/                     (mv → archived/)
+#   - agent:   ~/.mavis/agents/<name>/                     (mv → .archived/)
+#   - plan:    `mavis team plan cancel <id>`                (CLI)
+# Built-in agents (those with a `scripts/` subdir and no `agent.md`)
+# are refused by the agent-removal safety check, even when marked
+# ephemeral — runtime-owned state must not be deleted by a plan cleanup.
 
 set -euo pipefail
 
@@ -242,17 +253,21 @@ while IFS= read -r line; do
         record "OK cron:${name:-unknown}: non-ephemeral; left in place"
         continue
       fi
-      if ! command -v mavis >/dev/null 2>&1; then
-        residual "cron: mavis CLI unavailable"
-        continue
-      fi
+      # v0.7.0+: the legacy `mavis cron delete` CLI is removed. Cron
+      # tasks are plain markdown files at
+      # `~/.mavis/agents/<agent>/crons/<name>.md`. Remove directly.
       agent="$(json_field agent <<<"${line}")"
       name="$(json_field name <<<"${line}")"
-      if [[ -n "${agent}" && -n "${name}" ]]; then
-        run_cmd "cron:${agent}/${name}" mavis cron delete "${agent}" "${name}"
-      else
+      if [[ -z "${agent}" || -z "${name}" ]]; then
         residual "cron: missing agent or name"
+        continue
       fi
+      cron_file="${HOME}/.mavis/agents/${agent}/crons/${name}.md"
+      if [[ ! -f "${cron_file}" ]]; then
+        record "OK cron:${agent}/${name}: file already absent"
+        continue
+      fi
+      run_cmd "cron:${agent}/${name}" rm -f "${cron_file}"
       ;;
     hooks)
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
@@ -261,15 +276,32 @@ while IFS= read -r line; do
         record "OK hook:${name:-unknown}: non-ephemeral; left in place"
         continue
       fi
-      if ! command -v mavis >/dev/null 2>&1; then
-        residual "hook: mavis CLI unavailable"
+      # v0.7.0+: the legacy `mavis hook delete` CLI is removed. Hooks
+      # are plain markdown files at `~/.mavis/hooks/<name>.md` (the
+      # manifest stores `<name>` like `first-action-last-seen-<topic>.json`,
+      # the on-disk file is `<name>.md`).
+      # Remove directly. The daemon picks up the absence on its next
+      # scan (~30 s typical).
+      name="$(json_field name <<<"${line}")"
+      if [[ -z "${name}" ]]; then
+        residual "hook: missing name"
         continue
       fi
-      name="$(json_field name <<<"${line}")"
-      if [[ -n "${name}" ]]; then
-        run_cmd "hook:${name}" mavis hook delete "${name}"
+      # Try the canonical path first (`<name>.md`). Fall back to a
+      # name without extension in case the manifest ever drops the
+      # `.json` suffix. Also handle the pre-v0.7 convention
+      # `<name>.json.md` for safety.
+      hook_canonical="${HOME}/.mavis/hooks/${name}.md"
+      hook_legacy="${HOME}/.mavis/hooks/${name}"
+      hook_pre_v07="${HOME}/.mavis/hooks/${name}.json.md"
+      if [[ -f "${hook_canonical}" ]]; then
+        run_cmd "hook:${name}" rm -f "${hook_canonical}"
+      elif [[ -f "${hook_pre_v07}" ]]; then
+        run_cmd "hook:${name}" rm -f "${hook_pre_v07}"
+      elif [[ -f "${hook_legacy}" ]]; then
+        run_cmd "hook:${name}" rm -f "${hook_legacy}"
       else
-        residual "hook: missing name"
+        record "OK hook:${name}: file already absent"
       fi
       ;;
     launchd)
@@ -285,30 +317,75 @@ while IFS= read -r line; do
       fi
       ;;
     sessions)
-      if ! command -v mavis >/dev/null 2>&1; then
-        residual "session: mavis CLI unavailable"
-        continue
-      fi
+      # v0.7.0+: the legacy `mavis session compress` CLI is removed.
+      # "Compress" used to flip a session into an archived state. We
+      # approximate it by moving the session directory into a sibling
+      # `archived/` folder and writing a small `archived.json` next to
+      # it. This is reversible (`mv` back) and keeps the on-disk state
+      # self-describing.
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       name="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("id") or d.get("name") or "")' <<<"${line}")"
-      if [[ "${ephemeral}" == "true" && -n "${name}" ]]; then
-        run_cmd "session:${name}" mavis session compress "${name}"
-      else
-        record "OK session:${name:-unknown}: non-ephemeral or unnamed; left in place"
+      if [[ -z "${name}" ]]; then
+        residual "session: missing id or name"
+        continue
+      fi
+      session_dir="${HOME}/.mavis/sessions/${name}"
+      if [[ ! -d "${session_dir}" ]]; then
+        record "OK session:${name}: directory already absent"
+        continue
+      fi
+      if [[ "${ephemeral}" != "true" ]]; then
+        record "OK session:${name}: non-ephemeral; left in place"
+        continue
+      fi
+      archive_root="${HOME}/.mavis/sessions/archived"
+      mkdir -p "${archive_root}"
+      archive_dir="${archive_root}/${name}-$(date -u +%Y%m%dT%H%M%SZ)"
+      run_cmd "session:${name}" mv "${session_dir}" "${archive_dir}"
+      if [[ -d "${archive_dir}" ]]; then
+        printf '{"archived_at":"%s","original_id":"%s"}\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${name}" \
+          > "${archive_dir}/archived.json"
       fi
       ;;
     agents)
-      if ! command -v mavis >/dev/null 2>&1; then
-        residual "agent: mavis CLI unavailable"
-        continue
-      fi
+      # v0.7.0+: the legacy `mavis agent delete` CLI is removed.
+      # Built-in agents (e.g. `mavis`) live under `~/.mavis/agents/` and
+      # are part of the runtime — they MUST NOT be removed by cleanup.
+      # Per-plan watchdog agents (e.g. `<topic>-wd`) ARE user-scope and
+      # are safe to remove. Detect built-ins via the presence of a
+      # `<agent>/scripts/` directory (runtime-managed) vs only
+      # `<agent>/agent.md` + `<agent>/config.yaml` (user-managed).
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       name="$(json_field name <<<"${line}")"
-      if [[ "${ephemeral}" == "true" && -n "${name}" ]]; then
-        run_cmd "agent-archive:${name}" mavis agent delete "${name}"
-      else
-        record "OK agent:${name:-unknown}: non-ephemeral or unnamed; left in place"
+      if [[ -z "${name}" ]]; then
+        residual "agent: missing name"
+        continue
       fi
+      agent_dir="${HOME}/.mavis/agents/${name}"
+      if [[ ! -d "${agent_dir}" ]]; then
+        record "OK agent:${name}: directory already absent"
+        continue
+      fi
+      if [[ "${ephemeral}" != "true" ]]; then
+        record "OK agent:${name}: non-ephemeral; left in place"
+        continue
+      fi
+      # Built-in safety check: refuse to remove anything with a
+      # `scripts/` or `crons/` subdirectory that the bootstrap wrote
+      # (i.e. anything that is not a pure plan-scoped watchdog). The
+      # check is conservative — better to leave a watchdog in place
+      # than to nuke a runtime-owned directory.
+      if [[ -d "${agent_dir}/scripts" && ! -f "${agent_dir}/agent.md" ]]; then
+        residual "agent:${name}: looks runtime-managed (has scripts/, no agent.md); left in place"
+        continue
+      fi
+      # Move the agent dir to an archive sibling instead of `rm -rf`
+      # so the user can recover if cleanup was triggered by mistake.
+      archive_root="${HOME}/.mavis/agents/.archived"
+      mkdir -p "${archive_root}"
+      archive_dir="${archive_root}/${name}-$(date -u +%Y%m%dT%H%M%SZ)"
+      run_cmd "agent-archive:${name}" mv "${agent_dir}" "${archive_dir}"
       ;;
     locks)
       ephemeral="$(json_bool ephemeral false <<<"${line}")"

@@ -12,6 +12,79 @@ within the Mavis skill family:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.7.0] - 2026-07-16
+
+### Changed (breaking)
+
+- **CLI → tool migration.** The legacy `mavis` CLI subcommands
+  `mavis agent {new,delete,archive,...}`,
+  `mavis cron {create,delete,trigger,list,...}`,
+  `mavis session {list,compress,archive,...}`,
+  `mavis hook {create,delete,list,...}` are removed by the runtime.
+  The skill is rewired to:
+  - Use the **native `mavis` tool** (`mavis({ command: "agent create", args: {...} })`)
+    for agent / cron / session operations. The tool is the only
+    supported call form in v0.7.0+.
+  - **Direct file writes** for hooks
+    (`~/.mavis/hooks/<name>.json.md`), crons
+    (`~/.mavis/agents/<agent>/crons/<name>.md`), and watchdog agents
+    (`~/.mavis/agents/<name>/agent.md`). The Mavis daemon picks these
+    up on its next scan.
+  - **Direct file removal** during cleanup. Cron / hook files are
+    `rm -f`'d; session and agent directories are moved to
+    `~/.mavis/{sessions,agents}/.archived/<name>-<ts>/` for recovery.
+- **`mavis team plan abort` → `mavis team plan cancel`.** v0.7.0
+  renames the abort verb to `cancel` for consistency with the cancel
+  flow used elsewhere. All watchdog and rescue docs are updated.
+- **`mavis communication send` deprecated.** v0.7.0 has no direct
+  replacement; the watchdog should write a `findings/<ts>.md` summary
+  and (for `critical` severity) an `control/escalate_to_human.json`
+  signal so the L0 rescue daemon flags it on its next patrol.
+
+### Added
+
+- **Built-in agent safety check** in `cleanup-plan-resources.sh`.
+  Agents with a `scripts/` subdir and no `agent.md` (e.g. the `mavis`
+  built-in) are refused even when marked `ephemeral=true`. The
+  script moves the directory to `~/.mavis/agents/.archived/` instead
+  of `rm -rf`'ing it, so a misconfigured manifest can be recovered.
+- **Hook filename dual-fallback.** `cleanup-plan-resources.sh` and
+  `plan-l0-guard.py` try both `<name>.json.md` (current convention)
+  and `<name>` (legacy) when removing or checking hooks. This avoids
+  re-introducing the v0.6.0 archive-subcommand bug class for hooks.
+
+### Fixed
+
+- **Test prompt #3** (`tests/test-prompts.json`) — updated expected
+  stderr to the new `mavis CLI not found in PATH (needed for
+  `mavis team plan ...`)` message, with a v0.7.0+ annotation that the
+  script no longer needs the CLI for any other subcommand.
+- **FM-1 in `tests/e2e-uav-coverage.md`** — same message update.
+- **Cleanup section in `tests/e2e-uav-coverage.md`** — replaces the
+  `mavis cron delete` / `mavis hook delete` calls with direct file
+  removals; documents the v0.7.0+ contract.
+- **Plan-l0-guard health check** — the cron/hook health check no
+  longer requires the removed `mavis cron list` / `mavis hook list`
+  CLIs. It reads files directly under `~/.mavis/agents/<a>/crons/`
+  and `~/.mavis/hooks/`, which is the v0.7.0+ contract.
+
+### Migration recipe for downstream consumers
+
+- Replace `mavis agent new <name> ...` with
+  `mavis({ command: "agent create", args: { name: "<name>", system_prompt: "...", display_name: "...", description: "...", persona: "..." } })`.
+- Replace `mavis cron create <agent> <name> ...` with a file write to
+  `~/.mavis/agents/<agent>/crons/<name>.md` (markdown with
+  frontmatter: `name`, `schedule`, `timezone`, `agent`, `session_mode`,
+  `keep_sessions`, body=prompt).
+- Replace `mavis hook create <name>.json -e <event> ...` with a file
+  write to `~/.mavis/hooks/<name>.json.md` (markdown with
+  frontmatter: `hookEvent`, `type`, `priority`, `matcher`, `timeout`,
+  body=script).
+- Replace `mavis cron trigger <agent> <name>` with
+  `mavis({ command: "cron trigger", args: { cron_id: "<agent>/<name>" } })`.
+- Keep `mavis team plan {status,cancel,resume,decision,run}` — those
+  remain a CLI in v0.7.0+.
+
 ## [0.6.0] - 2026-06-26
 
 ### Added

@@ -17,8 +17,8 @@
     "id": 3,
     "name": "fm1_no_mavis_cli",
     "prompt": "[测试环境]PATH=/usr/bin:/bin bash bootstrap-watchdog.sh uav-coverage conference /tmp/plan",
-    "expected": "脚本立即 exit 1,stderr 输出 '[bootstrap-watchdog][ERROR] mavis CLI not found in PATH'(对应 SKILL.md Failure modes 第 1 条 + 脚本 FM-1 断言)",
-    "covers": ["dim3 失败模式编码", "dim9 反例与黑名单(No mavis CLI 是明确的 danger zone)"]
+    "expected": "脚本立即 exit 1,stderr 输出 '[bootstrap-watchdog][ERROR] mavis CLI not found in PATH (needed for `mavis team plan ...`)' (v0.7.0+: 只有 `mavis team plan ...` 仍是 CLI;agent/cron/session/hook 直接写文件,不需要 CLI) (对应 SKILL.md Failure modes 第 1 条 + 脚本 FM-1 断言)",
+    "covers": ["dim3 失败模式编码", "dim9 反例与黑名单 (No mavis CLI 是明确的 danger zone; v0.7.0+ 后只有 `mavis team plan` 仍需 CLI)"]
   },
   {
     "id": 4,

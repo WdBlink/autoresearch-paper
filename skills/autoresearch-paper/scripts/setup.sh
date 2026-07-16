@@ -26,7 +26,7 @@ need_cmd() {
 
 need_cmd python3 "runs bundled guards and runtime tests" "install Python 3 and ensure python3 is on PATH"
 need_cmd jq "validates JSON prompts and runtime state during checks" "macOS: brew install jq"
-need_cmd mavis "runs the agent team, cron, hooks, and plan engine" "install or activate Mavis / MiniMax Code, then ensure mavis is on PATH"
+need_cmd mavis "runs `mavis team plan ...` CLI subset (status / cancel / resume / decision / run); v0.7.0+ removes the legacy `mavis agent|cron|session|hook` subcommands — those are file-direct or tool-form calls" "install or activate Mavis / MiniMax Code, then ensure mavis is on PATH"
 need_cmd codex "runs the optional local-LLM rescue judge" "install Codex CLI and sign in, or disable rescue with local_llm_disabled"
 need_cmd npx "installs skills from GitHub" "install Node.js 18+ so npx is available"
 
