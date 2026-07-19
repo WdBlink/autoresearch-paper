@@ -1,106 +1,26 @@
 #!/usr/bin/env bash
-# stop-plan.sh <plan_id|plan_dir> — forcefully stop a plan and mark it stopped.
-#
-# Writes control/stop_requested.json, asks the plan engine to cancel, then
-# runs cleanup-plan-resources.sh. The cleanup script deletes run-scoped
-# crons, hooks, temporary agents/sessions, processes, and locks recorded in
-# resource_manifest.json.
-#
-# State after stop:
-#   - state/stop_history.jsonl appended with timestamp
-#   - resource_manifest.json status = stopped_cleaned or stopped_with_residuals
-#   - cleanup_report.md names all cleaned and residual runtime resources
-#
-# Usage: stop-plan.sh <plan_id|plan_dir> [--reason <text>]
-
+# Authenticated stop wrapper; target cleanup consumes the applied stop receipt.
 set -euo pipefail
-
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <plan_id|plan_dir> [--reason <text>]" >&2
+if [[ $# -lt 5 ]]; then
+  echo "Usage: $0 <plan_id|plan_dir> --record <signed-record.json> --key-file <key> [--reason text] [--legacy-mavis]" >&2
   exit 2
 fi
-
-TARGET="$1"
-REASON="user requested stop"
-shift
+TARGET="$1"; shift
+RECORD=""; KEY_FILE=""; REASON="user requested stop"; LEGACY_MAVIS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --reason)
-      if [[ $# -lt 2 ]]; then
-        echo "--reason requires an argument" >&2
-        exit 2
-      fi
-      REASON="$2"
-      shift 2
-      ;;
+    --record) RECORD="${2:-}"; shift 2 ;;
+    --key-file) KEY_FILE="${2:-}"; shift 2 ;;
+    --reason) REASON="${2:-}"; shift 2 ;;
+    --legacy-mavis) LEGACY_MAVIS=1; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-
+[[ -n "${RECORD}" && -n "${KEY_FILE}" ]] || { echo "--record and --key-file are required" >&2; exit 2; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVER="${SCRIPT_DIR}/resolve-plan-dir.py"
-if [[ -x "${RESOLVER}" ]]; then
-  PLAN_DIR="$(python3 "${RESOLVER}" "${TARGET}")"
-elif [[ -d "${TARGET}" ]]; then
-  PLAN_DIR="$(cd "${TARGET}" && pwd)"
-else
-  PLAN_DIR="${HOME}/.mavis/plans/${TARGET}"
-fi
-PLAN_ID="$(python3 - "${PLAN_DIR}" "${TARGET}" <<'PY'
-import json, sys
-from pathlib import Path
-plan_dir = Path(sys.argv[1])
-target = sys.argv[2]
-try:
-    manifest = json.loads((plan_dir / "resource_manifest.json").read_text())
-    print(manifest.get("plan_id") or target)
-except Exception:
-    print(target)
-PY
-)"
-
-if [[ ! -d "$PLAN_DIR" ]]; then
-  echo "ERROR: plan dir not found: $PLAN_DIR" >&2
-  exit 1
-fi
-
-mkdir -p "${PLAN_DIR}/control" "${PLAN_DIR}/state"
-
-NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-python3 - "${PLAN_DIR}/control/stop_requested.json" "${NOW}" "$(whoami)" "${MAVIS_SESSION_ID:-unknown}" "${REASON}" <<'PY'
-import json, sys
-from pathlib import Path
-
-path, now, user, session, reason = sys.argv[1:]
-Path(path).write_text(json.dumps({
-    "ts": now,
-    "requested_by": user,
-    "session": session,
-    "reason": reason,
-}, indent=2) + "\n")
-PY
-cp "${PLAN_DIR}/control/stop_requested.json" "${PLAN_DIR}/stop_requested.json"
-
-# Append to stop history
-python3 - "${PLAN_DIR}/state/stop_history.jsonl" "${NOW}" "${REASON}" <<'PY'
-import json, sys
-from pathlib import Path
-
-path, now, reason = sys.argv[1:]
-with Path(path).open("a") as f:
-    f.write(json.dumps({"ts": now, "reason": reason}) + "\n")
-PY
-
-echo "[stop-plan] ${PLAN_ID}: stop requested at ${NOW} (reason: ${REASON})"
-if command -v mavis >/dev/null 2>&1; then
-  mavis team plan cancel "${PLAN_ID}" >/dev/null 2>&1 || true
-fi
-
-CLEANUP_SCRIPT="${SCRIPT_DIR}/cleanup-plan-resources.sh"
-if [[ -x "${CLEANUP_SCRIPT}" ]]; then
-  "${CLEANUP_SCRIPT}" "${PLAN_DIR}" --reason "${REASON}" --mode stop
-  echo "[stop-plan] cleanup report: ${PLAN_DIR}/cleanup_report.md"
-else
-  echo "[stop-plan] WARNING: cleanup script not found/executable: ${CLEANUP_SCRIPT}" >&2
-  echo "[stop-plan] rescue daemon will still detect within ${RESCUE_INTERVAL:-60}s and attempt cleanup"
-fi
+PLAN_DIR="$(python3 "${SCRIPT_DIR}/resolve-plan-dir.py" "${TARGET}")"
+python3 "${SCRIPT_DIR}/harness-runtime.py" apply-human-action \
+  --plan-dir "${PLAN_DIR}" --record "${RECORD}" --key-file "${KEY_FILE}" --expected-action stop
+ARGS=("${SCRIPT_DIR}/cleanup-plan-resources.sh" "${PLAN_DIR}" --authorization "${PLAN_DIR}/control/stop_requested.json" --reason "${REASON}" --mode stop)
+if [[ "${LEGACY_MAVIS}" == "1" ]]; then ARGS+=(--legacy-mavis); fi
+"${ARGS[@]}"

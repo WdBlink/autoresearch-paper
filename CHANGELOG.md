@@ -2,7 +2,7 @@
 
 All notable changes to **autoresearch-paper** are documented here.
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-within the Mavis skill family:
+within the Harness contract:
 
 - **Major** (1.0+) — breaking changes to the orchestrator contract or
   state-schema.
@@ -11,6 +11,41 @@ within the Mavis skill family:
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
+
+## [0.8.0] - 2026-07-18
+
+### Added
+
+- A Claude Code target-runtime adapter with immutable per-plan MiniMax M3 and
+  Codex model policy, bounded structured worker dispatch, and read-only tools.
+- A durable `frontier-advisor-v1` bridge for CP-01 through CP-04 with hashed
+  context manifests, atomic budget reservation, Codex CLI transport, response
+  schema validation, durable state, and idempotent advisory consumption.
+- MAVIS-free conformance coverage using fake Claude/Codex executables.
+- HMAC-signed, expiring, replay-protected lifecycle, waiver, worker-cancel,
+  and cleanup actions with durable audit receipts.
+- Frozen evaluator contracts, hash-bound machine verdicts, authenticated
+  writing waivers, and CP-04 final-evidence enforcement.
+- Typed runtime/scientific failure counters, distinct scientific pivot
+  eligibility, worker inspect/wait/message/cancel, file-backed patrol, and
+  exact-path owned-resource cleanup.
+- Plan/checkpoint/request/context-bound frontier responses, exact-once
+  dependent transitions, deadline expiration, restart assertion, and changed
+  artifact rejection.
+
+### Changed
+
+- Model-authored rescue verdicts are advisory records only. Forbidden accept,
+  override, waiver, or cancellation output is converted to human escalation
+  and never sent to a lifecycle command.
+- MAVIS is an explicit `--legacy-mavis` compatibility dependency; Claude Code
+  is the canonical Harness entry point.
+
+### Fixed
+
+- Setup messages no longer execute Markdown backticks as shell substitutions.
+- Cleanup dry-runs report intended ephemeral resource actions even when the
+  corresponding legacy MAVIS file is absent on the test host.
 
 ## [0.7.0] - 2026-07-16
 

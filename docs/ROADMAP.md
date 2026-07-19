@@ -10,22 +10,13 @@ the [CHANGELOG.md](../CHANGELOG.md) entry.
 Items with an active design and a likely first release. Expect them in
 the next minor version.
 
-### Portable runtime adapter (TBD)
+### Multi-host conformance fixtures
 
-The orchestrator currently hard-codes the Mavis plan-engine abstractions
-(`mavis team plan`, `mavis cron`, `mavis hook`). A portable adapter would
-let the same brief → plan → T0 → T6.2 path run under Codex CLI or
-Claude Code, with the Mavis path as the fully-featured default.
-
-- **Scope (intended)**: brief intake, plan generation, T0 evaluator
-  freeze, T6 research-gate verdict. Not the autonomous run loop
-  (watchdog, cron, hooks) — those are Mavis-specific by design.
-- **Entry points**: `references/plan-engine-adapter.md` (sketch only),
-  the `PlanEngine` interface in `references/scripts/`.
-- **Risks**: divergent behavior between adapters. Mitigation: pin the
-  behavior contract to a shared test fixture, not the implementation.
-- **Design notes**: see [`design-review-2026-06-26.md`](design-review-2026-06-26.md)
-  for the SOTA-abandonment root-cause analysis that motivates this.
+The Claude Code target runtime shipped in v0.8.0. Future work may run the same
+fake-transport behavior suite across Linux and macOS, alternate Claude Code
+gateway configurations, and future compatibility adapters. The controller
+contract remains the source of truth; an adapter cannot weaken authentication,
+hash binding, budgets, or the four-checkpoint registry.
 
 ### Multi-language paper output
 

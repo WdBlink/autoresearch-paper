@@ -48,12 +48,14 @@ Outputs (write to {PLAN_DIR}/state):
   strongest known baseline or SOTA when available.
 - allowed_search_space.md — what method families, data sources, and
   compute budgets are allowed.
-- progress.json — initialize status=running, iteration=0, stale_count=0,
+- progress.json — initialize status=running, iteration=0,
   research_status=not_started.
+- failure_state.json — initialize independent typed failure counters and the
+  frozen scientific pivot threshold.
 - directions_tried.json — initialize {"directions":[]}.
 - candidate_registry.jsonl — create empty file.
 - scoreboard.tsv — write header row.
-- research_acceptance.md — write FAIL until T6.2 changes it.
+- evaluator contract inputs for the controller's CP-02 and `freeze-evaluator`.
 
 Gate: T3 method-design cannot start until evaluator.yaml and
 success_criteria.md exist and name a measurable primary metric.
@@ -325,26 +327,24 @@ Inputs:
 Your job: update the state machine. Do not write the paper here.
 
 Decision rules:
-- If the candidate meets success_criteria.md, write PASS to
-  {PLAN_DIR}/state/research_acceptance.md and set
-  progress.research_status=accepted.
-- If the result is interpretable but negative and tier=arxiv, write
-  WAIVED_NEGATIVE_RESULT and set research_status=negative_result.
-- If the human owner explicitly waived the gate, write WAIVED_BY_HUMAN
-  and cite the override file from {PLAN_DIR}/control/.
-- Otherwise write FAIL, increment progress.stale_count, and mark the
-  candidate DISCARD or PIVOT.
-- stale_count >= 2 requires structural pivot, not a hyperparameter tweak.
-- stale_count >= 4 requires escalation to the human owner.
+- Produce a candidate artifact for the controller-owned frozen evaluator.
+- The controller must run `run-evaluator` and pass its immutable receipt to
+  `record-evaluator-verdict`; caller/model-supplied value or PASS/FAIL is invalid.
+- For negative arxiv work, request an authenticated human
+  `waive_acceptance` record rather than writing a waiver string.
+- On FAIL, call `record-failure --class scientific_no_improvement` with the
+  complete direction descriptor and canonical stored FAIL verdict.
+- Structural pivot is required only when `pivot-eligibility` returns true;
+  runtime stalls never increment this threshold.
 
 Outputs:
-- {PLAN_DIR}/state/research_acceptance.md
+- verdict input for {PLAN_DIR}/state/evaluator_verdicts/<candidate-id>.json
 - updated {PLAN_DIR}/state/progress.json
 - if pivot/escalation is needed: {PLAN_DIR}/control/pivot_requested.json
   or {PLAN_DIR}/control/override_requested.json
 
-Gate: T7 writing cannot start unless research_acceptance.md contains
-PASS, WAIVED_BY_HUMAN, or arxiv-only WAIVED_NEGATIVE_RESULT.
+Gate: T7 writing cannot start unless `check-writing-gate` validates the stored
+verdict/authenticated waiver and any tier-required CP-04 transition.
 ```
 
 ## T6.3-pivot-or-retry — structural pivot
@@ -363,9 +363,10 @@ Inputs:
 Your job: decide whether to retry tactically or pivot structurally.
 
 Rules:
-- stale_count < 2: one tactical retry is allowed if the failure is a
-  clear implementation or experiment bug.
-- stale_count >= 2: choose a structural pivot. Change at least one of:
+- Before scientific pivot eligibility, one tactical retry is allowed if the
+  failure is a clear implementation or experiment bug.
+- Once `pivot-eligibility` is true, choose a structural pivot and request
+  CP-03. Change at least one of:
   algorithm family, data representation, objective, evaluator, or
   baseline framing.
 - Never propose a direction already marked DISCARDED, PIVOTED, or
@@ -396,16 +397,16 @@ Topic: {TOPIC}
 Tier: {TIER}
 Venue: {VENUE}
 Inputs: all prior outputs in {OUT_DIR}/.
-Required gate file: {PLAN_DIR}/state/research_acceptance.md must contain
-PASS, WAIVED_BY_HUMAN, or arxiv-only WAIVED_NEGATIVE_RESULT. If it is
-missing or contains FAIL, stop and write a blocking note instead of a
-draft.
+Required gate: a stored hash-bound PASS verdict or applied waiver receipt. For
+every tier, CP-04 `prewriting_final_evidence` must also be APPLIED. If
+the deterministic check fails, write a blocking note instead of a draft.
 
 Executable gate:
 
 ```bash
 python3 {SKILL_DIR}/references/scripts/research-state-guard.py \
-  check-writing-gate --plan-dir {PLAN_DIR} --tier {TIER}
+  check-writing-gate --plan-dir {PLAN_DIR} --tier {TIER} \
+  {WRITING_AUTHORITY_ARGS}
 ```
 
 If this exits non-zero, do not write paper-iter1.tex.

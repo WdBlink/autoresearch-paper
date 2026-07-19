@@ -7,7 +7,7 @@
   {
     "id": 2,
     "prompt": "plan engine 卡住了,显示'Engine auto-paused: max cycles reached',我人在睡觉没法手拍板。怎么办?",
-    "expected": "Skill 应该: (a) 触发 autoresearch-plan-rescue skill (trigger: 'paused', 'auto-paused'); (b) 解释 Rescue Layer 已经接管:auto-judge via local gpt-5.5 + xhigh,60s 一轮 patrol; (c) 给 user 三个 user-facing command: 'pause plan X' / 'resume plan X' / 'show rescue status'; (d) 解释 launchd 比 mavis cron 更 sleep-resilient; (e) 不让 user 手动 mavis team plan decision(那是 fallback,不是首选)。"
+    "expected": "Skill 应该: (a) 读取 target controller 与 worker durable state; (b) 运行 file-backed patrol 并只记录 runtime_stall; (c) 给 user 三个命令: signed pause / signed resume / status; (d) 模型建议只能写 advisory proposal; (e) 没有签名人类记录时不得 resume、cancel 或 apply waiver。"
   },
   {
     "id": 3,
@@ -37,21 +37,21 @@
   {
     "id": 8,
     "prompt": "T6 实验跑完了,但是最强 baseline 还是赢,worker 准备直接开始写论文并在 limitations 里承认 theoretical contribution is essentially zero。skill 应该怎么处理?",
-    "expected": "Skill 应该: (a) 阻止 T7,因为 conference/journal 必须先有 state/research_acceptance.md: PASS 或 WAIVED_BY_HUMAN; (b) 触发 T6.1 evaluate-candidate 和 T6.2 research-decision; (c) 将失败方向写入 candidate_registry.jsonl / scoreboard.tsv / directions_tried.json; (d) stale_count 增加,若 >=2 触发 T6.3 structural pivot; (e) 不允许用诚实 limitations 替代研究贡献闸门。"
+    "expected": "Skill 应该: (a) 阻止 T7,因为 bare PASS/WAIVED 字符串没有权限; (b) 触发 T6.1 并用 frozen evaluator 记录 hash-bound verdict; (c) 将失败方向写入 candidate_registry/scoreboard/directions; (d) 记录 distinct scientific_no_improvement,达到阈值后请求 CP-03 structural pivot; (e) conference/journal 写作还必须通过 CP-04 final evidence audit。"
   },
   {
     "id": 9,
     "prompt": "我发现这个 skill 跑一晚上以后没有死,但似乎在同一个方向小修小补试了很多次,没有真正换算法路线。怎么防止它反复撞同一堵墙?",
-    "expected": "Skill 应该: (a) 读取 state/progress.json 和 directions_tried.json; (b) 解释 stale_count 规则: 无进展增加,stale_count >= 2 必须 structural pivot; (c) structural pivot 至少改变算法族/数据表示/目标函数/evaluator/baseline framing 之一; (d) stale_count >= 4 写 control/override_requested.json 并升级给人; (e) 引用 research-state-contract.md。"
+    "expected": "Skill 应该: (a) 读取 failure_state.json 与 directions_tried.json; (b) runtime_stall 和 scientific_no_improvement 分开计数; (c) distinct scientific fingerprints 达到 frozen threshold 后才能 CP-03; (d) structural pivot 至少改变算法族/数据表示/目标函数/evaluator/baseline framing 之一; (e) 引用 research-state-contract.md。"
   },
   {
     "id": 10,
     "prompt": "我点 stop 以后不想再手动找后台 cron、hook、agent team member、Jetson pid。这个 skill 应该怎么保证清理干净?",
-    "expected": "Skill 应该: (a) stop-plan.sh 写 control/stop_requested.json; (b) 调用 cleanup-plan-resources.sh; (c) cleanup 读取 resource_manifest.json,按顺序清理 plan cancel、local/remote processes、crons、hooks、run-scoped launchd、ephemeral agents/sessions、locks; (d) 写 cleanup_report.md 和 cleanup_history.jsonl; (e) 如果有 residual,列出精确资源名,不能只说 manual cleanup may be required。"
+    "expected": "Skill 应该: (a) create/apply signed stop record; (b) 将 authenticated stop receipt 交给 cleanup; (c) 对每个 target-owned ephemeral file 创建 scoped cleanup_resource authority; (d) remove-resource 验证 plan/path/token/receipt 后写 audit; (e) 旧 cron/hook/agent 只有显式 --legacy-mavis 才处理,并报告 residual。"
   },
   {
     "id": 11,
     "prompt": "实际运行时 skill 创建了大量 agent team 成员,旧成员也不清理。它需要这么做吗?",
-    "expected": "Skill 应该: (a) 明确不需要大量永久成员; (b) 推荐少量稳定 role agents + fresh sessions; (c) 临时成员必须在 resource_manifest.json 标记 ephemeral=true,带 plan_id 和 ttl; (d) stop/complete 时 cleanup 归档或删除临时成员; (e) 避免每个 retry/direction/section 创建一个永久 team member。"
+    "expected": "Skill 应该: (a) 明确不需要大量永久成员; (b) routine work 通过 Claude Code 调用 bounded MiniMax M3 worker; (c) task contract 必须 allowed_write_paths=[] + closed output schema + budget/timeout; (d) Codex 只在 CP-01..CP-04; (e) target cleanup 只删除 manifest 中精确绑定的 owned ephemeral files。"
   }
 ]

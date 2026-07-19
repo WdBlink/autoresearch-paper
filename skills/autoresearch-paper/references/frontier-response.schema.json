@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "plan_id",
+    "checkpoint",
+    "checkpoint_subtype",
+    "request_sha256",
+    "context_manifest_sha256",
+    "status",
+    "response_kind",
+    "recommendation",
+    "findings",
+    "proposed_actions",
+    "assumptions",
+    "blockers",
+    "model_id",
+    "usage",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^far_[A-Za-z0-9_-]+$"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "checkpoint": {"enum": ["CP-01", "CP-02", "CP-03", "CP-04"]},
+    "checkpoint_subtype": {"enum": [null, "acceptance_dispute", "prewriting_final_evidence"]},
+    "request_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "context_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["completed", "refused", "failed"]},
+    "response_kind": {"enum": ["plan_audit", "evaluator_audit", "pivot_advice", "evidence_audit"]},
+    "recommendation": {"type": "string", "minLength": 1},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "claim", "evidence"],
+        "properties": {
+          "severity": {"enum": ["info", "warn", "critical"]},
+          "claim": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "proposed_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "rationale"],
+        "properties": {
+          "action": {"type": "string"},
+          "rationale": {"type": "string"}
+        }
+      }
+    },
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "model_id": {"type": "string"},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_tokens", "output_tokens"],
+      "properties": {
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "completed_at": {"type": "string"}
+  }
+}

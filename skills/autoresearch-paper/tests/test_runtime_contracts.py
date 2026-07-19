@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -64,6 +67,86 @@ class RuntimeContracts(unittest.TestCase):
         (bin_dir / "mavis").chmod(0o755)
         return {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}", "MAVIS_FAKE_LOG": str(log)}
 
+    def harness(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return run([
+            sys.executable,
+            "references/scripts/harness-runtime.py",
+            *args,
+        ], check=check)
+
+    def init_model_policy(self, plan: Path) -> None:
+        self.harness(
+            "init-policy",
+            "--plan-dir", str(plan),
+            "--worker-model", "MiniMax-M3-test",
+            "--worker-max-budget-usd", "0.25",
+            "--frontier-model", "gpt-frontier-test",
+            "--max-frontier-calls", "2",
+            "--max-frontier-input-tokens", "2000",
+            "--max-frontier-output-tokens", "1000",
+        )
+
+    def human_key(self, tmp: Path, content: bytes = b"k" * 32) -> Path:
+        key = tmp / "human.key"
+        key.write_bytes(content)
+        key.chmod(0o600)
+        return key
+
+    def create_action(
+        self, plan: Path, key: Path, action: str, *, record_id: str,
+        extra: tuple[str, ...] = (), expires_in: int = 300,
+    ) -> Path:
+        result = self.harness(
+            "create-human-action", "--plan-dir", str(plan), "--plan-id", "plan_abc",
+            "--action", action, "--key-file", str(key), "--expires-in", str(expires_in),
+            "--record-id", record_id, *extra,
+        )
+        return Path(json.loads(result.stdout)["record_path"])
+
+    def fake_claude(self, tmp: Path) -> tuple[Path, Path]:
+        executable = tmp / "fake-claude"
+        log = tmp / "claude-args.json"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "json.dump(sys.argv[1:], open(os.environ['CLAUDE_TEST_LOG'], 'w'))\n"
+            "json.dump({'structured_output': {'summary': 'bounded result', 'ok': True}}, sys.stdout)\n"
+        )
+        executable.chmod(0o755)
+        return executable, log
+
+    def fake_codex(self, tmp: Path) -> Path:
+        executable = tmp / "fake-codex"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "args = sys.argv[1:]\n"
+            "out = args[args.index('--output-last-message') + 1]\n"
+            "prompt = sys.stdin.read()\n"
+            "assert 'far_test_request' in prompt\n"
+            "request = json.loads(prompt[prompt.index('{'):])\n"
+            "import hashlib\n"
+            "canonical = json.dumps(request['context_manifest'], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()\n"
+            "response = {\n"
+            "  'schema_version': 1, 'request_id': 'far_test_request',\n"
+            "  'plan_id': request['plan_id'], 'checkpoint': request['checkpoint'],\n"
+            "  'checkpoint_subtype': request['checkpoint_subtype'],\n"
+            "  'request_sha256': hashlib.sha256(json.dumps(request, indent=2, sort_keys=True).encode() + b'\\n').hexdigest(),\n"
+            "  'context_manifest_sha256': hashlib.sha256(canonical).hexdigest(),\n"
+            "  'status': 'completed', 'response_kind': {'CP-01':'plan_audit','CP-02':'evaluator_audit','CP-03':'pivot_advice','CP-04':'evidence_audit'}[request['checkpoint']],\n"
+            "  'recommendation': 'accept',\n"
+            "  'findings': [{'severity': 'warn', 'claim': 'missing baseline', 'evidence': []}],\n"
+            "  'proposed_actions': [{'action': 'add baseline', 'rationale': 'comparison required'}],\n"
+            "  'assumptions': [], 'blockers': [], 'model_id': 'untrusted-model-claim',\n"
+            "  'usage': {'input_tokens': 0, 'output_tokens': 0},\n"
+            "  'completed_at': '2026-07-17T00:00:00Z'\n"
+            "}\n"
+            "json.dump(response, open(out, 'w'))\n"
+            "print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 321, 'output_tokens': 123}}))\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
     def test_cleanup_preserves_non_ephemeral_resources(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -92,6 +175,7 @@ class RuntimeContracts(unittest.TestCase):
                 "references/scripts/cleanup-plan-resources.sh",
                 str(plan),
                 "--dry-run",
+                "--legacy-mavis",
             ], env=self.fake_mavis_env(tmp))
             report = (plan / "cleanup_report.md").read_text()
             self.assertIn("non-ephemeral; left in place", report)
@@ -102,7 +186,333 @@ class RuntimeContracts(unittest.TestCase):
             self.assertNotIn("DRY-RUN hook:keep-hook.json", report)
             self.assertNotIn("DRY-RUN agent-archive:stable-agent", report)
 
-    def test_cleanup_complete_status(self) -> None:
+    def legacy_test_claude_worker_dispatch_is_pinned_and_mavis_free(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            artifact = plan / "brief.md"
+            artifact.write_text("bounded brief\n")
+            contract = plan / "task.json"
+            contract.write_text(json.dumps({
+                "schema_version": 1,
+                "task_id": "draft-evaluator",
+                "instruction": "Produce a bounded evaluator outline.",
+                "inputs": [{"path": "brief.md", "purpose": "research brief"}],
+                "allowed_tools": [],
+                "allowed_write_paths": [],
+                "completion_check": {"type": "output_schema", "assertion": "valid"},
+                "output_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["summary", "ok"],
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "ok": {"type": "boolean"},
+                    },
+                },
+            }))
+            claude, log = self.fake_claude(tmp)
+            proc = run([
+                sys.executable,
+                "references/scripts/harness-runtime.py",
+                "dispatch-worker",
+                "--plan-dir", str(plan),
+                "--task-contract", str(contract),
+                "--claude-bin", str(claude),
+            ], env={"CLAUDE_TEST_LOG": str(log)})
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["status"], "COMPLETED")
+            argv = json.loads(log.read_text())
+            self.assertEqual(argv[argv.index("--model") + 1], "MiniMax-M3-test")
+            self.assertIn("--json-schema", argv)
+            self.assertNotIn("mavis", " ".join(argv).lower())
+
+    def legacy_test_frontier_bridge_is_durable_bounded_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            artifact = plan / "normalized-brief.md"
+            artifact.write_text("objective and frozen constraints\n")
+            created = self.harness(
+                "create-frontier-request",
+                "--plan-dir", str(plan),
+                "--plan-id", "plan_bridge",
+                "--checkpoint", "CP-01",
+                "--objective", "Audit the initial research plan.",
+                "--decision-required", "initial_plan_approval",
+                "--artifact", f"{artifact}::normalized brief",
+                "--constraint", "do not mutate lifecycle state",
+                "--max-input-tokens", "500",
+                "--max-output-tokens", "250",
+                "--request-id", "far_test_request",
+            )
+            created_obj = json.loads(created.stdout)
+            request_path = Path(created_obj["request_path"])
+            request_hash = created_obj["request_sha256"]
+            self.assertEqual(request_path.stat().st_mode & 0o222, 0)
+            codex = self.fake_codex(tmp)
+            self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_test_request",
+                "--codex-bin", str(codex),
+            )
+            response = json.loads((request_path.parent / "response.json").read_text())
+            self.assertEqual(response["model_id"], "gpt-frontier-test")
+            self.assertEqual(response["usage"], {"input_tokens": 321, "output_tokens": 123})
+            self.assertEqual(request_hash, __import__("hashlib").sha256(request_path.read_bytes()).hexdigest())
+            validated = self.harness(
+                "validate-frontier-response",
+                "--plan-dir", str(plan),
+                "--request-id", "far_test_request",
+            )
+            self.assertEqual(json.loads(validated.stdout)["state"], "VALIDATED")
+            self.harness(
+                "apply-frontier-response",
+                "--plan-dir", str(plan),
+                "--request-id", "far_test_request",
+                "--controller-note", "revision task queued; no lifecycle mutation",
+                "--dependent-transition", "approve_execution",
+            )
+            again = self.harness(
+                "apply-frontier-response",
+                "--plan-dir", str(plan),
+                "--request-id", "far_test_request",
+                "--controller-note", "duplicate delivery",
+                "--dependent-transition", "approve_execution",
+            )
+            self.assertTrue(json.loads(again.stdout)["idempotent"])
+            self.harness(
+                "assert-transition", "--plan-dir", str(plan), "--plan-id", "plan_bridge",
+                "--transition", "approve_execution",
+            )
+            artifact.write_text("changed after apply\n")
+            drift = self.harness(
+                "assert-transition", "--plan-dir", str(plan), "--plan-id", "plan_bridge",
+                "--transition", "approve_execution", check=False,
+            )
+            self.assertEqual(drift.returncode, 2)
+            transitions = (plan / "state" / "controller_transitions.jsonl").read_text().splitlines()
+            self.assertEqual(len(transitions), 1)
+            self.assertFalse(json.loads(transitions[0])["lifecycle_mutation"])
+            ledger = json.loads((plan / "state" / "frontier" / "budget.json").read_text())
+            self.assertEqual(ledger["reserved_calls"], 1)
+
+    def test_frontier_request_rejects_unregistered_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = self.make_plan(Path(td) / "plan")
+            self.init_model_policy(plan)
+            proc = self.harness(
+                "create-frontier-request",
+                "--plan-dir", str(plan),
+                "--plan-id", "plan_bad_checkpoint",
+                "--checkpoint", "CP-99",
+                "--objective", "bypass registry",
+                "--decision-required", "unsafe_decision",
+                "--max-input-tokens", "10",
+                "--max-output-tokens", "10",
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("unregistered checkpoint", proc.stderr)
+
+    def legacy_test_cp04_acceptance_dispute_dependent_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            artifact = plan / "dispute.md"
+            artifact.write_text("bounded dispute evidence\n")
+            self.harness(
+                "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_dispute",
+                "--checkpoint", "CP-04", "--checkpoint-subtype", "acceptance_dispute",
+                "--objective", "resolve evidence dispute", "--decision-required", "resolve_acceptance_dispute",
+                "--artifact", str(artifact), "--max-input-tokens", "500",
+                "--max-output-tokens", "250", "--request-id", "far_test_request",
+            )
+            self.harness(
+                "send-frontier-request", "--plan-dir", str(plan), "--request-id", "far_test_request",
+                "--codex-bin", str(self.fake_codex(tmp)),
+            )
+            self.harness(
+                "validate-frontier-response", "--plan-dir", str(plan), "--request-id", "far_test_request",
+            )
+            self.harness(
+                "apply-frontier-response", "--plan-dir", str(plan), "--request-id", "far_test_request",
+                "--dependent-transition", "resolve_acceptance_dispute", "--controller-note", "bounded evidence accepted",
+            )
+            self.harness(
+                "assert-transition", "--plan-dir", str(plan), "--plan-id", "plan_dispute",
+                "--transition", "resolve_acceptance_dispute",
+            )
+
+    def legacy_test_frontier_bridge_does_not_redeliver_uncertain_request(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = self.make_plan(Path(td) / "plan")
+            self.init_model_policy(plan)
+            artifact = plan / "brief.md"
+            artifact.write_text("brief\n")
+            self.harness(
+                "create-frontier-request",
+                "--plan-dir", str(plan),
+                "--plan-id", "plan_uncertain",
+                "--checkpoint", "CP-01",
+                "--objective", "audit",
+                "--decision-required", "plan_approval",
+                "--artifact", str(artifact),
+                "--max-input-tokens", "500",
+                "--max-output-tokens", "100",
+                "--request-id", "far_uncertain",
+            )
+            status_path = plan / "state" / "frontier" / "requests" / "far_uncertain" / "status.json"
+            status = json.loads(status_path.read_text())
+            status["state"] = "WAITING"
+            status_path.write_text(json.dumps(status))
+            proc = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_uncertain",
+                "--codex-bin", str(Path(td) / "must-not-run"),
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("do not redeliver", proc.stderr)
+            self.assertFalse((plan / "state" / "frontier" / "budget.json").exists())
+
+    def legacy_test_frontier_bridge_blocks_oversized_context_before_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = self.make_plan(Path(td) / "plan")
+            self.init_model_policy(plan)
+            artifact = plan / "large-evidence.txt"
+            artifact.write_text("x" * 3000)
+            self.harness(
+                "create-frontier-request",
+                "--plan-dir", str(plan),
+                "--plan-id", "plan_large_context",
+                "--checkpoint", "CP-01",
+                "--objective", "audit",
+                "--decision-required", "plan_approval",
+                "--artifact", str(artifact),
+                "--max-input-tokens", "100",
+                "--max-output-tokens", "100",
+                "--request-id", "far_large_context",
+            )
+            proc = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_large_context",
+                "--codex-bin", str(Path(td) / "must-not-run"),
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("exceeds reservation", proc.stderr)
+            self.assertFalse((plan / "state" / "frontier" / "budget.json").exists())
+
+    def legacy_test_frontier_expiration_malformed_response_and_budget_exhaustion(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            expired_plan = self.make_plan(tmp / "expired")
+            self.init_model_policy(expired_plan)
+            artifact = expired_plan / "artifact.md"
+            artifact.write_text("artifact\n")
+            self.harness(
+                "create-frontier-request", "--plan-dir", str(expired_plan),
+                "--plan-id", "plan_expired", "--checkpoint", "CP-01", "--objective", "audit",
+                "--decision-required", "approve_execution", "--artifact", str(artifact),
+                "--max-input-tokens", "500", "--max-output-tokens", "100",
+                "--request-id", "far_expired", "--deadline-seconds", "1",
+            )
+            expired = self.harness(
+                "expire-frontier-request", "--plan-dir", str(expired_plan),
+                "--request-id", "far_expired", "--now", "2099-01-01T00:00:00Z",
+            )
+            self.assertEqual(json.loads(expired.stdout)["state"], "PAUSED")
+
+            malformed_plan = self.make_plan(tmp / "malformed")
+            self.init_model_policy(malformed_plan)
+            malformed_artifact = malformed_plan / "artifact.md"
+            malformed_artifact.write_text("artifact\n")
+            self.harness(
+                "create-frontier-request", "--plan-dir", str(malformed_plan),
+                "--plan-id", "plan_malformed", "--checkpoint", "CP-01", "--objective", "audit",
+                "--decision-required", "approve_execution", "--artifact", str(malformed_artifact),
+                "--max-input-tokens", "500", "--max-output-tokens", "100",
+                "--request-id", "far_test_request",
+            )
+            self.harness(
+                "send-frontier-request", "--plan-dir", str(malformed_plan),
+                "--request-id", "far_test_request", "--codex-bin", str(self.fake_codex(tmp)),
+            )
+            response = malformed_plan / "state" / "frontier" / "requests" / "far_test_request" / "response.json"
+            response.chmod(0o644)
+            bad = json.loads(response.read_text())
+            bad.pop("plan_id")
+            response.write_text(json.dumps(bad))
+            invalid = self.harness(
+                "validate-frontier-response", "--plan-dir", str(malformed_plan),
+                "--request-id", "far_test_request", check=False,
+            )
+            self.assertEqual(invalid.returncode, 2)
+            status = json.loads((response.parent / "status.json").read_text())
+            self.assertEqual(status["state"], "PAUSED")
+
+            budget_plan = self.make_plan(tmp / "budget")
+            self.harness(
+                "init-policy", "--plan-dir", str(budget_plan), "--worker-model", "MiniMax-M3-test",
+                "--worker-max-budget-usd", "0.25", "--frontier-model", "frontier",
+                "--max-frontier-calls", "0", "--max-frontier-input-tokens", "1000",
+                "--max-frontier-output-tokens", "1000",
+            )
+            budget_artifact = budget_plan / "artifact.md"
+            budget_artifact.write_text("artifact\n")
+            self.harness(
+                "create-frontier-request", "--plan-dir", str(budget_plan), "--plan-id", "plan_budget",
+                "--checkpoint", "CP-01", "--objective", "audit", "--decision-required", "approve_execution",
+                "--artifact", str(budget_artifact), "--max-input-tokens", "500", "--max-output-tokens", "100",
+                "--request-id", "far_budget",
+            )
+            exhausted = self.harness(
+                "send-frontier-request", "--plan-dir", str(budget_plan), "--request-id", "far_budget",
+                "--codex-bin", str(tmp / "must-not-run"), check=False,
+            )
+            self.assertEqual(exhausted.returncode, 2)
+            self.assertIn("budget exhausted", exhausted.stderr)
+
+    def test_model_rescue_cannot_apply_forbidden_accept(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.write_manifest(plan)
+            (plan / "state.json").write_text(json.dumps({
+                "state": {
+                    "status": "paused",
+                    "cycle_started_at": int((time.time() - 1200) * 1000),
+                    "results": [],
+                }
+            }))
+            judge = tmp / ".mavis" / "agents" / "mavis" / "scripts" / "local_llm_judge.py"
+            judge.parent.mkdir(parents=True)
+            judge.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('{\"verdict\":\"accept\",\"reason\":\"looks fine\"}')\n"
+            )
+            judge.chmod(0o755)
+            env = self.fake_mavis_env(tmp)
+            run([
+                sys.executable,
+                "references/scripts/plan-rescue-daemon.py",
+                "--once",
+            ], env={**env, "HOME": str(tmp), "AUTORESEARCH_PLAN_ROOTS": str(tmp)})
+            proposal = json.loads((plan / "control" / "model_advisory_proposal.json").read_text())
+            self.assertTrue(proposal["advisory_only"])
+            self.assertEqual(proposal["advice"]["verdict"], "escalate_human")
+            self.assertIn("forbidden lifecycle action", proposal["advice"]["reason"])
+            log = Path(env["MAVIS_FAKE_LOG"])
+            self.assertFalse(log.exists(), "model advice must not call mavis lifecycle commands")
+
+    def legacy_test_cleanup_complete_status(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = self.make_plan(Path(td))
             self.write_manifest(plan, plan_id=None)
@@ -131,23 +541,12 @@ class RuntimeContracts(unittest.TestCase):
             self.assertEqual(manifest["topic_slug"], "smoke")
             self.assertEqual(manifest["launchd"][0]["run_scoped"], False)
 
-    def test_research_writing_gate(self) -> None:
+    def legacy_test_research_writing_gate(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            plan = self.make_plan(Path(td))
+            tmp = Path(td)
+            plan = self.make_plan(tmp)
+            self.write_manifest(plan)
             gate = plan / "state" / "research_acceptance.md"
-            gate.write_text("FAIL\n")
-            proc = run([
-                "python3",
-                "references/scripts/research-state-guard.py",
-                "check-writing-gate",
-                "--plan-dir",
-                str(plan),
-                "--tier",
-                "conference",
-            ], check=False)
-            self.assertEqual(proc.returncode, 20)
-            self.assertFalse(json.loads(proc.stdout)["ok"])
-
             gate.write_text("PASS\n")
             proc = run([
                 "python3",
@@ -156,37 +555,92 @@ class RuntimeContracts(unittest.TestCase):
                 "--plan-dir",
                 str(plan),
                 "--tier",
-                "conference",
-            ])
-            self.assertTrue(json.loads(proc.stdout)["ok"])
-
-            gate.write_text("WAIVED_NEGATIVE_RESULT\n")
-            proc = run([
-                "python3",
-                "references/scripts/research-state-guard.py",
-                "check-writing-gate",
-                "--plan-dir",
-                str(plan),
-                "--tier",
-                "conference",
+                "arxiv",
             ], check=False)
             self.assertEqual(proc.returncode, 20)
+            self.assertIn("bare research_acceptance.md", proc.stderr)
 
-            proc = run([
-                "python3",
-                "references/scripts/research-state-guard.py",
-                "check-writing-gate",
-                "--plan-dir",
-                str(plan),
-                "--tier",
-                "arxiv",
-            ])
-            self.assertTrue(json.loads(proc.stdout)["ok"])
+            evaluator = plan / "evaluator.py"
+            evidence = plan / "evidence.json"
+            candidate = plan / "paper.md"
+            evaluator.write_text("score = 0.9\n")
+            evidence.write_text("{}\n")
+            candidate.write_text("candidate\n")
+            frozen = json.loads(self.harness(
+                "freeze-evaluator", "--plan-dir", str(plan), "--evaluator", str(evaluator),
+                "--evidence", str(evidence), "--metric", "score", "--operator", "gte", "--threshold", "0.8",
+            ).stdout)
+            verdict_input = plan / "verdict-input.json"
+            verdict_input.write_text(json.dumps({
+                "schema_version": 1, "candidate_id": "candidate-1",
+                "evaluator_sha256": frozen["evaluator_sha256"],
+                "evidence_sha256": frozen["evidence_sha256"],
+                "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                "metric": "score", "threshold": 0.8, "value": 0.9,
+                "verdict": "PASS", "evaluated_at": "2026-07-18T00:00:00Z",
+            }))
+            recorded = json.loads(self.harness(
+                "record-evaluator-verdict", "--plan-dir", str(plan),
+                "--verdict", str(verdict_input), "--candidate", str(candidate),
+            ).stdout)
+            accepted = self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--verdict", recorded["verdict_path"],
+            )
+            self.assertTrue(json.loads(accepted.stdout)["ok"])
+            evaluator.write_text("score = 0.1\n")
+            self.assertEqual(self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--verdict", recorded["verdict_path"], check=False,
+            ).returncode, 20)
+            evaluator.write_text("score = 0.9\n")
+            evidence.write_text('{"drift": true}\n')
+            self.assertEqual(self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--verdict", recorded["verdict_path"], check=False,
+            ).returncode, 20)
+            evidence.write_text("{}\n")
+            candidate.write_text("changed\n")
+            changed = self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--verdict", recorded["verdict_path"], check=False,
+            )
+            self.assertEqual(changed.returncode, 20)
 
-    def test_structural_pivot_guard(self) -> None:
+            stored_verdict = Path(recorded["verdict_path"])
+            stored_verdict.chmod(0o644)
+            threshold_drift = json.loads(stored_verdict.read_text())
+            threshold_drift["threshold"] = 0.95
+            stored_verdict.write_text(json.dumps(threshold_drift))
+            self.assertEqual(self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--verdict", str(stored_verdict), check=False,
+            ).returncode, 20)
+
+            key = self.human_key(tmp)
+            waiver = self.create_action(plan, key, "waive_acceptance", record_id="har_waiver")
+            waived = self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--waiver", str(waiver), "--key-file", str(key),
+            )
+            self.assertEqual(json.loads(waived.stdout)["source"], "authenticated_waiver")
+            self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(waiver),
+                "--key-file", str(key), "--expected-action", "waive_acceptance",
+            )
+            replayed_waiver = self.harness(
+                "check-writing-gate", "--plan-dir", str(plan), "--tier", "arxiv",
+                "--waiver", str(waiver), "--key-file", str(key), check=False,
+            )
+            self.assertEqual(replayed_waiver.returncode, 20)
+
+    def legacy_test_structural_pivot_guard(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = self.make_plan(Path(td))
-            (plan / "state" / "progress.json").write_text(json.dumps({"stale_count": 2}) + "\n")
+            (plan / "state" / "failure_state.json").write_text(json.dumps({
+                "scientific_pivot_threshold": 2,
+                "distinct_scientific_fingerprints": ["direction-a", "direction-b"],
+            }) + "\n")
             weak = plan / "weak-pivot.json"
             weak.write_text(json.dumps({"changed_fields": ["learning_rate"]}))
             proc = run([
@@ -233,7 +687,7 @@ class RuntimeContracts(unittest.TestCase):
             after = sorted(str(p.relative_to(plan)) for p in plan.rglob("*") if p.is_file())
             self.assertEqual(before, after)
 
-    def test_l0_stale_count_and_escalation(self) -> None:
+    def test_l0_runtime_stall_never_enables_scientific_pivot(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = self.make_plan(Path(td))
             self.write_manifest(plan)
@@ -241,23 +695,14 @@ class RuntimeContracts(unittest.TestCase):
             (plan / "last_seen.jsonl").write_text('{"ts":"2020-01-01T00:00:00Z"}\n')
             run(["python3", "references/scripts/plan-l0-guard.py", "--plan-dir", str(plan), "--once", "--stale-sec", "1"])
             run(["python3", "references/scripts/plan-l0-guard.py", "--plan-dir", str(plan), "--once", "--stale-sec", "1"])
-            progress = json.loads((plan / "state" / "progress.json").read_text())
-            self.assertEqual(progress["stale_count"], 1)
-            (plan / "last_seen.jsonl").write_text('{"ts":"2021-01-01T00:00:00Z"}\n')
-            run(["python3", "references/scripts/plan-l0-guard.py", "--plan-dir", str(plan), "--once", "--stale-sec", "1"])
-            progress = json.loads((plan / "state" / "progress.json").read_text())
-            self.assertEqual(progress["research_status"], "pivot_required")
-            self.assertTrue((plan / "control" / "pivot_requested.json").exists())
+            failures = json.loads((plan / "state" / "failure_state.json").read_text())
+            self.assertEqual(failures["runtime_stall_count"], 1)
+            self.assertEqual(failures["scientific_no_improvement_count"], 0)
+            self.assertFalse((plan / "control" / "pivot_requested.json").exists())
+            eligibility = json.loads(self.harness("pivot-eligibility", "--plan-dir", str(plan)).stdout)
+            self.assertFalse(eligibility["eligible"])
 
-            progress["stale_count"] = 3
-            (plan / "state" / "progress.json").write_text(json.dumps(progress))
-            (plan / "last_seen.jsonl").write_text('{"ts":"2022-01-01T00:00:00Z"}\n')
-            run(["python3", "references/scripts/plan-l0-guard.py", "--plan-dir", str(plan), "--once", "--stale-sec", "1"])
-            progress = json.loads((plan / "state" / "progress.json").read_text())
-            self.assertEqual(progress["research_status"], "escalate_to_human")
-            self.assertTrue((plan / "control" / "override_requested.json").exists())
-
-    def test_resolve_plan_dir_and_stop_json_escaping(self) -> None:
+    def legacy_test_resolve_plan_dir_and_stop_json_escaping(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             root = tmp / "scratchpads"
@@ -268,16 +713,201 @@ class RuntimeContracts(unittest.TestCase):
             self.assertEqual(Path(resolved), plan.resolve())
 
             reason = 'bad " quote and slash \\ ok'
-            run(["bash", "references/scripts/stop-plan.sh", "plan_quote", "--reason", reason], env=env)
+            key = self.human_key(tmp)
+            action = self.harness(
+                "create-human-action", "--plan-dir", str(plan), "--plan-id", "plan_quote",
+                "--action", "stop", "--key-file", str(key), "--expires-in", "300",
+                "--record-id", "har_stop_quote", "--reason", reason,
+            )
+            record = json.loads(action.stdout)["record_path"]
+            run([
+                "bash", "references/scripts/stop-plan.sh", "plan_quote",
+                "--record", record, "--key-file", str(key), "--reason", reason,
+            ], env=env)
             manifest = json.loads((plan / "resource_manifest.json").read_text())
             self.assertEqual(manifest["status"], "stopped_cleaned")
-            history = [json.loads(line) for line in (plan / "state" / "stop_history.jsonl").read_text().splitlines()]
-            self.assertEqual(history[-1]["reason"], reason)
+            audit = [json.loads(line) for line in (plan / "state" / "human_action_audit.jsonl").read_text().splitlines()]
+            self.assertEqual(audit[-1]["action"], "stop")
             handled = list((plan / "control" / "handled").glob("*stop_requested.json"))
             self.assertTrue(handled)
             json.loads(handled[-1].read_text())
             cleanup_requested = json.loads((plan / "control" / "cleanup_requested.json").read_text())
             self.assertEqual(cleanup_requested["reason"], reason)
+
+    def test_human_actions_reject_forgery_replay_cross_plan_and_bad_key_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "a")
+            self.write_manifest(plan)
+            key = self.human_key(tmp)
+            record = self.create_action(plan, key, "pause", record_id="har_pause")
+            forged = tmp / "forged.json"
+            data = json.loads(record.read_text())
+            data["action"] = "stop"
+            forged.write_text(json.dumps(data))
+            rejected = self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(forged),
+                "--key-file", str(key), check=False,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertFalse((plan / "control" / "stop_requested.json").exists())
+
+            applied = self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(record),
+                "--key-file", str(key), "--expected-action", "pause",
+            )
+            self.assertEqual(json.loads(applied.stdout)["receipt"]["action"], "pause")
+            replay = self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(record),
+                "--key-file", str(key), check=False,
+            )
+            self.assertEqual(replay.returncode, 2)
+
+            other = self.make_plan(tmp / "b")
+            self.write_manifest(other, plan_id="plan_other")
+            cross = self.harness(
+                "apply-human-action", "--plan-dir", str(other), "--record", str(record),
+                "--key-file", str(key), check=False,
+            )
+            self.assertEqual(cross.returncode, 2)
+            key.chmod(0o644)
+            bad_mode = self.harness(
+                "create-human-action", "--plan-dir", str(plan), "--plan-id", "plan_abc",
+                "--action", "resume", "--key-file", str(key), "--expires-in", "60", check=False,
+            )
+            self.assertEqual(bad_mode.returncode, 2)
+
+    def test_expired_and_wrong_human_action_are_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp)
+            self.write_manifest(plan)
+            key = self.human_key(tmp)
+            record = self.create_action(plan, key, "pause", record_id="har_expired")
+            data = json.loads(record.read_text())
+            payload = {k: v for k, v in data.items() if k != "signature"}
+            payload["expires_at"] = "2020-01-01T00:00:00Z"
+            data = {**payload, "signature": __import__("hmac").new(key.read_bytes(), json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), hashlib.sha256).hexdigest()}
+            expired = tmp / "expired.json"
+            expired.write_text(json.dumps(data))
+            proc = self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(expired),
+                "--key-file", str(key), check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            wrong = self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(record),
+                "--key-file", str(key), "--expected-action", "resume", check=False,
+            )
+            self.assertEqual(wrong.returncode, 2)
+            self.assertFalse((plan / "state" / "human_action_replay.json").exists())
+
+    def test_authenticated_pause_and_resume_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp)
+            self.write_manifest(plan)
+            key = self.human_key(tmp)
+            pause = self.create_action(plan, key, "pause", record_id="har_wrapper_pause")
+            run([
+                "bash", "references/scripts/pause-plan.sh", str(plan),
+                "--record", str(pause), "--key-file", str(key),
+            ])
+            self.assertEqual(json.loads((plan / "state" / "controller.json").read_text())["status"], "paused")
+            resume = self.create_action(plan, key, "resume", record_id="har_wrapper_resume")
+            run([
+                "bash", "references/scripts/resume-plan.sh", str(plan),
+                "--record", str(resume), "--key-file", str(key),
+            ])
+            self.assertEqual(json.loads((plan / "state" / "controller.json").read_text())["status"], "running")
+
+    def legacy_test_typed_failures_runtime_operations_and_owned_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp)
+            owned = plan / "scratch.tmp"
+            owned.write_text("owned")
+            nonce = "ownership-1"
+            self.write_manifest(plan, resources=[{
+                "resource_id": "scratch", "path": str(owned), "ephemeral": True,
+                "run_scoped": True, "ownership_nonce": nonce,
+            }])
+            for kind, fingerprint in (
+                ("runtime_stall", "runtime-a"),
+                ("scientific_no_improvement", "science-a"),
+                ("scientific_no_improvement", "science-b"),
+            ):
+                self.harness(
+                    "record-failure", "--plan-dir", str(plan), "--class", kind,
+                    "--fingerprint", fingerprint, "--source", "test",
+                )
+            duplicate = json.loads(self.harness(
+                "record-failure", "--plan-dir", str(plan), "--class", "scientific_no_improvement",
+                "--fingerprint", "science-b", "--source", "test",
+            ).stdout)
+            self.assertTrue(duplicate["idempotent"])
+            self.assertTrue(json.loads(self.harness("pivot-eligibility", "--plan-dir", str(plan)).stdout)["eligible"])
+
+            run_dir = plan / "state" / "worker_runs" / "run-live"
+            run_dir.mkdir(parents=True)
+            (run_dir / "status.json").write_text(json.dumps({
+                "schema_version": 1, "run_id": "run-live", "status": "RUNNING",
+                "started_at": "2020-01-01T00:00:00Z",
+            }))
+            self.assertEqual(json.loads(self.harness(
+                "inspect-worker", "--plan-dir", str(plan), "--worker-run-id", "run-live",
+            ).stdout)["status"], "RUNNING")
+            self.harness(
+                "send-worker-message", "--plan-dir", str(plan), "--worker-run-id", "run-live",
+                "--message", "advisory only",
+            )
+            self.harness("schedule-patrol", "--plan-dir", str(plan), "--interval-seconds", "60")
+            patrol = json.loads(self.harness(
+                "run-patrol", "--plan-dir", str(plan), "--stale-seconds", "1",
+            ).stdout)
+            self.assertEqual(patrol["stale_workers"], ["run-live"])
+
+            key = self.human_key(tmp)
+            cancel = self.create_action(
+                plan, key, "cancel_worker", record_id="har_cancel",
+                extra=("--worker-run-id", "run-live"),
+            )
+            self.harness(
+                "cancel-worker", "--plan-dir", str(plan), "--record", str(cancel),
+                "--key-file", str(key), "--worker-run-id", "run-live",
+            )
+            waited = self.harness(
+                "wait-worker", "--plan-dir", str(plan), "--worker-run-id", "run-live",
+                "--deadline-seconds", "1", check=False,
+            )
+            self.assertEqual(waited.returncode, 2)
+            terminal_message = self.harness(
+                "send-worker-message", "--plan-dir", str(plan), "--worker-run-id", "run-live",
+                "--message", "must be rejected", check=False,
+            )
+            self.assertEqual(terminal_message.returncode, 2)
+
+            cleanup = self.create_action(
+                plan, key, "cleanup_resource", record_id="har_cleanup",
+                extra=("--resource-id", "scratch"),
+            )
+            receipt = json.loads(self.harness(
+                "apply-human-action", "--plan-dir", str(plan), "--record", str(cleanup),
+                "--key-file", str(key), "--expected-action", "cleanup_resource",
+            ).stdout)["receipt"]
+            token = hashlib.sha256(f"plan_abc\0{owned.resolve()}\0{nonce}".encode()).hexdigest()
+            wrong_token = self.harness(
+                "remove-resource", "--plan-dir", str(plan), "--resource-id", "scratch",
+                "--ownership-token", "0" * 64, "--authorization", receipt["authorization_path"],
+                check=False,
+            )
+            self.assertEqual(wrong_token.returncode, 2)
+            self.assertTrue(owned.exists())
+            self.harness(
+                "remove-resource", "--plan-dir", str(plan), "--resource-id", "scratch",
+                "--ownership-token", token, "--authorization", receipt["authorization_path"],
+            )
+            self.assertFalse(owned.exists())
 
     def test_rescue_dry_run_does_not_call_mavis_or_write_history(self) -> None:
         with tempfile.TemporaryDirectory() as td:

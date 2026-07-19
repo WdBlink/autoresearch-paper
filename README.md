@@ -20,12 +20,14 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.7.0 (Mavis-native, macOS / Linux; CLI → tool migration)
+- **Current version:** v0.8.0
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
-- **Direction:** the orchestrator currently depends on the Mavis plan
-  engine; portable-runtime support (Codex / Claude Code adapter) is
-  on the planning board but not scheduled. See the design notes in
+- **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
+  workers, authenticated lifecycle authority, evidence gates, typed patrol,
+  owned cleanup, and the durable CP-01–CP-04 Codex bridge are implemented.
+  MAVIS is available only as explicit legacy compatibility. See
+  [`skills/autoresearch-paper/references/claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md), the design notes in
   [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
   and forward-looking plans in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - **Maintenance:** issues and PRs welcome; major refactors land in
@@ -64,13 +66,14 @@ heartbeat watchdogs, and manifest-driven cleanup.
 - Blocks writing until the research gate passes or the human owner waives it.
 - Tracks failed directions so agents pivot structurally instead of repeating
   the same dead end.
-- Runs L0/L1/L2 heartbeat checks across launchd, Mavis cron, and per-task
-  `last_seen.jsonl`.
-- Keeps pause, resume, stop, and cleanup state in the plan directory.
-- Cleans ephemeral agents, crons, hooks, locks, and background processes from
-  a `resource_manifest.json`.
+- Separates runtime stalls from scientific no-improvement using typed failures.
+- Requires signed, expiring, replay-protected pause, resume, stop, waiver,
+  worker cancellation, and cleanup actions.
+- Removes only exact-path, token-bound, plan-owned ephemeral resources.
 - Verifies paper packages with artifact-only reviewer checks, not producer
   self-claims.
+- Dispatches schema-bounded MiniMax M3 workers through Claude Code and reserves
+  a frozen budget before sparse Codex checkpoint audits.
 
 ## Quick Start
 
@@ -82,8 +85,12 @@ heartbeat watchdogs, and manifest-driven cleanup.
 
 ## Architecture
 
-The skill is a thin orchestrator on top of a Mavis plan engine. Five
-components collaborate end-to-end:
+The target control plane is Claude Code, with a deterministic file-backed
+controller between model output and formal plan state. Legacy MAVIS resources
+are compatibility-only. The research flow is:
+
+The diagram below still includes the legacy autonomous resource path; worker
+and frontier dispatch now enter through the Claude Code controller.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -102,20 +109,18 @@ components collaborate end-to-end:
          check
 ```
 
-**Research gate (T6.1/T6.2):** A `KEEP / DISCARD / PIVOT / WAIVE` verdict is
-written to `state/research_acceptance.md`. For `conference` and `journal-q1`
-tiers, the writing stage (T7) refuses to start unless the verdict is `KEEP`
-or `WAIVED_BY_HUMAN`. This is the lever that prevents the "explore for hours,
-write a near-zero paper" failure mode.
+**Research gate (T6.1/T6.2):** The controller binds evaluator, evidence,
+threshold, candidate, and measured verdict hashes. Bare PASS text is rejected.
+Conference and journal writing additionally require an applied CP-04 final
+evidence audit; waivers are signed human records.
 
-**Resource manifest:** Every ephemeral resource (agent, cron, hook, lock,
-background process) is recorded in `state/resource_manifest.json`. On stop,
-complete, or abort, `cleanup-plan-resources.sh` walks this manifest so
-nothing leaks across plans.
+**Resource manifest:** Every target-owned removable resource is recorded in
+`resource_manifest.json` with an exact path, ownership nonce, and scope.
+Cleanup requires an authenticated receipt and refuses shared or escaping paths.
 
-**Pause / resume:** Pause writes a sentinel file; the next L1 tick stops
-issuing new subagent tasks but keeps the plan state and watchdog alive.
-Resume re-runs the bootstrap self-check to repair any drift.
+**Pause / resume:** Both actions require a signed, expiring, replay-protected
+human record. The deterministic controller writes canonical receipts and keeps
+the durable plan state available across Claude sessions.
 
 For the deeper plan structure, see
 [`skills/autoresearch-paper/SKILL.md`](skills/autoresearch-paper/SKILL.md).
@@ -146,11 +151,12 @@ For a project-level install, omit `-g`:
 npx skills add WdBlink/autoresearch-paper
 ```
 
-### Mavis Runtime Registration
+### Legacy Mavis Runtime Registration
 
 This skill can be invoked from Agent Skills-compatible runtimes after `npx`
-install. Full autonomous execution also requires the Mavis runtime because
-the plan engine, watchdog agent, cron, and hook APIs are Mavis-specific.
+install. The target worker and frontier-advisor path does not require MAVIS.
+Old watchdog agent, cron, hook, and cleanup fixtures require it only when the
+caller explicitly selects the legacy compatibility path.
 
 If your Mavis build does not scan Agent Skills directories, register the
 installed source directory into your Mavis skill root as a symlink or copy.
@@ -163,9 +169,10 @@ instructions if anything required is missing.
 
 | Dependency | Why it is needed |
 |---|---|
-| Mavis CLI | team plans, agents, cron, hooks |
+| Claude Code | primary Harness host and MiniMax M3 dispatch |
+| Mavis CLI | optional legacy team-plan/watchdog compatibility |
 | Python 3 | bundled guards, cleanup, tests |
-| Codex CLI | optional local-LLM rescue judge |
+| Codex CLI | registered sparse frontier-advisor checkpoints |
 | Node.js / npx | GitHub skill installation |
 | jq | JSON validation during checks |
 | launchctl | macOS launchd L0 rescue mode |
@@ -183,7 +190,7 @@ Materials: PDFs and simulator notes in a local folder.
 ```
 
 The skill asks for missing fields, confirms the tier, shows a readable plan
-preview, and only starts the Mavis team after an explicit "go".
+preview, and only starts the controller after an explicit "go".
 
 During a run:
 
@@ -203,10 +210,11 @@ During a run:
 | Brief | parse topic, target venue, and materials |
 | Tier | choose `arxiv`, `conference`, or `journal-q1` with fallback confirmation |
 | Plan | generate `plan.yaml` from tier templates and prompt assets |
-| Bootstrap | create watchdog agent, cron, hook, state, and `resource_manifest.json` |
-| Run | start `mavis team plan run` and register the plan id |
-| Patrol | L0 guard, hourly watchdog, and `last_seen.jsonl` detect stalls |
-| Research Gate | T6.1/T6.2 decide KEEP, DISCARD, PIVOT, or waiver |
+| Bootstrap | freeze model policy and create controller, evaluator, failure, and ownership state |
+| Run | dispatch bounded MiniMax M3 tasks through the Claude Code controller |
+| Frontier audit | reserve budget, send a registered checkpoint to Codex, validate, then record controller consumption |
+| Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
+| Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
 | Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
 | Cleanup | stop/complete/abort runs `cleanup-plan-resources.sh` |
 
@@ -232,12 +240,15 @@ autoresearch-paper/
 │       │   ├── task-prompt-snippets.md
 │       │   ├── research-state-contract.md
 │       │   ├── lifecycle-contract.md
+│       │   ├── claude-code-runtime.md
+│       │   ├── frontier-response.schema.json
 │       │   ├── watchdog-prompt-template.md
 │       │   ├── first-action-last-seen.md
 │       │   ├── reviewer-readiness-rubric.md
 │       │   ├── bootstrap-watchdog.sh
 │       │   ├── launchd/
 │       │   └── scripts/
+│       │       └── harness-runtime.py
 │       └── tests/
 └── docs/
 ```
@@ -245,17 +256,14 @@ autoresearch-paper/
 ## FAQ
 
 **Q: Can I run it on Codex CLI or Claude Code without Mavis?**
-A: Partially. The skill installs cleanly on any Agent Skills-compatible
-runtime, and the brief → plan → T0 evaluator path works. The autonomous
-run loop (T1–T8 with watchdog cron, hooks, and pause/resume) requires the
-Mavis plan engine. A portable-runtime abstraction is on the wishlist
-(see [Status](#status) for design notes) but not scheduled.
+A: Yes. Policy, bounded MiniMax M3 workers, CP-01–CP-04 Codex gates,
+authenticated lifecycle actions, file-backed patrol, evaluator verdicts, and
+owned cleanup all run without MAVIS. Pass `--legacy-mavis` only for an old
+compatibility fixture.
 
 **Q: The research gate rejected my run. Can I waive it?**
-A: Yes. `journal-q1` and `conference` tiers block writing without a `KEEP`
-or `WAIVED_BY_HUMAN` verdict in `state/research_acceptance.md`. Set the
-verdict explicitly; do not bypass silently. The skill logs the waiver
-author, reason, and timestamp so reviewers can audit it.
+A: Yes, with an expiring HMAC-signed `waive_acceptance` record. A Markdown
+string cannot waive the gate. Negative-result waiver is arxiv-only.
 
 **Q: What if the watchdog keeps reporting stalls?**
 A: Check `last_seen.jsonl` and the L0 corruption guard output. Common
@@ -295,9 +303,8 @@ cd skills/autoresearch-paper
 scripts/setup.sh test
 ```
 
-The test path runs contract validation and unit tests for research gates,
-L0 dry-run behavior, plan-dir resolution, stop/cleanup JSON escaping, and
-manifest-based resource cleanup.
+The test path runs contract validation, exhaustive runtime unit/negative tests,
+and a complete no-MAVIS fake-Claude/fake-Codex integration flow.
 
 ## Changelog
 
@@ -305,6 +312,9 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.8.0** — Claude Code target cutover with authenticated human actions,
+  hash-bound evaluator and CP-01–CP-04 gates, typed failures, target patrol and
+  owned cleanup, plus no-MAVIS end-to-end conformance.
 - **v0.7.0** — CLI → tool migration. The legacy
   `mavis agent|cron|session|hook|archive` CLI subcommands are removed by
   the runtime; the skill is rewired to use the native `mavis` tool
@@ -338,7 +348,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.7.0}
+  version = {0.8.0}
 }
 ```
 
@@ -350,7 +360,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.7.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.8.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

@@ -7,7 +7,7 @@ description: 8-task plan.yaml template (deeper experiments, longer wall-clock, s
 
 Same research-first skeleton as `conference`, but with deeper experiments,
 longer wall-clock, and stricter gates. Targets SCI Q1 / Nature 子刊 /
-T-PAMI / T-RO. T7 writing is blocked by `state/research_acceptance.md`.
+T-PAMI / T-RO. T7 writing is blocked by the hash-bound verdict and CP-04 gate.
 
 ## Execution Procedure
 
@@ -92,15 +92,15 @@ Both are required for journal reviewers, who routinely ask
 
 `T6.1 evaluate-candidate` must compare the method to the frozen T0
 baseline contract using all T6/T6.5/T6.6 evidence. `T6.2
-research-decision` writes `state/research_acceptance.md`.
+research-decision` records a hash-bound evaluator verdict.
 
-- `PASS`: all journal-q1 thresholds are met.
-- `FAIL`: increment `stale_count`, append DISCARD/PIVOT to the
+- `PASS`: all journal-q1 thresholds are met and the verdict validates.
+- `FAIL`: record a distinct scientific fingerprint, append DISCARD/PIVOT to the
   candidate registry, and route to T6.3.
-- `WAIVED_BY_HUMAN`: only the human owner may write this.
+- Waiver: only an authenticated human `waive_acceptance` record is accepted.
 
-`T7 write-iter1` must hard fail unless `research_acceptance.md` contains
-`PASS` or `WAIVED_BY_HUMAN`.
+`T7 write-iter1` must hard fail unless `check-writing-gate` validates the
+verdict/waiver and the CP-04 final-evidence transition receipt.
 
 ### T7 write-iter1 has a longer format
 

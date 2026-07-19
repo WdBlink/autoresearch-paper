@@ -15,30 +15,30 @@
   },
   {
     "id": 3,
-    "name": "fm1_no_mavis_cli",
-    "prompt": "[测试环境]PATH=/usr/bin:/bin bash bootstrap-watchdog.sh uav-coverage conference /tmp/plan",
-    "expected": "脚本立即 exit 1,stderr 输出 '[bootstrap-watchdog][ERROR] mavis CLI not found in PATH (needed for `mavis team plan ...`)' (v0.7.0+: 只有 `mavis team plan ...` 仍是 CLI;agent/cron/session/hook 直接写文件,不需要 CLI) (对应 SKILL.md Failure modes 第 1 条 + 脚本 FM-1 断言)",
-    "covers": ["dim3 失败模式编码", "dim9 反例与黑名单 (No mavis CLI 是明确的 danger zone; v0.7.0+ 后只有 `mavis team plan` 仍需 CLI)"]
+    "name": "target_path_no_mavis",
+    "prompt": "[测试环境] PATH 不含 mavis,使用 fake claude/codex 运行完整 target flow",
+    "expected": "init policy → signed activation → MiniMax M3 worker → CP-01..CP-04 → evaluator verdict → writing gate → patrol → signed stop/owned cleanup 全部成功; 不调用网络或 MAVIS",
+    "covers": ["dim3 失败模式编码", "dim7 target 架构", "dim9 no-MAVIS 反例"]
   },
   {
     "id": 4,
     "name": "research_gate_blocks_writing",
     "prompt": "T6 有结果但没超过 baseline,writer 想先写论文并诚实承认贡献不足。",
-    "expected": "conference/journal tier 必须阻止 T7,要求 state/research_acceptance.md 为 PASS 或 WAIVED_BY_HUMAN; 否则进入 T6.1/T6.2/T6.3 research loop",
+    "expected": "conference/journal tier 必须阻止 T7; bare PASS 无效,需要 frozen evaluator/evidence/candidate/threshold 绑定的 PASS 或 signed waiver,且 CP-04 final evidence 已 APPLIED",
     "covers": ["dim2 工作流", "dim3 失败模式编码", "dim4 检查点", "dim9 反例(T6 done 直接写)"]
   },
   {
     "id": 5,
-    "name": "l0_stale_pivot",
+    "name": "typed_failure_pivot",
     "prompt": "last_seen 已经 stale,同一个方向重复尝试两轮没有进展。",
-    "expected": "plan-l0-guard.py 增加 stale_count; stale_count >= 2 写 control/pivot_requested.json 并要求 structural pivot; stale_count >= 4 写 override_requested.json 升级给人",
+    "expected": "stale heartbeat 只增加 deduplicated runtime_stall; 不创建 pivot; 只有 distinct scientific_no_improvement 达 frozen threshold 后 pivot-eligibility 为 true 并允许 CP-03",
     "covers": ["dim3 失败模式编码", "dim7 架构", "dim8 测试表现"]
   },
   {
     "id": 6,
     "name": "cleanup_manifest",
     "prompt": "用户执行 /autoresearch-paper stop 后检查是否还有 cron/hook/临时 agent/后台 pid。",
-    "expected": "stop-plan.sh 调用 cleanup-plan-resources.sh; cleanup 读取 resource_manifest.json,写 cleanup_report.md,并报告 residual resources; 不允许只提示手动清理",
+    "expected": "stop-plan.sh 要求 signed stop record并传 authenticated receipt; remove-resource 只删除 token/path/plan/receipt 匹配的 owned ephemeral file; 写 cleanup audit并报告 residual",
     "covers": ["dim3 失败模式编码", "dim4 检查点", "dim7 架构", "dim9 反例"]
   }
 ]

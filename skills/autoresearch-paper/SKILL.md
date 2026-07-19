@@ -1,10 +1,10 @@
 ---
 name: autoresearch-paper
-description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use when the user wants "帮我把这个课题写成论文", "autoresearch 写 paper", "先把算法做出来再写论文", or a multi-hour/multi-day Mavis plan with evaluator freeze, implementation/experiment loop, research acceptance gate, L0/L1/L2 heartbeat, pause/resume/stop, and manifest cleanup. Targets Mavis / MiniMax Code environments where the runtime exposes the native `mavis` tool (agent / cron / session / team plan) and direct hook files under `~/.mavis/hooks/` — the legacy `mavis agent|cron|session|hook` CLI subcommands are removed.
+description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use for a multi-hour or multi-day Claude Code Harness with low-cost MiniMax M3 workers, four sparse Codex audits, hash-bound evaluator evidence, authenticated lifecycle actions, typed failures, pause/resume/stop, patrol, and owned cleanup. MAVIS is compatibility-only.
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.7.0"
+  version: "0.8.0"
 ---
 
 # Autoresearch Paper
@@ -21,8 +21,12 @@ file-backed state.
   user confirms both tier and plan preview.
 - Never auto-abort. Watchdog and L0 findings are advisory until the user
   confirms a destructive action.
-- Never start writing for `conference` or `journal-q1` until
-  `state/research_acceptance.md` contains `PASS` or `WAIVED_BY_HUMAN`.
+- Never convert MiniMax M3 or Codex output directly into acceptance, waiver,
+  cancellation, resume, or destructive cleanup. Persist advice for controller
+  validation or authenticated human review.
+- Never start writing from a bare PASS string. Require a validated evaluator
+  verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
+  also requires APPLIED CP-04 `prewriting_final_evidence`.
 - Never create one permanent team member per retry, direction, section, or
   iteration. Stable roles are enough; temporary workers must be marked
   `ephemeral=true` in `resource_manifest.json`.
@@ -47,18 +51,39 @@ task_graph = generate_plan_yaml(
     references/lifecycle-contract.md
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
+freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
+route routine bounded tasks through harness-runtime.py dispatch-worker
+at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent transition
 write watchdog-system-prompt.md from references/watchdog-prompt-template.md
-run references/bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir> [--rescue if accepted]
-run mavis team plan run --plan <plan-dir>/plan.yaml
-register plan id with references/scripts/register-plan-id.py
+schedule and run deterministic file-backed patrol through harness-runtime.py
+use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
-    observe mavis team plan status + last_seen.jsonl + state/progress.json + l0/watchdog health
+    observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
     honor status, pause, resume, stop, cleanup, rescue-status commands
     surface watchdog/L0 findings without destructive action
 on finish or user stop:
     run cleanup-plan-resources.sh
     deliver paper paths, reviewer-readiness, watchdog summary, cleanup report
 ```
+
+## Target Runtime: Claude Code
+
+Read `references/claude-code-runtime.md` before dispatch. The current target
+adapter provides:
+
+- frozen per-plan MiniMax M3 and Codex model/budget policy;
+- non-interactive, schema-bounded MiniMax M3 worker dispatch through Claude Code;
+- immutable, hash-bound requests for CP-01 through CP-04;
+- pre-dispatch frontier budget reservation;
+- authenticated, expiring, replay-protected human actions;
+- hash-bound evaluator verdict and final-writing gates;
+- typed runtime/scientific failure counters and CP-03 eligibility;
+- complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
+- durable Codex transport, response validation, exact-once dependent
+  transitions, timeout, and restart inspection.
+
+MAVIS bootstrap/watchdog scripts are compatibility fixtures. They never define
+target Harness semantics and run only through explicit legacy entry points.
 
 ## When To Use
 
@@ -106,6 +131,8 @@ Generated plans must initialize:
 - `state/candidate_registry.jsonl`
 - `state/scoreboard.tsv`
 - `state/research_acceptance.md`
+- `state/evaluator_contract.json`
+- `state/failure_state.json`
 - `control/`
 - `resource_manifest.json`
 - `last_seen.jsonl`
@@ -123,8 +150,8 @@ For `conference` and `journal-q1`, the task graph must include:
 - `T6.3 pivot-or-retry`
 - writing and package tasks only after the research gate
 
-For `arxiv`, a clean negative-result paper may proceed only with
-`WAIVED_NEGATIVE_RESULT`.
+For `arxiv`, a clean negative-result paper may proceed only with an applied,
+hash-bound negative-result waiver receipt.
 
 Read these modules when generating a plan:
 
@@ -138,52 +165,49 @@ Read these modules when generating a plan:
 
 ## Research Gate
 
-`state/research_acceptance.md` is the only writing gate.
-
-Accepted values:
-
-- `PASS`
-- `WAIVED_BY_HUMAN`
-- `WAIVED_NEGATIVE_RESULT` (`arxiv` only)
-- `FAIL`
+`state/evaluator_contract.json` is frozen from a controller-executed calibration
+receipt. Candidate value and PASS/FAIL are also derived from controller-owned
+execution receipts. Bare `research_acceptance.md` values are never authority.
+Human waivers must be applied receipts bound to tier, candidate, evaluator
+contract, and scope; pending signed records are not authority. Negative-result
+waivers remain arxiv-only. Every writing tier requires CP-04 final-evidence
+approval and emits a writing-gate audit.
 
 Before T7 writing, run:
 
 ```bash
 python3 references/scripts/research-state-guard.py \
-  check-writing-gate --plan-dir <plan-dir> --tier <tier>
+  check-writing-gate --plan-dir <plan-dir> --tier <tier> \
+  --verdict <state/evaluator_verdicts/candidate.json>
 ```
 
-When `stale_count >= 2`, a retry must be structural. Validate pivots with:
+When distinct controller-normalized scientific directions bound to canonical
+FAIL verdicts reach the frozen threshold, a retry must be structural. Runtime
+stalls never count. Validate:
 
 ```bash
 python3 references/scripts/research-state-guard.py \
   validate-pivot --plan-dir <plan-dir> --proposal <pivot-brief.md>
 ```
 
-## Watchdog And Lifecycle
+## Patrol And Lifecycle
 
-Bootstrap command:
+Target commands:
 
 ```bash
-references/bootstrap-watchdog.sh <topic-slug> <tier> <plan-dir> [--rescue]
+python3 references/scripts/harness-runtime.py schedule-patrol --plan-dir PLAN --interval-seconds 300
+python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale-seconds 7200
 ```
 
-The bootstrap script creates or verifies:
-
-- one stable watchdog agent via the native `mavis` tool (`mavis({ command: "agent create", args: { name: "<topic>-wd", system_prompt: "..." } })`)
-- one hourly Mavis cron for L1 patrol (written to `~/.mavis/agents/<agent>/crons/<name>.md`)
-- one PostToolUse hook from `assets/first-action-last-seen-hook.md` for L2 heartbeats (written directly to `~/.mavis/hooks/<name>.json.md`; no daemon CLI call)
-- `resource_manifest.json`
-- initial research state and control directories
-- optional launchd-managed L0 rescue daemon
+The target patrol is file-backed, session-independent, and records only typed
+runtime failures. `bootstrap-watchdog.sh` remains an explicit legacy fixture.
 
 Heartbeat layers:
 
 | Layer | Mechanism | Purpose |
 |---|---|---|
 | L0 | `plan-l0-guard.py` via launchd/manual patrol | session-independent stale detection, repair, cleanup requests |
-| L1 | watchdog Mavis agent + hourly cron | emits findings and recommendations |
+| L1 | target file-backed patrol schedule | emits deterministic runtime findings |
 | L2 | `last_seen.jsonl` hook | per-task activity heartbeat |
 
 The UI remains useful for status and control, but it is not the L0
@@ -197,11 +221,11 @@ Expose these commands by resolving `<plan-id>` to `<plan-dir>` with
 
 | Command | Action |
 |---|---|
-| `/autoresearch-paper status` | show plan status, research gate, stale count, resource health, recent findings |
-| `/autoresearch-paper pause` | run `pause-plan.sh <plan-id>` and write `control/pause_requested.json` |
-| `/autoresearch-paper resume` | run `resume-plan.sh <plan-id>`; L0 verifies and repairs resources |
-| `/autoresearch-paper stop` | run `stop-plan.sh <plan-id>`; cancel when possible and clean resources |
-| `/autoresearch-paper cleanup` | run `cleanup-plan-resources.sh <plan-id>` without deleting outputs |
+| `/autoresearch-paper status` | inspect controller, workers, typed failures, gates, and patrol state |
+| `/autoresearch-paper pause` | create and apply a signed `pause` record |
+| `/autoresearch-paper resume` | create and apply a signed `resume` record |
+| `/autoresearch-paper stop` | create/apply signed `stop`, then pass its receipt to cleanup |
+| `/autoresearch-paper cleanup` | create/apply scoped `cleanup_resource` records and remove owned files |
 | `/autoresearch-paper rescue-status` | show `state/l0_status.json`, `state/watchdog_health.json`, and rescue history |
 
 ## Long-Running Compute
@@ -239,15 +263,18 @@ do not count as evidence.
 | ❌-8 | Run destructive abort/cancel without the abort gate |
 | ❌-9 | Promise camera-ready PDF, venue submission, or human-authorship replacement |
 | ❌-10 | Run conference/journal mode without a measurable evaluator |
-| ❌-11 | Let T7 writing start after T6 experiment without `research_acceptance.md` PASS or waiver |
+| ❌-11 | Let T7 start from a bare PASS string or without the required CP-04 receipt |
 | ❌-12 | Create permanent team members for every retry, direction, or section |
 | ❌-13 | Stop a plan without `cleanup-plan-resources.sh` or a residual-resource report |
+| ❌-14 | Let model advice directly accept, waive, cancel, resume, or clean lifecycle resources |
+| ❌-15 | Call Codex outside CP-01 through CP-04 or before reserving the frozen frontier budget |
 
 ## Failure Modes
 
 | ID | Trigger | First-line fix | Fallback |
 |---|---|---|---|
-| FM-1 | `mavis` missing (CLI for `team plan ...`) | run `scripts/setup.sh` and install/activate Mavis | abort before Step 5 |
+| FM-1 | `claude` missing | run `scripts/setup.sh` and install/activate Claude Code | stop before any worker dispatch |
+| FM-1L | `mavis` missing on a legacy compatibility path | migrate that operation to the Claude adapter or install Mavis temporarily | do not make MAVIS canonical again |
 | FM-3a | malformed YAML | retry stricter YAML generation up to 3 total attempts | fill the tier template mechanically |
 | FM-3b | model refuses YAML | classify refusal; do not retry blindly | bypass model and fill template mechanically |
 | FM-4 | agent/cron/hook already exists | treat as idempotent; skip existing resource | ask user for a new slug suffix |
@@ -257,12 +284,11 @@ do not count as evidence.
 | FM-12 | page-budget fold regresses readiness | compute dimension regression before deleting a section | request waiver, short-paper track, or restructure |
 | FM-13 | result files hide ERROR/TypeError records | scan all raw files, not one sample | targeted rerun or patch helper |
 | FM-14 | verifier reuses producer context | use a fresh session or artifact-only `codex exec` | defer to human if fresh verification is impossible |
-| FM-16 | producer burns cap on repeated dry-runs | run one small dry-run then launch full daemon | read prior checkpoint and do not re-dry-run |
 | FM-17 | model reloads per cell | preload model once at daemon startup | reload per batch if memory is limited |
 | FM-18 | skip-if-exists breaks on pretty JSON | use full-file `json.load` | diagnose slow reruns from progress files |
 | FM-19 | wrapper paper overclaims B5 beats B0 when equal | separate "preserves SOTA" from stress-path gains | add honest scope clarification |
-| FM-20 | T6 completes but `research_acceptance.md` is missing or FAIL | run T6.1/T6.2 against frozen evaluator | require explicit waiver for writing |
-| FM-21 | `stale_count >= 2` repeats same direction | force T6.3 structural pivot using `directions_tried.json` | escalate at `stale_count >= 4` |
+| FM-20 | verdict/evidence/candidate hash drifts | rerun evaluation against the frozen contract | require authenticated waiver |
+| FM-21 | scientific threshold repeats the same direction | deduplicate controller-normalized, FAIL-bound directions and force T6.3 structural pivot | request CP-03 advice |
 | FM-22 | stop/abort leaves runtime resources behind | run `cleanup-plan-resources.sh <plan-id>` | report exact residual manual commands |
 | FM-23 | team members grow unbounded | keep stable roles and mark temporary members `ephemeral=true` | cleanup archives/deletes temporary members |
 
@@ -290,6 +316,8 @@ On completion, report:
 - `assets/task-prompt-snippets.md` — full worker prompt fragments
 - `references/research-state-contract.md` — state schema and research gate
 - `references/lifecycle-contract.md` — manifest, resume, cleanup contract
+- `references/claude-code-runtime.md` — target runtime commands and migration boundary
+- `references/frontier-response.schema.json` — Codex advisory response schema
 - `references/watchdog-prompt-template.md` — watchdog system prompt template
 - `references/first-action-last-seen.md` — hook registration contract
 - `assets/first-action-last-seen-hook.md` — hook body registered by bootstrap
@@ -299,10 +327,14 @@ On completion, report:
 ## Versioning
 
 Per-release changelog. Versions follow semver-ish semantics within the
-Mavis skill family (major = breaking orchestrator contract, minor = new
+Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.8.0 (2026-07-18)** — Claude Code target cutover: authenticated human
+  actions, evidence-bearing evaluator/writing gates, typed failures, complete
+  target runtime operations, hash-bound CP-01–CP-04 transitions, and a
+  no-MAVIS fake-transport integration test.
 - **v0.7.0 (2026-07-16)** — CLI → tool migration. The legacy
   `mavis agent|cron|session|hook|archive` CLI subcommands are removed by
   the runtime; the skill is rewired to use the native `mavis` tool for

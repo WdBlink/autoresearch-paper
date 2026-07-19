@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "candidate_id", "evaluator_sha256", "evidence_sha256",
+    "candidate_sha256", "metric", "threshold", "value", "verdict", "evaluated_at",
+    "candidate_path", "contract_sha256", "execution_receipt_sha256",
+    "execution_receipt_path"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "candidate_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$", "maxLength": 128},
+    "evaluator_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "candidate_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "metric": {"type": "string", "minLength": 1, "maxLength": 128},
+    "threshold": {"type": "number"},
+    "value": {"type": "number"},
+    "verdict": {"enum": ["PASS", "FAIL"]},
+    "evaluated_at": {"type": "string", "minLength": 20, "maxLength": 35},
+    "candidate_path": {"type": "string", "minLength": 1},
+    "contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "execution_receipt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "execution_receipt_path": {"type": "string", "minLength": 1}
+  }
+}

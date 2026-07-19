@@ -8,7 +8,7 @@ description: Minimal 4-task plan.yaml template for the arxiv tier — literature
 Minimal 4-task plan. Used when the user wants a working paper, a tech
 report, a preprint, or explicitly opts out of a venue gate. Unlike
 conference/journal tiers, arxiv may proceed with a clean negative result,
-but the waiver must be explicit in `state/research_acceptance.md`.
+but the waiver must be an authenticated `waive_acceptance` human record.
 
 ## Execution Procedure
 
@@ -17,8 +17,8 @@ render_arxiv_plan(brief, materials, plan_dir) -> plan_yaml
 
 create literature, method+experiment, research-decision, writing/package tasks
 load prompt bodies from ../assets/task-prompt-snippets.md
-initialize research_acceptance.md as FAIL
-allow writing only after PASS or WAIVED_NEGATIVE_RESULT
+freeze the evaluator and initialize typed failure state
+allow writing only after a validated PASS or authenticated arxiv waiver
 ```
 
 ## Plan shape
@@ -71,14 +71,11 @@ Total wall-clock target: 1–2 days.
 - **agent**: verifier-agent
 - **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.2-research-decision`
 - **outputs**:
-  - `<plan-dir>/state/research_acceptance.md`
+  - `<plan-dir>/state/evaluator_verdicts/<candidate-id>.json`
   - `<plan-dir>/state/progress.json`
   - `<plan-dir>/state/scoreboard.tsv`
-- **gate**: write one of:
-  - `PASS` if the result supports a clear positive claim.
-  - `WAIVED_NEGATIVE_RESULT` if the plan is intentionally writing an
-    honest negative-result or reproducibility preprint.
-  - `FAIL` if there is no interpretable result table.
+- **gate**: record a hash-bound PASS/FAIL machine verdict. An honest negative
+  result requires an authenticated arxiv-only waiver; bare strings never pass.
 
 ### T3 — write-and-package
 
@@ -94,8 +91,8 @@ Total wall-clock target: 1–2 days.
   - `<plan-dir>/out/reviewer-readiness.md` — `reviewer-readiness-rubric.md`
     scoring, 6 dimensions, each 0–10. Tier `arxiv` accepts ≥ 5 per
     dimension; nothing lower.
-- **gate**: `state/research_acceptance.md` must contain `PASS` or
-  `WAIVED_NEGATIVE_RESULT`.
+- **gate**: `check-writing-gate` must accept the validated verdict or signed
+  arxiv negative-result waiver.
 
 ### T4 — readiness-self-check
 

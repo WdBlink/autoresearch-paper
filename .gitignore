@@ -35,6 +35,12 @@ darwin-results.tsv
 out/
 results.tsv
 
+# Project knowledge lives in the private external ctx store.
+/ctx
+
+# Local OPC execution evidence; never publish transient review state.
+/.harness/
+
 # OS temp / build
 *.log
 tmp/

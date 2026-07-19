@@ -6,10 +6,9 @@ L0 is intentionally file-backed and conservative. It reads plan state,
 control files, last_seen heartbeat, and resource_manifest.json, then writes
 status back into state/l0_status.json and state/watchdog_health.json.
 
-It does not write paper outputs and it does not invent research claims.
-When a running plan is stale, it increments progress.stale_count once per
-stale heartbeat and requests pivot/escalation according to the research
-state contract.
+It does not write paper outputs, invent research claims, or convert runtime
+health into scientific failure. A stale heartbeat records one deduplicated
+`runtime_stall` event through the deterministic target controller.
 """
 
 from __future__ import annotations
@@ -77,11 +76,7 @@ def append_watchdog(plan_dir: Path, severity: str, kind: str, finding: str, reco
 
 
 def signal_paths(plan_dir: Path, name: str) -> list[Path]:
-    return [
-        plan_dir / "control" / name,
-        plan_dir / "state" / name,
-        plan_dir / name,
-    ]
+    return [plan_dir / "control" / name]
 
 
 def has_signal(plan_dir: Path, name: str) -> bool:
@@ -107,7 +102,6 @@ def read_progress(plan_dir: Path) -> dict[str, Any]:
         progress = {}
     progress.setdefault("status", "running")
     progress.setdefault("iteration", 0)
-    progress.setdefault("stale_count", 0)
     progress.setdefault("research_status", "not_started")
     return progress
 
@@ -265,36 +259,19 @@ def verify_resources(plan_dir: Path, repair: bool, dry_run: bool) -> dict[str, A
     return result
 
 
-def request_pivot(plan_dir: Path, progress: dict[str, Any], reason: str, dry_run: bool = False) -> str:
-    stale_count = int(progress.get("stale_count", 0))
-    if stale_count >= 4:
-        progress["research_status"] = "escalate_to_human"
-        if not dry_run:
-            write_json(plan_dir / "control" / "override_requested.json", {
-                "ts": now_iso(),
-                "kind": "stale_research_loop",
-                "stale_count": stale_count,
-                "reason": reason,
-                "allowed_actions": ["change_evaluator", "waive_to_arxiv", "stop", "manual_direction"],
-            })
-            append_watchdog(plan_dir, "critical", "research-escalation", reason, "escalate-to-human")
-        return "escalate_to_human"
-    if stale_count >= 2:
-        progress["research_status"] = "pivot_required"
-        if not dry_run:
-            write_json(plan_dir / "control" / "pivot_requested.json", {
-                "ts": now_iso(),
-                "kind": "stale_research_loop",
-                "stale_count": stale_count,
-                "reason": reason,
-                "require_structural_change": True,
-            })
-            append_watchdog(plan_dir, "warn", "research-pivot", reason, "steer")
-        return "pivot_required"
-    progress["research_status"] = "stale_observed"
-    if not dry_run:
-        append_watchdog(plan_dir, "warn", "stale-heartbeat", reason, "wait")
-    return "stale_observed"
+def record_runtime_stall(plan_dir: Path, fingerprint: str, reason: str, dry_run: bool) -> str:
+    if dry_run:
+        return "stale_observed"
+    runtime = Path(__file__).with_name("harness-runtime.py")
+    result = run_cmd([
+        sys.executable, str(runtime), "record-failure", "--plan-dir", str(plan_dir),
+        "--class", "runtime_stall", "--fingerprint", fingerprint, "--source", "plan-l0-guard",
+    ], False)
+    if result["returncode"] != 0:
+        append_watchdog(plan_dir, "critical", "runtime-stall-record-failed", result["stderr"], "inspect-controller")
+        return "runtime_stall_record_failed"
+    append_watchdog(plan_dir, "warn", "runtime-stall", reason, "inspect-runtime")
+    return "runtime_stall_recorded"
 
 
 def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
@@ -312,12 +289,27 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     if has_signal(plan_dir, "resume_signal.json"):
         if not args.dry_run:
             remove_signal(plan_dir, "pause_requested.json")
-        if mavis_available():
+        if args.legacy_mavis and mavis_available():
             actions.append("resume:" + json.dumps(run_cmd(["mavis", "team", "plan", "resume", plan_id], args.dry_run)))
         if not args.dry_run:
             remove_signal(plan_dir, "resume_signal.json")
 
     if has_signal(plan_dir, "stop_requested.json"):
+        runtime = Path(__file__).with_name("harness-runtime.py")
+        authority = plan_dir / "control" / "stop_requested.json"
+        validation = run_cmd([
+            sys.executable, str(runtime), "validate-action-receipt", "--plan-dir", str(plan_dir),
+            "--receipt", str(authority), "--action", "stop",
+        ], args.dry_run)
+        actions.append("stop_authority:" + json.dumps(validation))
+        if validation["returncode"] != 0:
+            result = {
+                "plan_id": plan_id, "action": "invalid_stop_authority", "status": status,
+                "actions": actions, "resource_health": resource_health,
+            }
+            if not args.dry_run:
+                write_json(plan_dir / "state" / "l0_status.json", result | {"ts": now_iso()})
+            return result
         cleanup_script = Path(args.cleanup_script)
         if cleanup_script.exists():
             cleanup = run_cmd([
@@ -327,8 +319,18 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
                 "L0 observed stop_requested.json",
                 "--mode",
                 "stop",
+                "--authorization",
+                str(authority),
             ], args.dry_run)
             actions.append("cleanup:" + json.dumps(cleanup))
+            if cleanup["returncode"] != 0:
+                result = {
+                    "plan_id": plan_id, "action": "stop_cleanup_failed", "status": status,
+                    "actions": actions, "resource_health": resource_health,
+                }
+                if not args.dry_run:
+                    write_json(plan_dir / "state" / "l0_status.json", result | {"ts": now_iso()})
+                return result
         else:
             actions.append("cleanup_missing")
         progress["status"] = "stopped"
@@ -356,10 +358,8 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             age = now_epoch - float(cycle_started_ms) / 1000.0
         if status == "running" and (age is None or age >= stale_sec):
             hb_token = f"NO_HEARTBEAT:{cycle_started_ms or 'unknown'}"
-            if progress.get("last_stale_heartbeat_ts") != hb_token:
-                progress["stale_count"] = int(progress.get("stale_count", 0)) + 1
-                progress["last_stale_heartbeat_ts"] = hb_token
-            action = request_pivot(plan_dir, progress, f"running plan has no last_seen heartbeat for >= {stale_sec}s", dry_run=args.dry_run)
+            progress["last_stale_heartbeat_ts"] = hb_token
+            action = record_runtime_stall(plan_dir, hb_token, f"running plan has no last_seen heartbeat for >= {stale_sec}s", args.dry_run)
             if not args.dry_run:
                 write_progress(plan_dir, progress)
             result = {"plan_id": plan_id, "action": action, "status": status, "heartbeat": None, "resource_health": resource_health}
@@ -373,10 +373,8 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         progress["last_heartbeat_ts"] = heartbeat.get("ts") or heartbeat.get("timestamp")
         if status == "running" and age >= stale_sec:
             hb_token = heartbeat.get("ts") or heartbeat.get("timestamp") or str(hb_epoch)
-            if progress.get("last_stale_heartbeat_ts") != hb_token:
-                progress["stale_count"] = int(progress.get("stale_count", 0)) + 1
-                progress["last_stale_heartbeat_ts"] = hb_token
-            action = request_pivot(plan_dir, progress, f"last heartbeat is stale: {int(age)}s >= {stale_sec}s", dry_run=args.dry_run)
+            progress["last_stale_heartbeat_ts"] = hb_token
+            action = record_runtime_stall(plan_dir, str(hb_token), f"last heartbeat is stale: {int(age)}s >= {stale_sec}s", args.dry_run)
             if not args.dry_run:
                 write_progress(plan_dir, progress)
             result = {"plan_id": plan_id, "action": action, "status": status, "heartbeat_age_sec": int(age), "resource_health": resource_health}
@@ -392,7 +390,7 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         "plan_id": plan_id,
         "action": "ok",
         "status": status,
-        "stale_count": progress.get("stale_count", 0),
+        "runtime_failure_state": str(plan_dir / "state" / "failure_state.json"),
         "resource_health": resource_health,
     }
     if not args.dry_run:
@@ -428,6 +426,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="run one patrol round")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--repair-resources", action="store_true", help="attempt idempotent bootstrap repair")
+    parser.add_argument("--legacy-mavis", action="store_true", help="enable explicit legacy plan resume compatibility")
     parser.add_argument("--stale-sec", type=int, default=DEFAULT_STALE_SEC)
     parser.add_argument("--interval", type=int, default=60)
     parser.add_argument(

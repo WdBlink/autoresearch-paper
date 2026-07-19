@@ -6,8 +6,8 @@ description: Full 8-task plan.yaml template for the conference tier — literatu
 # Plan Template — `conference` Tier
 
 Research-first plan, plus an optional rebuttal-preview task. Used for
-IROS/ICRA/CVPR/NeurIPS-grade submissions. T7 writing is blocked by
-`state/research_acceptance.md`; completing T6 experiments is not enough.
+IROS/ICRA/CVPR/NeurIPS-grade submissions. T7 writing requires a validated,
+hash-bound verdict and APPLIED CP-04 final-evidence receipt.
 
 ## Execution Procedure
 
@@ -17,7 +17,8 @@ render_conference_plan(brief, materials, plan_dir) -> plan_yaml
 create T0 evaluator-freeze before method work
 create literature, gap, method, implementation, experiment, evaluation, decision, pivot, writing, package tasks
 load prompt bodies from ../assets/task-prompt-snippets.md
-route FAIL through T6.3 until PASS, WAIVED_BY_HUMAN, or human stop
+route scientific FAIL through typed failure accounting and T6.3 until a
+validated PASS, authenticated human waiver, or signed human stop
 ```
 
 ## Plan shape
@@ -73,8 +74,7 @@ Total wall-clock target: 1–2 weeks.
   - `<plan-dir>/state/baseline_contract.md`
   - `<plan-dir>/state/allowed_search_space.md`
   - initialized `progress.json`, `directions_tried.json`,
-    `candidate_registry.jsonl`, `scoreboard.tsv`, and
-    `research_acceptance.md` with status `FAIL`.
+    `candidate_registry.jsonl`, `scoreboard.tsv`, and `failure_state.json`.
 - **gate**: the primary metric, baseline set, and acceptance threshold
   are frozen before T3 can propose a method. Later changes require a
   human override in `control/override_requested.json`.
@@ -176,25 +176,24 @@ Same as `arxiv` tier, but stricter:
 - **agent**: orchestrator-agent
 - **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.2-research-decision`
 - **outputs**:
-  - `<plan-dir>/state/research_acceptance.md`
+  - `<plan-dir>/state/evaluator_verdicts/<candidate-id>.json`
   - updated `<plan-dir>/state/progress.json`
   - optional `<plan-dir>/control/pivot_requested.json`
 - **gate**:
-  - `PASS` only if T6.1 meets the frozen success criteria.
-  - `FAIL` increments `stale_count`.
-  - `stale_count >= 2` requires structural pivot via T6.3.
-  - `stale_count >= 4` requires escalation to human.
+  - `record-evaluator-verdict` accepts PASS only if T6.1 meets the frozen criteria.
+  - FAIL records a distinct `scientific_no_improvement` fingerprint.
+  - `pivot-eligibility` at the frozen threshold requires T6.3 and CP-03.
 
 ### T6.3 — pivot-or-retry
 
-- **depends_on**: [T6.2 when research_acceptance.md is FAIL]
+- **depends_on**: [T6.2 when the validated verdict is FAIL]
 - **agent**: method-agent
 - **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.3-pivot-or-retry`
 - **outputs**:
   - updated `<plan-dir>/state/directions_tried.json`
   - updated `<plan-dir>/state/progress.json`
   - a new method-design brief that routes back to T3/T4/T5/T6
-- **gate**: if `stale_count >= 2`, the change must be structural
+- **gate**: once `pivot-eligibility` is true, the change must be structural
   (algorithm family, data representation, objective, evaluator, or
   baseline framing), not a hyperparameter tweak.
 
@@ -210,8 +209,8 @@ Same as `arxiv` tier, but stricter:
   - `<plan-dir>/out/bibliography.bib`.
 - **gate**: each section (intro / related / method / expt / conclusion)
   has at least one paragraph. No `[TODO]` placeholders in the body.
-  Hard fail unless `state/research_acceptance.md` contains `PASS` or
-  `WAIVED_BY_HUMAN`.
+  Hard fail unless `check-writing-gate` accepts a stored PASS verdict or
+  authenticated waiver and `assert-transition start_writing` accepts CP-04.
 
 ### T8 — write-iter2
 

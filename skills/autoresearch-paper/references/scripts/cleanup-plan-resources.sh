@@ -2,7 +2,7 @@
 # cleanup-plan-resources.sh — best-effort cleanup for one autoresearch plan.
 #
 # Usage:
-#   cleanup-plan-resources.sh <plan_id|plan_dir> [--reason <text>] [--mode stop|abort|complete|cleanup] [--dry-run]
+#   cleanup-plan-resources.sh <plan_id|plan_dir> [--authorization <receipt>] [--legacy-mavis] [...]
 #
 # The script reads <plan-dir>/resource_manifest.json and deletes only
 # resources marked ephemeral=true or run_scoped=true. It preserves outputs,
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <plan_id|plan_dir> [--reason <text>] [--mode stop|abort|complete|cleanup] [--dry-run]" >&2
+  echo "Usage: $0 <plan_id|plan_dir> [--authorization <receipt>] [--legacy-mavis] [--reason <text>] [--mode stop|abort|complete|cleanup] [--dry-run]" >&2
   exit 2
 fi
 
@@ -32,6 +32,8 @@ shift
 REASON="cleanup requested"
 DRY_RUN=0
 MODE="stop"
+AUTHORIZATION=""
+LEGACY_MAVIS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +43,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --authorization)
+      AUTHORIZATION="${2:-}"
+      shift 2
+      ;;
+    --legacy-mavis)
+      LEGACY_MAVIS=1
       shift
       ;;
     --mode)
@@ -57,6 +67,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${MODE}" == "cleanup" ]]; then
+  echo "ERROR: aggregate cleanup is disabled; authorize and run harness-runtime.py remove-resource once per resource_id" >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVER="${SCRIPT_DIR}/resolve-plan-dir.py"
@@ -104,6 +119,48 @@ HISTORY="${STATE_DIR}/cleanup_history.jsonl"
 
 mkdir -p "${STATE_DIR}" "${CONTROL_DIR}"
 
+if [[ "${DRY_RUN}" != "1" && "${MODE}" != "complete" ]]; then
+  if [[ -z "${AUTHORIZATION}" || ! -f "${AUTHORIZATION}" ]]; then
+    echo "ERROR: state-changing cleanup requires --authorization with an applied human receipt" >&2
+    exit 2
+  fi
+  python3 "${SCRIPT_DIR}/harness-runtime.py" validate-action-receipt \
+    --plan-dir "${PLAN_DIR}" --receipt "${AUTHORIZATION}" --action stop >/dev/null
+fi
+
+# Claude Code is the canonical controller. A plan-level stop receipt changes
+# controller state only; it does not grant manifest-wide deletion authority.
+# Destructive legacy MAVIS cleanup remains an explicit compatibility mode.
+if [[ "${LEGACY_MAVIS}" != "1" ]]; then
+  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "${STATE_DIR}" "${CONTROL_DIR}"
+  python3 - "${MANIFEST}" "${REPORT}" "${HISTORY}" "${NOW}" "${PLAN_ID}" "${MODE}" "${REASON}" <<'PY'
+import json, sys
+from pathlib import Path
+manifest_path, report_path, history_path, now, plan_id, mode, reason = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text()) if Path(manifest_path).exists() else {}
+resources = []
+for item in manifest.get("resources", []):
+    if isinstance(item, dict) and item.get("ephemeral") is True:
+        resources.append(str(item.get("resource_id") or item.get("path") or "unknown"))
+report = (
+    "# Cleanup report\n\n"
+    f"- plan_id: {plan_id}\n- mode: {mode}\n- ts: {now}\n"
+    "- action: controller stopped; no resources removed\n"
+    "- authority: per-resource cleanup_resource receipts required\n"
+    f"- residual_resources: {', '.join(resources) if resources else 'none declared'}\n"
+)
+Path(report_path).write_text(report)
+Path(history_path).parent.mkdir(parents=True, exist_ok=True)
+with Path(history_path).open("a") as handle:
+    handle.write(json.dumps({"ts": now, "plan_id": plan_id, "mode": mode, "reason": reason,
+                             "removed": [], "residual_resources": resources,
+                             "authority": "per-resource-only"}, sort_keys=True) + "\n")
+PY
+  echo "Controller stop recorded. No resources removed; use one cleanup_resource receipt per resource_id."
+  exit 0
+fi
+
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -121,6 +178,23 @@ json_bool() {
   local field="$1"
   local default="${2:-false}"
   python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(str(d.get(sys.argv[1], sys.argv[2].lower()=="true")).lower())' "${field}" "${default}"
+}
+
+safe_component() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+$ && "$1" != "." && "$1" != ".." ]]
+}
+
+safe_within() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+path, root = Path(sys.argv[1]).expanduser().resolve(), Path(sys.argv[2]).expanduser().resolve()
+try:
+    path.relative_to(root)
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
 }
 
 run_cmd() {
@@ -201,7 +275,7 @@ Path(path).write_text(json.dumps({
 PY
 
 # 2. Ask plan engine to stop/cancel when possible.
-if command -v mavis >/dev/null 2>&1 && [[ "${PLAN_ID}" == plan_* ]]; then
+if [[ "${LEGACY_MAVIS}" == "1" ]] && command -v mavis >/dev/null 2>&1 && [[ "${PLAN_ID}" == plan_* ]]; then
   run_cmd "plan-cancel" mavis team plan cancel "${PLAN_ID}"
 fi
 
@@ -247,6 +321,10 @@ while IFS= read -r line; do
       fi
       ;;
     crons)
+      if [[ "${LEGACY_MAVIS}" != "1" ]]; then
+        record "OK cron: compatibility-only resource left in place (pass --legacy-mavis explicitly)"
+        continue
+      fi
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       if [[ "${ephemeral}" != "true" ]]; then
         name="$(json_field name <<<"${line}")"
@@ -262,14 +340,22 @@ while IFS= read -r line; do
         residual "cron: missing agent or name"
         continue
       fi
+      if ! safe_component "${agent}" || ! safe_component "${name}"; then
+        residual "cron: unsafe agent/name component"
+        continue
+      fi
       cron_file="${HOME}/.mavis/agents/${agent}/crons/${name}.md"
-      if [[ ! -f "${cron_file}" ]]; then
+      if [[ "${DRY_RUN}" != "1" && ! -f "${cron_file}" ]]; then
         record "OK cron:${agent}/${name}: file already absent"
         continue
       fi
       run_cmd "cron:${agent}/${name}" rm -f "${cron_file}"
       ;;
     hooks)
+      if [[ "${LEGACY_MAVIS}" != "1" ]]; then
+        record "OK hook: compatibility-only resource left in place (pass --legacy-mavis explicitly)"
+        continue
+      fi
       ephemeral="$(json_bool ephemeral false <<<"${line}")"
       if [[ "${ephemeral}" != "true" ]]; then
         name="$(json_field name <<<"${line}")"
@@ -287,6 +373,10 @@ while IFS= read -r line; do
         residual "hook: missing name"
         continue
       fi
+      if ! safe_component "${name}"; then
+        residual "hook: unsafe name component"
+        continue
+      fi
       # Try the canonical path first (`<name>.md`). Fall back to a
       # name without extension in case the manifest ever drops the
       # `.json` suffix. Also handle the pre-v0.7 convention
@@ -294,7 +384,7 @@ while IFS= read -r line; do
       hook_canonical="${HOME}/.mavis/hooks/${name}.md"
       hook_legacy="${HOME}/.mavis/hooks/${name}"
       hook_pre_v07="${HOME}/.mavis/hooks/${name}.json.md"
-      if [[ -f "${hook_canonical}" ]]; then
+      if [[ "${DRY_RUN}" == "1" || -f "${hook_canonical}" ]]; then
         run_cmd "hook:${name}" rm -f "${hook_canonical}"
       elif [[ -f "${hook_pre_v07}" ]]; then
         run_cmd "hook:${name}" rm -f "${hook_pre_v07}"
@@ -309,7 +399,8 @@ while IFS= read -r line; do
       plist="$(python3 -c 'import json,os,sys; p=json.loads(sys.stdin.read()).get("plist",""); print(os.path.expanduser(p))' <<<"${line}")"
       label="$(json_field label <<<"${line}")"
       label="${label:-launchd}"
-      if [[ "${run_scoped}" == "true" && -n "${plist}" && -f "${plist}" ]]; then
+      if [[ "${run_scoped}" == "true" && -n "${plist}" && -f "${plist}" ]] && \
+         safe_within "${plist}" "${HOME}/Library/LaunchAgents"; then
         run_cmd "launchd-unload:${label}" launchctl unload -w "${plist}"
         run_cmd "launchd-remove:${label}" rm -f "${plist}"
       else
@@ -317,6 +408,10 @@ while IFS= read -r line; do
       fi
       ;;
     sessions)
+      if [[ "${LEGACY_MAVIS}" != "1" ]]; then
+        record "OK session: compatibility-only resource left in place (pass --legacy-mavis explicitly)"
+        continue
+      fi
       # v0.7.0+: the legacy `mavis session compress` CLI is removed.
       # "Compress" used to flip a session into an archived state. We
       # approximate it by moving the session directory into a sibling
@@ -327,6 +422,10 @@ while IFS= read -r line; do
       name="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("id") or d.get("name") or "")' <<<"${line}")"
       if [[ -z "${name}" ]]; then
         residual "session: missing id or name"
+        continue
+      fi
+      if ! safe_component "${name}"; then
+        residual "session: unsafe id/name component"
         continue
       fi
       session_dir="${HOME}/.mavis/sessions/${name}"
@@ -349,6 +448,10 @@ while IFS= read -r line; do
       fi
       ;;
     agents)
+      if [[ "${LEGACY_MAVIS}" != "1" ]]; then
+        record "OK agent: compatibility-only resource left in place (pass --legacy-mavis explicitly)"
+        continue
+      fi
       # v0.7.0+: the legacy `mavis agent delete` CLI is removed.
       # Built-in agents (e.g. `mavis`) live under `~/.mavis/agents/` and
       # are part of the runtime — they MUST NOT be removed by cleanup.
@@ -362,8 +465,12 @@ while IFS= read -r line; do
         residual "agent: missing name"
         continue
       fi
+      if ! safe_component "${name}"; then
+        residual "agent: unsafe name component"
+        continue
+      fi
       agent_dir="${HOME}/.mavis/agents/${name}"
-      if [[ ! -d "${agent_dir}" ]]; then
+      if [[ "${DRY_RUN}" != "1" && ! -d "${agent_dir}" ]]; then
         record "OK agent:${name}: directory already absent"
         continue
       fi
@@ -395,7 +502,7 @@ while IFS= read -r line; do
         continue
       fi
       path="$(python3 -c 'import json,os,sys; print(os.path.expanduser(json.loads(sys.stdin.read()).get("path","")))' <<<"${line}")"
-      if [[ -n "${path}" && "${path}" == "${PLAN_DIR}"* ]]; then
+      if [[ -n "${path}" ]] && safe_within "${path}" "${PLAN_DIR}"; then
         run_cmd "lock:${path}" rm -f "${path}"
       elif [[ -n "${path}" ]]; then
         residual "lock outside plan dir skipped: ${path}"

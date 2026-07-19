@@ -1,182 +1,74 @@
 ---
 name: research-state-contract
-description: File-backed research-first state contract for autoresearch-paper plans.
+description: Hash-bound evaluator, typed failures, and final writing gate.
 ---
 
 # Research State Contract
 
-`autoresearch-paper` is research-first for `conference` and `journal-q1`
-tiers. Writing is blocked until the plan records a research decision.
-The plan may still write an honest negative-result preprint for `arxiv`,
-but that exception must be explicit in `research_acceptance.md`.
+Research and runtime health are separate state machines. Heartbeat or worker
+failure cannot become scientific evidence, request a structural pivot, or
+enable CP-03.
 
-## Execution Procedure
+## Frozen evaluator
 
-```
-enforce_research_state(plan_dir, tier, event) -> gate_result
+`run-evaluator` is a controller-owned execution that persists immutable
+evaluator/evidence/candidate hashes and the observed metric/value.
+`freeze-evaluator` consumes a calibration execution receipt and persists the
+evaluator and evidence hashes, metric, comparison operator, threshold, and
+contract hash. CP-02 `freeze_evaluator` must already be APPLIED.
 
-initialize required state tree before plan run
-record every candidate in candidate_registry.jsonl and scoreboard.tsv
-if event == writing_start -> check research_acceptance.md against tier rules
-if stale_count >= 2 -> require structural pivot
-if stale_count >= 4 -> escalate to human owner
-```
+`record-evaluator-verdict` consumes a candidate execution receipt; callers
+cannot submit value or PASS/FAIL. The controller derives the verdict from the
+frozen comparison.
+Validated immutable verdicts live in `state/evaluator_verdicts/` and are named
+in the fsynced evaluator audit.
 
-## Required State Tree
-
-Every generated plan directory must contain:
-
-```
-<plan-dir>/
-├── state/
-│   ├── task_spec.md
-│   ├── progress.json
-│   ├── findings.jsonl
-│   ├── directions_tried.json
-│   ├── candidate_registry.jsonl
-│   ├── scoreboard.tsv
-│   ├── research_acceptance.md
-│   ├── l0_status.json
-│   ├── watchdog_health.json
-│   └── rescue_history.jsonl
-├── control/
-│   ├── pause_requested.json
-│   ├── resume_signal.json
-│   ├── stop_requested.json
-│   └── override_requested.json
-├── resource_manifest.json
-├── last_seen.jsonl
-└── watchdog-log.md
-```
-
-The root-level `pause_requested.json`, `resume_signal.json`, and
-`stop_requested.json` names remain supported for compatibility, but new
-scripts write the canonical files under `control/`.
-
-## `progress.json`
-
-Minimum schema:
-
-```json
-{
-  "status": "running",
-  "tier": "conference",
-  "iteration": 0,
-  "best_score": null,
-  "stale_count": 0,
-  "research_status": "not_started",
-  "last_direction": null,
-  "last_heartbeat_ts": null,
-  "last_stale_heartbeat_ts": null,
-  "updated_at": "2026-06-26T00:00:00Z"
-}
-```
-
-`stale_count` is incremented only when a new stale condition is observed.
-Repeated patrols against the same stale heartbeat must not inflate it.
-
-## Direction De-duplication
-
-`directions_tried.json` prevents the plan from retrying the same dead end.
-
-```json
-{
-  "directions": [
-    {
-      "id": "wind-gat-v1",
-      "summary": "Graph attention wind compensation",
-      "status": "discarded",
-      "reason": "primary metric regressed by 2.1%",
-      "first_tried_at": "2026-06-26T00:00:00Z",
-      "last_tried_at": "2026-06-26T03:00:00Z"
-    }
-  ]
-}
-```
-
-Before T3 proposes a new method, it must read this file and avoid any
-direction with `status` in `discarded`, `pivoted`, or `exhausted`.
-
-## Candidate Registry
-
-Each research iteration appends one JSON line to
-`candidate_registry.jsonl`:
-
-```json
-{"iteration":1,"direction":"wind-gat-v1","artifact":"out/code","primary_metric":0.42,"baseline_metric":0.44,"delta":-0.02,"verdict":"DISCARD","reason":"metric regression"}
-```
-
-Valid verdicts are `KEEP`, `DISCARD`, `PIVOT`, and `ESCALATE`.
-
-## Scoreboard
-
-`scoreboard.tsv` is the human-readable summary:
-
-```text
-iteration	direction	primary_metric	baseline_delta	verdict	reason
-1	wind-gat-v1	0.42	-2.1%	DISCARD	no improvement
-2	kl-buffered-policy	0.51	+6.4%	KEEP	passes threshold
-```
-
-## Research Acceptance Gate
-
-`state/research_acceptance.md` is the only file that can unblock writing.
-
-Accepted values:
-
-- `PASS` — evidence supports the claimed contribution.
-- `WAIVED_BY_HUMAN` — the human owner explicitly allows writing despite
-  weak or negative results.
-- `WAIVED_NEGATIVE_RESULT` — arxiv tier only; the paper is intentionally
-  framed as a negative result or reproducibility report.
-- `FAIL` — do not write. Continue research or pivot.
-
-For `conference` and `journal-q1`, T7 must depend on `PASS` or
-`WAIVED_BY_HUMAN`. A completed T6 experiment is not sufficient.
-
-Executable check:
+Bare text such as `research_acceptance.md: PASS`, `WAIVED_BY_HUMAN`, or
+`WAIVED_NEGATIVE_RESULT` is compatibility evidence only and never authority.
+The executable gate requires `--verdict`, or an immutable applied
+`waive_acceptance` receipt bound to tier, candidate, evaluator contract, and
+scope. Pending records are not authority. Negative-result waiver is
+arxiv-only. Every tier requires APPLIED CP-04 subtype
+`prewriting_final_evidence` and produces a durable gate audit.
 
 ```bash
-python3 references/scripts/research-state-guard.py \
-  check-writing-gate --plan-dir <plan-dir> --tier <tier>
+python3 references/scripts/research-state-guard.py check-writing-gate \
+  --plan-dir PLAN --tier conference --verdict state/evaluator_verdicts/CANDIDATE.json
 ```
 
-## Stale / Pivot Rules
+## Typed failures
 
-- Metric improves beyond the frozen success criterion: append `KEEP`,
-  set `research_status=accepted`, write `research_acceptance.md: PASS`.
-- Metric is flat, worse, empty, or unverifiable: append `DISCARD`,
-  increment `stale_count`.
-- `stale_count >= 2`: structural pivot is mandatory. The next T3 must
-  change at least one of algorithm family, data representation,
-  objective, evaluator, or baseline framing.
-- `stale_count >= 4`: escalate to the human owner. Do not keep looping
-  silently.
+`state/failure_state.json` has independent counters for:
 
-Executable pivot check:
+- `runtime_stall`
+- `implementation_failure`
+- `scientific_no_improvement`
+- `duplicate_direction`
+- `verifier_rejection`
 
-```bash
-python3 references/scripts/research-state-guard.py \
-  validate-pivot --plan-dir <plan-dir> --proposal <pivot-brief.md>
-```
+Non-scientific failures use unique `(class,fingerprint)` keys. Scientific
+failures require a complete normalized direction descriptor and canonical
+FAIL verdict bound to a live candidate; free-text fingerprints are rejected.
+The state additionally stores the direction registry and frozen
+`scientific_pivot_threshold` (default 2). There is no `stale_count` transition
+authority.
 
-When `stale_count >= 2`, this command fails unless the proposal names at
-least one structural change: `algorithm_family`, `data_representation`,
-`objective`, `evaluator`, or `baseline_framing`.
+Only distinct validated direction hashes count toward pivot eligibility. Once
+eligible, `research-state-guard.py validate-pivot` consumes the applied CP-03
+receipt and rejects a direction already present in the failed registry.
+Runtime stalls remain runtime stalls regardless of count.
 
-## T0 Evaluator Freeze
+## Sparse frontier gates
 
-Conference and journal plans must start with T0 before literature review
-or method work:
+- CP-01 audits the initial plan and gates execution approval.
+- CP-02 audits the evaluator and gates evaluator freeze.
+- CP-03 is creatable only after typed scientific pivot eligibility and gates a
+  structural pivot.
+- CP-04 resolves an acceptance dispute or performs the final prewriting
+  evidence audit. The latter gates conference/journal writing.
 
-```
-T0 evaluator-freeze
-outputs:
-  - evaluator.yaml
-  - success_criteria.md
-  - baseline_contract.md
-  - allowed_search_space.md
-```
-
-The later research decision must cite these files. If the metric target
-changes mid-run, that is a human override, not an agent decision.
+All four gates require checkpoint-specific complete evidence profiles and bind
+current hashes. Actual consumers enforce CP-01 dispatch/promotion, CP-02
+evaluator execution/freeze, CP-03 pivot application, and both CP-04 dispute and
+writing paths. Changed evidence invalidates the dependent transition even
+after process restart.

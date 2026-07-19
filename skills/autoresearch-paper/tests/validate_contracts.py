@@ -35,7 +35,15 @@ def main() -> int:
         "references/scripts/cleanup-plan-resources.sh",
         "references/scripts/resolve-plan-dir.py",
         "references/scripts/register-plan-id.py",
+        "references/scripts/harness-runtime.py",
+        "references/scripts/run-claude-harness.py",
+        "references/claude-code-runtime.md",
+        "references/frontier-response.schema.json",
+        "references/human-action.schema.json",
+        "references/evaluator-verdict.schema.json",
         "tests/test_runtime_contracts.py",
+        "tests/test_claude_cutover_e2e.py",
+        "tests/test_runtime_v2_security.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -45,12 +53,28 @@ def main() -> int:
         errors,
     )
     require(
+        contains("SKILL.md", "Target Runtime: Claude Code", "MiniMax M3", "CP-01", "CP-04", "harness-runtime.py"),
+        "SKILL.md must expose the Claude Code target runtime and sparse frontier path",
+        errors,
+    )
+    require(
+        contains(
+            "references/claude-code-runtime.md", "init-policy", "create-human-action",
+            "freeze-evaluator", "record-failure", "dispatch-worker", "inspect-worker",
+            "schedule-patrol", "remove-resource", "create-frontier-request",
+            "assert-transition", "reconcile-frontier-request", "promote-worker-artifacts",
+            "run-evaluator", "applied", "advisory",
+        ),
+        "Claude runtime reference must document the complete target controller",
+        errors,
+    )
+    require(
         contains("SKILL.md", "❌-11", "❌-12", "❌-13", "FM-20", "FM-21", "FM-22", "FM-23"),
         "SKILL.md must include new anti-patterns and failure modes",
         errors,
     )
     require(
-        contains("references/plan-template-conference.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry", "WAIVED_BY_HUMAN"),
+        contains("references/plan-template-conference.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry", "record-evaluator-verdict", "pivot-eligibility"),
         "conference template must include research-first gate",
         errors,
     )
@@ -60,7 +84,7 @@ def main() -> int:
         errors,
     )
     require(
-        contains("references/plan-template-arxiv.md", "T2.5", "WAIVED_NEGATIVE_RESULT", "research_acceptance.md"),
+        contains("references/plan-template-arxiv.md", "T2.5", "authenticated", "check-writing-gate"),
         "arxiv template must explicitly handle negative-result waiver",
         errors,
     )
@@ -70,7 +94,7 @@ def main() -> int:
         errors,
     )
     require(
-        contains("assets/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "directions_tried.json", "research-state-guard.py"),
+        contains("assets/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "record-evaluator-verdict", "pivot-eligibility", "research-state-guard.py"),
         "task snippet asset must propagate research loop state to generated plans",
         errors,
     )
@@ -85,30 +109,57 @@ def main() -> int:
         errors,
     )
     require(
-        contains("references/scripts/stop-plan.sh", "control/stop_requested.json", "cleanup-plan-resources.sh"),
-        "stop script must use control file and cleanup script",
+        contains("references/scripts/stop-plan.sh", "apply-human-action", "--record", "--key-file", "cleanup-plan-resources.sh"),
+        "stop script must require authenticated authority and pass a receipt to cleanup",
         errors,
     )
     require(
-        contains("references/scripts/resume-plan.sh", "plan-l0-guard.py", "--repair-resources"),
-        "resume script must run L0 resource verification/repair",
+        contains("references/scripts/resume-plan.sh", "apply-human-action", "--legacy-mavis", "plan-l0-guard.py"),
+        "resume script must use target authority and isolate legacy repair",
         errors,
     )
     require(
-        contains("tests/test_runtime_contracts.py", "test_cleanup_preserves_non_ephemeral_resources", "test_research_writing_gate", "test_l0_dry_run_does_not_mutate_state", "test_resolve_plan_dir_and_stop_json_escaping"),
-        "runtime contract tests must cover cleanup, research gate, dry-run, and plan-dir mapping",
+        contains(
+            "tests/test_runtime_v2_security.py", "test_frontier_semantic_failures",
+            "test_concurrent_frontier_send_has_one_transport_claim",
+            "test_worker_escape_malformed_output", "test_human_action_crash_rolls_forward",
+            "test_aggregate_cleanup_is_disabled", "test_acceptance_dispute_consumer",
+        ),
+        "v2 runtime tests must cover authority recovery, checkpoint consumers, concurrency, and cleanup negatives",
+        errors,
+    )
+    require(
+        contains("tests/test_claude_cutover_e2e.py", "assertIsNone", "CP-01", "CP-02", "CP-03", "CP-04", "MiniMax-M3", "remove-resource"),
+        "end-to-end test must prove the complete no-MAVIS target path",
+        errors,
+    )
+    require(
+        contains("references/scripts/run-claude-harness.py", "completed_steps", "expect_failure", "workflow_sha256", "send-frontier-request"),
+        "canonical top-level runner must journal, resume, and retain negative evidence",
+        errors,
+    )
+    require('version: "0.8.0"' in read("SKILL.md"), "SKILL.md version must be 0.8.0", errors)
+    require("Current version:** v0.8.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.8.0", errors)
+    require(
+        all(token in read("references/scripts/harness-runtime.py") for token in (
+            "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
+            "pivot-eligibility", "wait-worker", "cancel-worker", "run-patrol",
+            "promote-worker-artifacts", "reconcile-frontier-request",
+            "apply-frontier-response", "dependent-transition", "assert-transition",
+        )),
+        "harness runtime is missing target commands",
         errors,
     )
 
     prompts = json.loads((ROOT / "test-prompts.json").read_text())
     prompt_text = json.dumps(prompts, ensure_ascii=False)
-    require("research_acceptance.md" in prompt_text, "root test prompts must cover research acceptance gate", errors)
-    require("cleanup-plan-resources.sh" in prompt_text, "root test prompts must cover cleanup", errors)
-    require("ephemeral=true" in prompt_text, "root test prompts must cover ephemeral agent policy", errors)
+    require("hash-bound verdict" in prompt_text, "root test prompts must cover evidence-bound acceptance", errors)
+    require("signed stop" in prompt_text, "root test prompts must cover authenticated stop", errors)
+    require("allowed_write_paths=[]" in prompt_text, "root test prompts must cover bounded worker policy", errors)
 
     test_prompts = json.loads((ROOT / "tests/test-prompts.json").read_text())
     names = {item["name"] for item in test_prompts}
-    require({"research_gate_blocks_writing", "l0_stale_pivot", "cleanup_manifest"}.issubset(names), "tests/test-prompts.json missing new contract tests", errors)
+    require({"research_gate_blocks_writing", "typed_failure_pivot", "cleanup_manifest", "target_path_no_mavis"}.issubset(names), "tests/test-prompts.json missing target contract tests", errors)
 
     if errors:
         for error in errors:

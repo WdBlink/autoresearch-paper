@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
 """
-plan-rescue-daemon.py — Patrol running plans + auto-judge via local LLM.
+plan-rescue-daemon.py — Patrol running plans + record local-model advice.
 
 Designed to run every minute (cron or launchd). For each running/paused plan:
   1. Read state.json to detect anomalies:
-     - paused > 10 min without owner decision → auto judge + apply
-     - Awaiting Your Verdict > 30 min → auto judge via local_llm_judge
+     - paused > 10 min without owner decision → request bounded advice
+     - Awaiting Your Verdict > 30 min → request advice via local_llm_judge
      - engine not running > 5 min but plan is "running" → restart
-     - auto_reject_retries exceeded with 0 passes → escalate OR force_cancel
+     - auto_reject_retries exceeded with 0 passes → escalate to a human
   2. Call local_llm_judge.py with the decision context (state + verifier
      feedback) to get a structured verdict.
-  3. Apply the verdict via `mavis team plan decision` + `resume`/`cancel`.
-     v0.7.0+: `mavis team plan ...` remains a CLI; flag names may have
-     shifted (`abort` → `cancel`). This daemon is on the supported CLI
-     subset so it should still work, but check the plan-engine contract
-     if a flag starts failing.
+  3. Persist the advice under control/ for the deterministic controller or
+     authenticated human owner. Model advice never accepts, waives, or cancels.
   4. Log everything to plan/watchdog-log.md + state/rescue_history.jsonl.
 
 Honors:
   - state/pause_requested.json  → emit pause checkpoint, do NOT auto-judge
   - state/stop_requested.json   → cancel plan + mark stopped
-  - state/local_llm_disabled     → skip auto-judge (fall back to nudge only)
+  - state/local_llm_disabled     → skip model advice (fall back to nudge only)
 
-Single source of truth: this daemon is the only owner-decision proxy. It is
-intentionally conservative — when in doubt, prefer nudge over cancel, prefer
-accept over reject (verifier might be strict).
+Single source of truth: this daemon is a patrol and advisory component. Formal
+state transitions remain owned by the deterministic controller, and human-only
+lifecycle actions require an authenticated owner request.
 
 Run mode:
   - Default: scan $HOME/.mavis/plans/*/state.json for status in
@@ -140,6 +137,17 @@ def write_rescue_log(plan_dir: Path, entry: dict[str, Any]) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+def write_advisory_proposal(plan_dir: Path, proposal: dict[str, Any]) -> Path:
+    """Atomically persist model advice without applying a plan transition."""
+    control_dir = plan_dir / "control"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    target = control_dir / "model_advisory_proposal.json"
+    temporary = control_dir / f".{target.name}.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps(proposal, indent=2) + "\n")
+    os.replace(temporary, target)
+    return target
+
+
 def append_watchdog_log(plan_dir: Path, severity: str, kind: str, msg: str) -> None:
     log_file = plan_dir / "watchdog-log.md"
     line = f"[{now_iso()}] {severity} {kind}\nfinding: {msg}\nrecommendation: see rescue_history\n\n"
@@ -148,12 +156,8 @@ def append_watchdog_log(plan_dir: Path, severity: str, kind: str, msg: str) -> N
 
 
 def signal_paths(plan_dir: Path, name: str) -> list[Path]:
-    """Return compatibility + canonical locations for a control signal."""
-    return [
-        plan_dir / "control" / name,
-        plan_dir / "state" / name,
-        plan_dir / name,
-    ]
+    """Return the canonical controller receipt location only."""
+    return [plan_dir / "control" / name]
 
 
 def has_signal(plan_dir: Path, name: str) -> bool:
@@ -250,19 +254,19 @@ Last verifier summary (first 800 chars): {(last_v.get('summary') or '')[:800]}
 """
 
     system = """\
-You are the local LLM judge for an autonomous research plan engine.
-Your role: when the plan engine is paused awaiting an owner decision and the
-human owner is unavailable, you decide whether to:
-  - "accept" — the latest producer attempt is substantively correct, mark it done
-  - "manual_retry" — there's a small fixable issue (re-run producer with hint)
-  - "override_accept" — verifier complaint is a format/formatting issue, accept content
-  - "cancel" — the plan is unrecoverable; abort cleanly
+You are an advisory model for an autonomous research plan engine.
+Your role: when the plan engine is paused, recommend one bounded next step:
+  - "recommend_retry" — there is a small fixable issue; provide a repair hint
+  - "escalate_human" — acceptance, waiver, cancellation, or a structural owner decision is required
   - "nudge" — wait and re-check in N minutes (return a positive "wait_minutes" int)
 
+You have no authority to accept, waive, override acceptance, cancel, resume,
+or mutate lifecycle state. Never emit one of those actions.
+
 Output strict JSON only:
-{"verdict": "<one of accept|manual_retry|override_accept|cancel|nudge>",
+{"verdict": "<one of recommend_retry|escalate_human|nudge>",
  "reason": "<one-sentence justification>",
- "hint": "<if manual_retry, one-sentence directive to producer; else null>",
+ "hint": "<if recommend_retry, one-sentence directive to producer; else null>",
  "wait_minutes": <int if nudge, else null>}
 """
 
@@ -282,57 +286,15 @@ Decide: take one action and emit strict JSON.
     return prompt, system
 
 
-def apply_decision(plan_id: str, verdict: dict[str, Any], reason: str) -> tuple[str, str]:
-    """Apply verdict via mavis team plan decision/resume/cancel.
-
-    v0.7.0+: the only `mavis` CLI subcommands still in the runtime are
-    the `team plan ...` family (status / cancel / resume / decision).
-    This function uses those, so it does not need a tool-form rewrite.
-    """
-    v = verdict.get("verdict", "nudge")
-    cmd_kind = {
-        "accept": "accept",
-        "override_accept": "override_accept",
-        "manual_retry": "manual_retry",
-        "cancel": "cancel",
-    }.get(v)
-
-    if v == "cancel":
-        cmd = ["mavis", "team", "plan", "cancel", plan_id]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        return ("cancelled" if proc.returncode == 0 else f"failed: {proc.stderr}"), " ".join(cmd)
-
-    if v in ("accept", "override_accept", "manual_retry"):
-        # Build decision JSON
-        decision = {
-            "last_cycle": [{
-                "task_id": "(auto-judge by local_llm_judge)",
-                "verdict": cmd_kind,
-                "reason": reason,
-            }],
-            "next_cycle": [],
-            "plan_complete": False,
-            "message_to_user": f"Auto-judged by local_llm_judge: {v}",
-        }
-        decision_file = Path("/tmp") / f"rescue-decision-{plan_id}.json"
-        decision_file.write_text(json.dumps(decision, indent=2))
-        cmd = ["mavis", "team", "plan", "decision", plan_id, "--file", str(decision_file)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        action = "decision_applied" if proc.returncode == 0 else f"decision_failed: {proc.stderr[:200]}"
-        if proc.returncode == 0 and v in ("accept", "override_accept"):
-            # also resume
-            cmd2 = ["mavis", "team", "plan", "resume", plan_id]
-            proc2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=60)
-            action += " + resume_ok" if proc2.returncode == 0 else f" + resume_failed: {proc2.stderr[:200]}"
-        return action, " ".join(cmd)
-
-    if v == "nudge":
-        return "nudged (no action, will re-check)", "(no command)"
-
-    return f"unknown verdict: {v}", "(no command)"
+def apply_explicit_stop_request(plan_id: str) -> tuple[str, str]:
+    """Apply a legacy explicit stop signal; never call this for model output."""
+    cmd = ["mavis", "team", "plan", "cancel", plan_id]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    action = "cancelled" if proc.returncode == 0 else f"failed: {proc.stderr[:200]}"
+    return action, " ".join(cmd)
 
 
-def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
+def patrol_plan(plan_dir: Path, dry_run: bool = False, legacy_mavis: bool = False) -> dict[str, Any]:
     """Patrol one plan, return action taken."""
     plan_id = plan_dir.name
     state = read_state(plan_dir)
@@ -349,11 +311,12 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
         if dry_run:
             return {"plan_id": plan_id, "action": "dry_run_resume",
                     "reason": "resume_signal.json present"}
-        proc = subprocess.run(["mavis", "team", "plan", "resume", plan_id],
-                              capture_output=True, text=True, timeout=60)
-        remove_signal(plan_dir, RESUME_SIGNAL)
-        remove_signal(plan_dir, PAUSE_REQUEST)
-        action = "resumed" if proc.returncode == 0 else f"resume_failed: {proc.stderr[:200]}"
+        if legacy_mavis:
+            proc = subprocess.run(["mavis", "team", "plan", "resume", plan_id],
+                                  capture_output=True, text=True, timeout=60)
+            action = "legacy_resumed" if proc.returncode == 0 else f"legacy_resume_failed: {proc.stderr[:200]}"
+        else:
+            action = "target_resume_receipt_observed"
         entry = {"ts": now_iso(), "plan_id": plan_id, "action": action,
                  "reason": "resume_signal.json present"}
         write_rescue_log(plan_dir, entry)
@@ -364,17 +327,32 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
                 "reason": "pause_requested.json present; skipping auto-judge"}
 
     if has_signal(plan_dir, STOP_REQUEST):
+        runtime = Path(__file__).with_name("harness-runtime.py")
+        authority = plan_dir / "control" / STOP_REQUEST
+        validation = subprocess.run([
+            sys.executable, str(runtime), "validate-action-receipt", "--plan-dir", str(plan_dir),
+            "--receipt", str(authority), "--action", "stop",
+        ], capture_output=True, text=True, timeout=60)
+        if validation.returncode != 0:
+            entry = {"ts": now_iso(), "plan_id": plan_id, "action": "invalid_stop_authority",
+                     "reason": validation.stderr[-300:]}
+            if not dry_run:
+                write_rescue_log(plan_dir, entry)
+            return entry
         if dry_run:
-            action, cmd = "dry_run_cancel", f"mavis team plan cancel {plan_id}"
+            action, cmd = "dry_run_stop_receipt", "deterministic target cleanup"
+        elif legacy_mavis:
+            action, cmd = apply_explicit_stop_request(plan_id)
         else:
-            action, cmd = apply_decision(plan_id, {"verdict": "cancel"},
-                                         "user requested stop via stop_requested.json")
+            action, cmd = "target_stop_receipt_observed", "(no lifecycle command)"
         cleanup_action = "cleanup_script_missing"
         cleanup_cmd = ""
         if CLEANUP_PLAN_RESOURCES.exists():
             cleanup_cmd_list = [
                 str(CLEANUP_PLAN_RESOURCES),
                 str(plan_dir),
+                "--authorization",
+                str(authority),
                 "--reason",
                 "rescue daemon observed stop_requested.json",
             ]
@@ -445,6 +423,16 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
                 "reason": f"judge returned non-dict: {str(verdict_obj)[:200]}"}
 
     verdict = verdict_obj.get("verdict", "nudge")
+    allowed_verdicts = {"recommend_retry", "escalate_human", "nudge"}
+    if verdict not in allowed_verdicts:
+        verdict_obj = {
+            "verdict": "escalate_human",
+            "reason": f"model proposed forbidden lifecycle action: {verdict}",
+            "hint": None,
+            "wait_minutes": None,
+            "rejected_model_output": verdict_obj,
+        }
+        verdict = "escalate_human"
     reason = verdict_obj.get("reason", "")
     hint = verdict_obj.get("hint")
     wait_minutes = verdict_obj.get("wait_minutes")
@@ -456,7 +444,16 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
                 "verdict": verdict, "reason": reason, "hint": hint,
                 "wait_minutes": wait_minutes}
 
-    action, cmd = apply_decision(plan_id, verdict_obj, reason)
+    proposal_path = write_advisory_proposal(plan_dir, {
+        "schema_version": 1,
+        "created_at": now_iso(),
+        "plan_id": plan_id,
+        "source": "local_llm_judge",
+        "advisory_only": True,
+        "requires_controller_or_human_review": True,
+        "advice": verdict_obj,
+    })
+    action, cmd = "advisory_recorded", "(no lifecycle command)"
 
     entry = {
         "ts": now_iso(),
@@ -467,10 +464,11 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False) -> dict[str, Any]:
         "judge_hint": hint,
         "action": action,
         "command": cmd,
+        "proposal_path": str(proposal_path),
         "raw_judge": verdict_obj,
     }
     write_rescue_log(plan_dir, entry)
-    append_watchdog_log(plan_dir, "info" if verdict in ("accept", "override_accept") else "warn",
+    append_watchdog_log(plan_dir, "warn",
                         "rescue-daemon",
                         f"judge {verdict}: {reason} (action: {action})")
 
@@ -482,6 +480,7 @@ def main() -> int:
     p.add_argument("--plan-id", help="only patrol one plan")
     p.add_argument("--dry-run", action="store_true", help="show actions without applying")
     p.add_argument("--once", action="store_true", help="run once and exit (cron-friendly)")
+    p.add_argument("--legacy-mavis", action="store_true", help="enable explicit legacy plan resume/cancel commands")
     p.add_argument("--interval", type=int, default=60,
                    help="seconds between patrol rounds (default 60; ignored if --once)")
     args = p.parse_args()
@@ -502,7 +501,7 @@ def main() -> int:
 
     if args.once:
         for pd in plan_dirs:
-            result = patrol_plan(pd, dry_run=args.dry_run)
+            result = patrol_plan(pd, dry_run=args.dry_run, legacy_mavis=args.legacy_mavis)
             log(f"  {pd.name}: {result.get('action')} — {result.get('reason', '')[:100]}")
         return 0
 
@@ -511,7 +510,7 @@ def main() -> int:
     while True:
         for pd in find_active_plans():
             try:
-                result = patrol_plan(pd, dry_run=args.dry_run)
+                result = patrol_plan(pd, dry_run=args.dry_run, legacy_mavis=args.legacy_mavis)
                 log(f"  {pd.name}: {result.get('action')} — {result.get('reason', '')[:100]}")
             except Exception as e:
                 log(f"  {pd.name}: ERROR — {e}")

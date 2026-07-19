@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "record_id", "plan_id", "action", "nonce",
+    "issued_at", "expires_at", "actor", "key_id", "details", "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_id": {"type": "string", "pattern": "^har_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "plan_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "action": {
+      "enum": [
+        "pause", "resume", "stop", "cancel_worker", "waive_acceptance",
+        "override_acceptance", "cleanup_resource"
+      ]
+    },
+    "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+    "issued_at": {"type": "string", "minLength": 20, "maxLength": 35},
+    "expires_at": {"type": "string", "minLength": 20, "maxLength": 35},
+    "actor": {"type": "string", "minLength": 1, "maxLength": 256},
+    "key_id": {"type": "string", "pattern": "^[a-f0-9]{16}$"},
+    "details": {"type": "object"},
+    "signature": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}
