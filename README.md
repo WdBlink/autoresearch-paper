@@ -26,6 +26,10 @@ start writing.
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
   owned cleanup, and the durable CP-01–CP-04 Codex bridge are implemented.
+  The packaged `claude-research-conformance-v1` workflow is a closed M1
+  conformance fixture: it journals operation IDs and verifies terminal
+  evidence, but does not claim to be the production topic-to-paper trigger.
+  The state-driven full trigger remains an integrated-cutover milestone.
   MAVIS is available only as explicit legacy compatibility. See
   [`skills/autoresearch-paper/references/claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md), the design notes in
   [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
@@ -80,7 +84,7 @@ heartbeat watchdogs, and manifest-driven cleanup.
 ```text
 /autoresearch-paper — turn a research brief into a gated paper pipeline.
 /autoresearch-paper status — inspect a running plan and its watchdog state.
-/autoresearch-paper stop — cancel when possible and clean runtime resources.
+/autoresearch-paper stop — stop the controller and report exact residual resources.
 ```
 
 ## Architecture
@@ -199,8 +203,8 @@ During a run:
 | `/autoresearch-paper status` | show plan progress, research gate, stale count, and resource health |
 | `/autoresearch-paper pause` | soft-pause through `control/pause_requested.json` |
 | `/autoresearch-paper resume` | resume and verify/repair watchdog resources |
-| `/autoresearch-paper stop` | cancel when possible and run manifest cleanup |
-| `/autoresearch-paper cleanup` | clean runtime resources without deleting outputs |
+| `/autoresearch-paper stop` | stop the controller and report residual resources |
+| `/autoresearch-paper cleanup` | apply one approved receipt per owned resource |
 | `/autoresearch-paper rescue-status` | show L0/watchdog health and rescue history |
 
 ## Workflow
@@ -216,7 +220,7 @@ During a run:
 | Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
 | Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
 | Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
-| Cleanup | stop/complete/abort runs `cleanup-plan-resources.sh` |
+| Cleanup | stop reports residuals; each deletion consumes a scoped receipt |
 
 ## Repository Layout
 
@@ -278,10 +282,9 @@ submit to venues, does not promise a camera-ready PDF, and does not
 replace human authorship of novel claims. See [Boundaries](#boundaries).
 
 **Q: How is cleanup different from stop?**
-A: `stop` cancels the plan and runs cleanup together. `cleanup` runs the
-manifest-driven resource teardown without cancelling — useful when a
-plan is in an unrecoverable state but you want to free the runtime
-resources before restarting.
+A: `stop` changes controller status and reports residuals; it does not grant
+aggregate deletion authority. `cleanup` removes only individually approved,
+owned resource generations. Neither deletes paper outputs.
 
 ## Boundaries
 

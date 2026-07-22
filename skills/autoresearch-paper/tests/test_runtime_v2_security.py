@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -58,19 +59,21 @@ class RuntimeV2Security(unittest.TestCase):
         self.call("validate-frontier-response","--plan-dir",str(plan),"--request-id",request_id)
         self.call("apply-frontier-response","--plan-dir",str(plan),"--request-id",request_id,"--dependent-transition","approve_execution","--controller-note","approved")
 
-    def test_top_level_runner_records_consumer_first_block_and_resumes(self) -> None:
+    def test_top_level_runner_rejects_ad_hoc_command_lists(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td); plan=self.plan(root); evidence=self.cp01(plan); codex=self.fake_codex(root)
-            contract=plan/"task.json"; contract.write_text(json.dumps({"schema_version":1,"task_id":"x","instruction":"x","inputs":[],"allowed_tools":[],"allowed_write_paths":[],"artifact_outputs":[],"completion_check":{"type":"output_schema","assertion":"valid"},"output_schema":{"type":"object","additionalProperties":False,"required":["artifacts"],"properties":{"artifacts":{"type":"array","items":{"type":"object"}}}}}))
-            steps=[{"id":"blocked_dispatch","command":"dispatch-worker","args":{"task_contract":str(contract),"claude_bin":str(root/"must-not-run")},"expect_failure":True,"error_contains":"approve_execution.json"}]
-            create={"id":"create","command":"create-frontier-request","args":{"plan_id":plan.name,"checkpoint":"CP-01","objective":"audit","decision_required":"approve_execution","artifact":[f"{path}::{role}" for role,path in evidence.items()],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_runner"}}
-            steps += [create,{"id":"send","command":"send-frontier-request","args":{"request_id":"far_runner","codex_bin":str(codex)}},{"id":"validate","command":"validate-frontier-response","args":{"request_id":"far_runner"}},{"id":"apply","command":"apply-frontier-response","args":{"request_id":"far_runner","dependent_transition":"approve_execution","controller_note":"ok"}},{"id":"assert","command":"assert-transition","args":{"plan_id":plan.name,"transition":"approve_execution"}}]
-            workflow=root/"workflow.json"; workflow.write_text(json.dumps({"schema_version":1,"flow_id":"canonical","steps":steps}))
-            proc=subprocess.run([sys.executable,str(RUNNER),"--plan-dir",str(plan),"--workflow",str(workflow)],text=True,capture_output=True)
-            self.assertEqual(proc.returncode,0,proc.stderr); result=json.loads(proc.stdout)
-            self.assertTrue(result["outputs"]["blocked_dispatch"]["expected_block"])
-            again=subprocess.run([sys.executable,str(RUNNER),"--plan-dir",str(plan),"--workflow",str(workflow)],text=True,capture_output=True)
-            self.assertEqual(again.returncode,0); self.assertEqual(json.loads(again.stdout)["completed_steps"],result["completed_steps"])
+            root=Path(td); plan=self.plan(root)
+            workflow=root/"workflow.json"; workflow.write_text(json.dumps({
+                "schema_version":1,"flow_id":"arbitrary","steps":[
+                    {"id":"status","command":"run-patrol","args":{"stale_seconds":60}}
+                ]
+            }))
+            inputs=root/"inputs.json"; inputs.write_text("{}")
+            proc=subprocess.run([
+                sys.executable,str(RUNNER),"--plan-dir",str(plan),"--workflow",str(workflow),
+                "--inputs",str(inputs),
+            ],text=True,capture_output=True)
+            self.assertEqual(proc.returncode,2)
+            self.assertIn("canonical workflow requires exactly",proc.stderr)
 
     def test_frontier_semantic_failures_and_malformed_raw_pause(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -109,6 +112,15 @@ class RuntimeV2Security(unittest.TestCase):
             self.call("apply-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute","--dependent-transition","resolve_acceptance_dispute","--controller-note","accepted")
             applied=json.loads(self.call("resolve-acceptance-dispute","--plan-dir",str(plan),"--resolution",str(resolution)).stdout)
             self.assertTrue(applied["ok"])
+            replay=json.loads(self.call("resolve-acceptance-dispute","--plan-dir",str(plan),"--resolution",str(resolution)).stdout)
+            self.assertTrue(replay["idempotent"])
+            args2=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-04","--checkpoint-subtype","acceptance_dispute","--objective","resolve again","--decision-required","resolve_acceptance_dispute","--max-input-tokens","5000","--max-output-tokens","500","--request-id","far_dispute_again"]
+            for role,path in evidence.items(): args2 += ["--artifact",f"{path}::{role}"]
+            self.call(*args2); self.call("send-frontier-request","--plan-dir",str(plan),"--request-id","far_dispute_again","--codex-bin",str(codex)); self.call("validate-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute_again")
+            self.call("apply-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute_again","--dependent-transition","resolve_acceptance_dispute","--controller-note","accepted again")
+            second=json.loads(self.call("resolve-acceptance-dispute","--plan-dir",str(plan),"--resolution",str(resolution)).stdout)
+            self.assertEqual(second["frontier_request_id"],"far_dispute_again")
+            self.assertNotEqual(second["resolution_receipt"],applied["resolution_receipt"])
 
     def test_worker_escape_malformed_output_and_identifier_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -151,6 +163,172 @@ class RuntimeV2Security(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             plan=self.plan(Path(td)); proc=subprocess.run(["bash",str(ROOT/"references"/"scripts"/"cleanup-plan-resources.sh"),str(plan),"--mode","cleanup","--dry-run"],text=True,capture_output=True)
             self.assertEqual(proc.returncode,2); self.assertIn("aggregate cleanup is disabled",proc.stderr)
+
+    def test_request_id_reuse_requires_identical_canonical_request(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); plan=self.plan(root); request_id="far_collision"
+            self.create_cp01(plan,request_id)
+            same=self.call(
+                "create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,
+                "--checkpoint","CP-01","--objective","audit","--decision-required","approve_execution",
+                *sum((["--artifact",f"{path}::{role}"] for role,path in self.cp01(plan).items()),[]),
+                "--max-input-tokens","5000","--max-output-tokens","500","--request-id",request_id,
+            )
+            self.assertTrue(json.loads(same.stdout)["idempotent"])
+            collision=self.call(
+                "create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,
+                "--checkpoint","CP-01","--objective","different audit","--decision-required","approve_execution",
+                *sum((["--artifact",f"{path}::{role}"] for role,path in self.cp01(plan).items()),[]),
+                "--max-input-tokens","5000","--max-output-tokens","500","--request-id",request_id,
+                check=False,
+            )
+            self.assertEqual(collision.returncode,2)
+            self.assertIn("request_id collision",collision.stderr)
+
+    def test_promotion_requires_authority_then_recovers_valid_partial_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); plan=self.plan(root); self.approve_cp01(plan,root)
+            legacy_id="cwr_"+"a"*32; legacy_dir=plan/"state"/"worker_runs"/legacy_id; legacy_dir.mkdir(parents=True)
+            legacy_target=plan/"legacy-root.txt"; legacy_content="legacy"
+            legacy_decl=[{"artifact_id":"legacy","path":str(legacy_target),"content_field":"content","max_bytes":100}]
+            legacy_contract=plan/"legacy-task.json"; legacy_contract.write_text(json.dumps({"artifact_outputs":legacy_decl}))
+            legacy_result=legacy_dir/"result.json"; legacy_result.write_text(json.dumps({"result":{"artifacts":[{
+                "artifact_id":"legacy","path":str(legacy_target),"content":legacy_content,
+                "sha256":hashlib.sha256(legacy_content.encode()).hexdigest()}]}}))
+            (legacy_dir/"status.json").write_text(json.dumps({"schema_version":1,"run_id":legacy_id,
+                "status":"COMPLETED","contract_path":str(legacy_contract),
+                "contract_sha256":hashlib.sha256(legacy_contract.read_bytes()).hexdigest(),
+                "result_path":str(legacy_result),"result_sha256":hashlib.sha256(legacy_result.read_bytes()).hexdigest()}))
+            denied=self.call("promote-worker-artifacts","--plan-dir",str(plan),"--worker-run-id",legacy_id,check=False)
+            self.assertEqual(denied.returncode,2); self.assertFalse(legacy_target.exists())
+            run_id="cwr_"+"b"*32; run_dir=plan/"state"/"worker_runs"/run_id; run_dir.mkdir(parents=True)
+            task_id="recovery"; namespace=plan/"artifacts"/"intermediate"/task_id
+            first,second=namespace/"first.txt",namespace/"second.txt"
+            contents=("first-content","second-content")
+            declarations=[]; proposals=[]
+            for index,(target,content) in enumerate(zip((first,second),contents),1):
+                digest=hashlib.sha256(content.encode()).hexdigest()
+                canonical = str(target.resolve())
+                declarations.append({"artifact_id":f"a{index}","path":canonical,"content_field":"content",
+                                     "max_bytes":100,"capability":{"class":"research-intermediate"}})
+                proposals.append({"artifact_id":f"a{index}","path":canonical,"content":content,"sha256":digest})
+            contract=plan/"promotion-task.json"; contract.write_text(json.dumps({"task_id":task_id,"artifact_outputs":declarations}))
+            result=run_dir/"result.json"; result.write_text(json.dumps({"result":{"artifacts":proposals},"artifact_outputs":declarations}))
+            (run_dir/"status.json").write_text(json.dumps({
+                "schema_version":1,"run_id":run_id,"status":"COMPLETED","contract_path":str(contract),
+                "contract_sha256":hashlib.sha256(contract.read_bytes()).hexdigest(),"result_path":str(result),
+                "result_sha256":hashlib.sha256(result.read_bytes()).hexdigest(),"task_id":task_id,
+                "artifact_outputs":declarations,"output_capability_class":"research-intermediate",
+            }))
+            namespace.mkdir(parents=True)
+            second.write_text("conflict")
+            blocked=self.call("promote-worker-artifacts","--plan-dir",str(plan),"--worker-run-id",run_id,check=False)
+            self.assertEqual(blocked.returncode,2); self.assertFalse(first.exists()); self.assertEqual(second.read_text(),"conflict")
+            second.unlink()
+            crashed=self.call(
+                "promote-worker-artifacts","--plan-dir",str(plan),"--worker-run-id",run_id,
+                "--simulate-crash-after","1",check=False,
+            )
+            self.assertEqual(crashed.returncode,2,crashed.stderr); self.assertTrue(first.exists(),crashed.stderr); self.assertFalse(second.exists())
+            self.assertFalse((run_dir/"promotion-receipt.json").exists())
+            recovered=self.call("promote-worker-artifacts","--plan-dir",str(plan),"--worker-run-id",run_id)
+            self.assertTrue(json.loads(recovered.stdout)["ok"]); self.assertTrue(second.exists())
+            self.assertEqual(json.loads((run_dir/"promotion-journal.json").read_text())["phase"],"COMMITTED")
+
+    def test_cleanup_authorization_is_single_generation_and_crash_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); plan=self.plan(root); owned=plan/"owned.tmp"; owned.write_text("generation-one")
+            manifest=json.loads((plan/"resource_manifest.json").read_text()); manifest["resources"]=[{
+                "resource_id":"owned","path":str(owned),"ephemeral":True,"run_scoped":True,
+                "ownership_generation":"g1",
+            }]; (plan/"resource_manifest.json").write_text(json.dumps(manifest))
+            key=root/"key"; key.write_bytes(b"k"*32); key.chmod(0o600)
+            created=json.loads(self.call(
+                "create-human-action","--plan-dir",str(plan),"--plan-id",plan.name,"--action","cleanup_resource",
+                "--key-file",str(key),"--expires-in","300","--record-id","har_cleanup_g1","--resource-id","owned",
+            ).stdout)
+            applied=json.loads(self.call(
+                "apply-human-action","--plan-dir",str(plan),"--record",created["record_path"],
+                "--key-file",str(key),"--expected-action","cleanup_resource",
+            ).stdout)
+            token1=hashlib.sha256(f"{plan.name}\0{owned.resolve()}\0g1".encode()).hexdigest()
+            cleanup_operation="op_"+"7"*64
+            crash=self.call(
+                "remove-resource","--plan-dir",str(plan),"--resource-id","owned","--ownership-token",token1,
+                "--authorization",applied["authorization_path"],"--simulate-crash-after","unlink",
+                "--operation-id",cleanup_operation,check=False,
+            )
+            self.assertEqual(crash.returncode,2); self.assertFalse(owned.exists())
+            recovered=json.loads(self.call(
+                "remove-resource","--plan-dir",str(plan),"--resource-id","owned","--ownership-token",token1,
+                "--authorization",applied["authorization_path"],"--simulate-crash-after","unlink",
+                "--operation-id",cleanup_operation,
+            ).stdout)
+            self.assertTrue(recovered["recovered"]); self.assertTrue(recovered["operation_reconciled"])
+            fresh_cleanup_operation="op_"+"8"*64
+            fresh_cleanup=self.call(
+                "remove-resource","--plan-dir",str(plan),"--resource-id","owned","--ownership-token",token1,
+                "--authorization",applied["authorization_path"],"--operation-id",fresh_cleanup_operation,
+                check=False,
+            )
+            self.assertEqual(fresh_cleanup.returncode,2)
+            self.assertIn("operation identity mismatch",fresh_cleanup.stderr)
+            self.assertEqual(json.loads((
+                plan/"state"/"runtime_operations"/f"{fresh_cleanup_operation}.json"
+            ).read_text())["phase"],"PREPARED")
+            owned.write_text("generation-one")
+            replay=self.call(
+                "remove-resource","--plan-dir",str(plan),"--resource-id","owned","--ownership-token",token1,
+                "--authorization",applied["authorization_path"],check=False,
+            )
+            self.assertEqual(replay.returncode,2); self.assertTrue(owned.exists())
+            manifest["resources"][0]["ownership_generation"]="g2"; (plan/"resource_manifest.json").write_text(json.dumps(manifest))
+            created2=json.loads(self.call(
+                "create-human-action","--plan-dir",str(plan),"--plan-id",plan.name,"--action","cleanup_resource",
+                "--key-file",str(key),"--expires-in","300","--record-id","har_cleanup_g2","--resource-id","owned",
+            ).stdout)
+            applied2=json.loads(self.call(
+                "apply-human-action","--plan-dir",str(plan),"--record",created2["record_path"],
+                "--key-file",str(key),"--expected-action","cleanup_resource",
+            ).stdout)
+            token2=hashlib.sha256(f"{plan.name}\0{owned.resolve()}\0g2".encode()).hexdigest()
+            self.call(
+                "remove-resource","--plan-dir",str(plan),"--resource-id","owned","--ownership-token",token2,
+                "--authorization",applied2["authorization_path"],
+            )
+            self.assertFalse(owned.exists())
+
+    def test_human_action_journal_binds_originating_operation_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); plan=self.plan(root); key=root/"key"
+            key.write_bytes(b"k"*32); key.chmod(0o600)
+            created=json.loads(self.call(
+                "create-human-action","--plan-dir",str(plan),"--plan-id",plan.name,"--action","pause",
+                "--key-file",str(key),"--expires-in","300","--record-id","har_bound_pause",
+            ).stdout)
+            original_operation="op_"+"4"*64
+            applied=json.loads(self.call(
+                "apply-human-action","--plan-dir",str(plan),"--record",created["record_path"],
+                "--key-file",str(key),"--expected-action","pause","--operation-id",original_operation,
+            ).stdout)
+            self.assertTrue(applied["ok"])
+            repeated=json.loads(self.call(
+                "apply-human-action","--plan-dir",str(plan),"--record",created["record_path"],
+                "--key-file",str(key),"--expected-action","pause","--operation-id",original_operation,
+            ).stdout)
+            self.assertTrue(repeated["operation_reconciled"])
+            fresh_operation="op_"+"5"*64
+            rejected=self.call(
+                "apply-human-action","--plan-dir",str(plan),"--record",created["record_path"],
+                "--key-file",str(key),"--expected-action","pause","--operation-id",fresh_operation,
+                check=False,
+            )
+            self.assertEqual(rejected.returncode,2)
+            self.assertIn("operation identity mismatch",rejected.stderr)
+            self.assertEqual(json.loads((plan/"state"/"controller.json").read_text())["status"],"paused")
+            self.assertEqual(json.loads((
+                plan/"state"/"runtime_operations"/f"{fresh_operation}.json"
+            ).read_text())["phase"],"PREPARED")
 
 
 if __name__ == "__main__": unittest.main()

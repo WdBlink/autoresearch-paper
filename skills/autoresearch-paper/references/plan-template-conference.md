@@ -70,13 +70,14 @@ Total wall-clock target: 1–2 weeks.
 - **outputs**:
   - `<plan-dir>/state/task_spec.md`
   - `<plan-dir>/state/evaluator.yaml`
+  - `<plan-dir>/state/metric_contract.json`
   - `<plan-dir>/state/success_criteria.md`
   - `<plan-dir>/state/baseline_contract.md`
   - `<plan-dir>/state/allowed_search_space.md`
   - initialized `progress.json`, `directions_tried.json`,
     `candidate_registry.jsonl`, `scoreboard.tsv`, and `failure_state.json`.
-- **gate**: the primary metric, baseline set, and acceptance threshold
-  are frozen before T3 can propose a method. Later changes require a
+- **gate**: CP-02 audits `metric_contract.json` as the sole primary metric,
+  operator, and threshold source before T3 can propose a method. Later changes require a
   human override in `control/override_requested.json`.
 
 ### T1 — literature-review

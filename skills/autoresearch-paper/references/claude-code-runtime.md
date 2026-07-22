@@ -43,10 +43,18 @@ frontier request.
 
 Task contracts must contain a closed output schema, `allowed_write_paths: []`,
 closed `artifact_outputs` declarations (`artifact_id`, normalized `path`,
-`content_field`, `max_bytes`), and
+`content_field`, `max_bytes`, and `capability: {"class": ...}`), and
 `completion_check: {"type":"output_schema","assertion":"valid"}`.
 Workers return content/hash proposals only; the controller revalidates and
 atomically materializes them with `promote-worker-artifacts`.
+Without a writing gate, the only capability class is `research-intermediate`
+and the exact destination root is
+`artifacts/intermediate/<normalized-task-id>/`. With the exact frozen gate,
+the sole declaration is `paper_deliverable`, class `paper-deliverable`, at
+`artifacts/paper/paper.md`. Promotion revalidates the frozen contract/status,
+the gate's full verdict/waiver, audit, transition, and artifact chain, the exact
+authorized candidate as one writer input, class, and namespace; aliases,
+unrelated inputs, and class/path drift have no authority.
 Allowed tools are limited to `Read`, `Glob`, `Grep`, `WebSearch`, and
 `WebFetch`. Timeout is 1..86400 seconds.
 
@@ -88,8 +96,11 @@ signature is lowercase HMAC-SHA256 over canonical compact JSON. Application
 checks signature, key, plan, action arguments, UTC expiry, and unused
 `(record_id, nonce)` before mutation. Application uses a PREPARED/COMMITTED
 journal, so restart rolls forward the exact bound record without accepting
-different bytes. Downstream gates consume immutable applied receipts present
-in the audit, never pending signed records.
+different bytes. An exact retry carrying the same durable operation ID after
+the committed mutation returns the same receipt idempotently; an unbound replay
+or a fresh operation ID is rejected. The same inner-journal binding applies to
+owned cleanup. Downstream gates consume immutable applied receipts
+present in the audit, never pending signed records.
 
 `cancel-worker` is an authenticated alias requiring the same run ID in the
 record and command. Waiver and cleanup actions produce immutable receipts.
@@ -100,8 +111,7 @@ require `--record` and `--key-file`.
 
 ```bash
 python3 references/scripts/harness-runtime.py freeze-evaluator \
-  --plan-dir PLAN --execution-receipt CALIBRATION_RECEIPT \
-  --operator gte --threshold 0.8
+  --plan-dir PLAN --execution-receipt CALIBRATION_RECEIPT
 python3 references/scripts/harness-runtime.py run-evaluator \
   --plan-dir PLAN --evaluator evaluator.py --evidence evidence.json \
   --candidate candidate.md --purpose candidate
@@ -112,9 +122,14 @@ python3 references/scripts/harness-runtime.py check-writing-gate \
   --plan-dir PLAN --tier conference --verdict STORED_VERDICT
 ```
 
+The declarative evaluator reads a finite metric only from the candidate
+artifact. Plan-global evidence remains frozen context and cannot substitute a
+candidate-independent value into a candidate verdict.
+
 The controller executes the evaluator and derives metric, measured value, and
 PASS/FAIL from immutable execution receipts. The frozen contract binds the
-calibration execution, evaluator, evidence, metric, operator, and threshold.
+calibration execution and the exact CP-02-audited, closed `metric_contract`;
+callers cannot independently supply metric, operator, or threshold.
 Changed evaluator, evidence,
 candidate, threshold, or contract blocks writing. Bare
 `state/research_acceptance.md` strings have no authority. An authenticated
@@ -205,23 +220,38 @@ python3 references/scripts/harness-runtime.py remove-resource \
 
 Only an existing regular non-symlink file inside the plan can be removed. Its
 manifest entry must be `ephemeral:true`, run-scoped, exact-path bound, and
-authorized by an applied `cleanup_resource` record. Directories, shared files,
-path escapes, token mismatch, and absent authorization fail closed. The token
-is SHA-256 of `plan_id + NUL + normalized_path + NUL + ownership_nonce`.
+authorized by an applied `cleanup_resource` record. The record binds the
+ownership generation, content hash, and filesystem identity observed at
+authorization time. Directories, shared files, path escapes, token mismatch,
+recreation, replay, and absent authorization fail closed. The token is SHA-256
+of `plan_id + NUL + normalized_path + NUL + ownership_generation`.
 
-Plan-level stop never grants manifest-wide deletion. Every removal needs its
-own applied `cleanup_resource` receipt; aggregate destruction is legacy-only.
+Plan-level stop never grants manifest-wide deletion. It reports residuals.
+Every removal needs its own applied `cleanup_resource` receipt bound to the
+current resource generation and consumed once; aggregate destruction is
+legacy-only.
 
-## Canonical Top-Level Entry
+## M1 Closed Conformance Entry
 
 ```bash
 python3 references/scripts/run-claude-harness.py \
-  --plan-dir PLAN --workflow canonical-flow.json
+  --plan-dir PLAN \
+  --workflow references/canonical-conformance-workflow.json \
+  --inputs PLAN/control/canonical-conformance-inputs.json
 ```
 
-The workflow is closed and journaled, supports `${step_id.field}` references,
-resumes completed steps without replay, and records expected consumer-first
-blocks as negative conformance evidence.
+The runner accepts only the closed `claude-research-conformance-v1` fixture.
+Its packaged 40-step sequence exercises CP-01, worker promotion, CP-02/freeze,
+prebuilt scientific-failure and dispute branches, CP-03, final evidence,
+writing, patrol, stop, and per-resource cleanup. This is M1 conformance
+evidence, not a general topic-to-paper trigger; the state-driven research loop
+remains part of integrated cutover. The runner writes PREPARED before every
+subprocess and supplies a stable operation ID. External delivery commands use
+dedicated ambiguity reconciliation; local commands re-enter only with the
+identical request and converge through idempotency or their command-owned
+recovery journal if the runner dies before recording COMMITTED.
+Arbitrary or incomplete conformance lists and missing terminal artifact
+classes are rejected.
 
 ## Errors and Recovery
 

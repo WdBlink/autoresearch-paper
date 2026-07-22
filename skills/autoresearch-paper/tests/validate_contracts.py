@@ -41,6 +41,9 @@ def main() -> int:
         "references/frontier-response.schema.json",
         "references/human-action.schema.json",
         "references/evaluator-verdict.schema.json",
+        "references/metric-contract.schema.json",
+        "references/declarative-evaluator.schema.json",
+        "references/canonical-conformance-workflow.json",
         "tests/test_runtime_contracts.py",
         "tests/test_claude_cutover_e2e.py",
         "tests/test_runtime_v2_security.py",
@@ -129,15 +132,47 @@ def main() -> int:
         errors,
     )
     require(
-        contains("tests/test_claude_cutover_e2e.py", "assertIsNone", "CP-01", "CP-02", "CP-03", "CP-04", "MiniMax-M3", "remove-resource"),
-        "end-to-end test must prove the complete no-MAVIS target path",
+        contains("tests/test_claude_cutover_e2e.py", "assertIsNone", "canonical-conformance-workflow.json", "workflow_kind", "terminal_artifacts", "simulate-crash-after-step"),
+        "end-to-end test must prove the closed no-MAVIS conformance path",
         errors,
     )
     require(
-        contains("references/scripts/run-claude-harness.py", "completed_steps", "expect_failure", "workflow_sha256", "send-frontier-request"),
-        "canonical top-level runner must journal, resume, and retain negative evidence",
+        contains(
+            "references/scripts/run-claude-harness.py", "claude-research-conformance-v1",
+            "CANONICAL_TEMPLATE", "closed template", "PREPARED", "operation_id",
+            "AWAITING_HUMAN_AUTHORIZATION", "terminal-manifest.json",
+        ),
+        "conformance runner must validate closed semantics, journal, pause, and finalize detached evidence",
         errors,
     )
+    workflow = json.loads(read("references/canonical-conformance-workflow.json"))
+    require(workflow.get("workflow_kind") == "claude-research-conformance-v1", "conformance workflow kind mismatch", errors)
+    require(len(workflow.get("steps", [])) == 40, "canonical workflow must retain the complete 40-step sequence", errors)
+    require("stop_record" not in workflow.get("required_inputs", []), "stop authority must not be a startup input", errors)
+    require("cleanup_record" not in workflow.get("required_inputs", []), "cleanup authority must not be a startup input", errors)
+    require(any(step.get("id") == "writer_dispatch" for step in workflow.get("steps", [])), "canonical workflow must dispatch a post-gate writer", errors)
+    require(workflow.get("steps", [])[-1].get("command") == "await-human-actions", "canonical workflow must end at the JIT human boundary", errors)
+    require(
+        {item.get("type") for item in workflow.get("terminal_artifacts", [])} == {
+            "workflow_journal", "evaluator_contract", "evaluator_verdict", "structural_pivot",
+            "writing_gate_audit", "paper_deliverable", "cleanup_receipt",
+        },
+        "canonical workflow terminal artifacts are incomplete", errors,
+    )
+    runtime_tests = read("tests/test_runtime_contracts.py")
+    require("legacy_test_" not in runtime_tests, "legacy runtime regressions must remain discoverable", errors)
+    for test_name in (
+        "test_claude_worker_dispatch_is_pinned_and_mavis_free",
+        "test_frontier_bridge_is_durable_bounded_and_idempotent",
+        "test_cp04_acceptance_dispute_dependent_transition",
+        "test_frontier_bridge_does_not_redeliver_uncertain_request",
+        "test_frontier_bridge_blocks_oversized_context_before_budget",
+        "test_frontier_expiration_malformed_response_and_budget_exhaustion",
+        "test_cleanup_complete_status", "test_research_writing_gate", "test_structural_pivot_guard",
+        "test_resolve_plan_dir_and_stop_json_escaping",
+        "test_typed_failures_runtime_operations_and_owned_cleanup",
+    ):
+        require(f"def {test_name}" in runtime_tests, f"missing restored runtime regression {test_name}", errors)
     require('version: "0.8.0"' in read("SKILL.md"), "SKILL.md version must be 0.8.0", errors)
     require("Current version:** v0.8.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.8.0", errors)
     require(
@@ -148,6 +183,25 @@ def main() -> int:
             "apply-frontier-response", "dependent-transition", "assert-transition",
         )),
         "harness runtime is missing target commands",
+        errors,
+    )
+    require(
+        all(token in read("references/scripts/harness-runtime.py") for token in (
+            "declarative-evaluator-v1", "read_finite_number", "require_finite_number",
+            "pivot_epoch", "consumed_event_ids", "writing_gate_receipt",
+            "operation_effect_path", "reconcile_ambiguous_prepared_operation",
+        )),
+        "harness runtime is missing run-4 safety and reconciliation contracts",
+        errors,
+    )
+    e2e_tests = read("tests/test_claude_cutover_e2e.py")
+    require(
+        all(name in e2e_tests for name in (
+            "test_declarative_evaluator_and_nonfinite_values_fail_closed",
+            "test_stateful_operation_faults_reconcile_without_duplicate_effects",
+            "test_waiver_requires_cp04_for_exact_candidate_contract_and_verdict",
+        )),
+        "run-4 focused safety regressions are missing",
         errors,
     )
 

@@ -40,9 +40,23 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
   and never sent to a lifecycle command.
 - MAVIS is an explicit `--legacy-mavis` compatibility dependency; Claude Code
   is the canonical Harness entry point.
+- The shipped `claude-research-conformance-v1` fixture replaces arbitrary
+  conformance command lists and resumes PREPARED subprocesses through stable
+  runtime operation IDs; it is not the production research trigger.
+- CP-02 freezes the audited metric contract; scientific direction identity no
+  longer includes candidate bytes; repeated CP-03 decisions have per-request
+  receipts; promotion and cleanup have recovery journals.
 
 ### Fixed
 
+- PREPARED operation recovery now reaches command-owned pivot, human-action,
+  promotion, and cleanup journals; operation-bound retries converge without
+  weakening replay or changed-generation rejection.
+- Writing-gate consumers revalidate the complete authority chain and exact
+  candidate input; declarative evaluator metrics can no longer come from a
+  candidate-independent evidence file.
+- Stop-only terminal authorization now supports plans with zero eligible
+  removable resources while enforcing exact cleanup coverage otherwise.
 - Setup messages no longer execute Markdown backticks as shell substitutions.
 - Cleanup dry-runs report intended ephemeral resource actions even when the
   corresponding legacy MAVIS file is absent on the test host.

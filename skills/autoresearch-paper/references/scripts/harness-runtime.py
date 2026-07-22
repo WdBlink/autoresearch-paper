@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -57,6 +58,7 @@ TERMINAL_WORKER_STATES = {"COMPLETED", "FAILED", "PAUSED", "CANCELLED"}
 READ_ONLY_CLAUDE_TOOLS = {"Read", "Glob", "Grep", "WebSearch", "WebFetch"}
 REQUEST_ID_RE = re.compile(r"^far_[A-Za-z0-9_-]+$")
 WORKER_ID_RE = re.compile(r"^cwr_[a-f0-9]{32}$")
+OPERATION_ID_RE = re.compile(r"^op_[a-f0-9]{64}$")
 STATES = {
     "CREATED", "BUDGET_RESERVED", "SENT", "WAITING", "RECEIVED",
     "VALIDATED", "APPLIED", "EXPIRED", "INVALID", "PAUSED",
@@ -65,13 +67,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 RESPONSE_SCHEMA = SCRIPT_DIR.parent / "frontier-response.schema.json"
 HUMAN_ACTION_SCHEMA = SCRIPT_DIR.parent / "human-action.schema.json"
 EVALUATOR_VERDICT_SCHEMA = SCRIPT_DIR.parent / "evaluator-verdict.schema.json"
+METRIC_CONTRACT_SCHEMA = SCRIPT_DIR.parent / "metric-contract.schema.json"
+DECLARATIVE_EVALUATOR_SCHEMA = SCRIPT_DIR.parent / "declarative-evaluator.schema.json"
 CHECKPOINT_EVIDENCE_PROFILES = {
     ("CP-01", None): {
         "normalized_brief", "execution_plan", "risk_budget",
     },
     ("CP-02", None): {
         "evaluator", "evidence_manifest", "metric_contract", "baselines",
-        "seeds_splits", "leakage_controls", "calibration_candidate",
+        "seeds_splits", "leakage_controls", "calibration_candidate", "promotion_receipt",
     },
     ("CP-03", None): {
         "failure_state", "direction_registry", "pivot_proposal", "evaluator_verdict",
@@ -88,10 +92,29 @@ DIRECTION_FIELDS = {
     "algorithm_family", "data_representation", "objective", "evaluator",
     "baseline_framing", "lineage", "candidate_sha256",
 }
+SCIENTIFIC_DIRECTION_FIELDS = DIRECTION_FIELDS - {"candidate_sha256"}
 
 
 class ContractError(RuntimeError):
     """A runtime or data contract was violated."""
+
+
+def reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+
+def strict_json_loads(raw: str | bytes) -> Any:
+    """Load standards-compliant JSON and reject NaN/Infinity spellings."""
+    try:
+        return json.loads(raw, parse_constant=reject_json_constant)
+    except ValueError as exc:
+        raise ContractError(f"invalid strict JSON: {exc}") from exc
+
+
+def require_finite_number(value: Any, name: str) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ContractError(f"{name} must be a finite number")
+    return value
 
 
 def utc_now() -> str:
@@ -110,7 +133,7 @@ def parse_utc(value: str) -> datetime:
 
 def canonical_json(value: Any) -> bytes:
     return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
     ).encode("utf-8")
 
 
@@ -120,10 +143,10 @@ def sha256_json(value: Any) -> str:
 
 def read_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text())
+        value = strict_json_loads(path.read_text())
     except FileNotFoundError as exc:
         raise ContractError(f"missing JSON file: {path}") from exc
-    except json.JSONDecodeError as exc:
+    except ContractError as exc:
         raise ContractError(f"invalid JSON in {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise ContractError(f"expected JSON object: {path}")
@@ -134,7 +157,7 @@ def atomic_write_json(path: Path, value: dict[str, Any], *, immutable: bool = Fa
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     with temporary.open("w") as handle:
-        handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        handle.write(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
@@ -150,7 +173,7 @@ def atomic_write_json(path: Path, value: dict[str, Any], *, immutable: bool = Fa
 def append_jsonl(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
-        handle.write(json.dumps(value, sort_keys=True) + "\n")
+        handle.write(json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -191,7 +214,8 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
     for field in ("max_calls", "max_input_tokens", "max_output_tokens"):
         require_non_negative_int(escalation.get(field), f"frontier_escalation.{field}")
     worker_budget = policy.get("worker_max_budget_usd")
-    if not isinstance(worker_budget, (int, float)) or isinstance(worker_budget, bool) or worker_budget <= 0:
+    require_finite_number(worker_budget, "worker_max_budget_usd")
+    if worker_budget <= 0:
         raise ContractError("worker_max_budget_usd must be positive")
     return policy
 
@@ -266,6 +290,7 @@ def validate_schema(instance: Any, schema: dict[str, Any], path: str = "$") -> N
         if "maxLength" in schema and len(instance) > int(schema["maxLength"]):
             raise ContractError(f"{path} is too long")
     if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        require_finite_number(instance, path)
         if "minimum" in schema and instance < schema["minimum"]:
             raise ContractError(f"{path} is below minimum")
         if "maximum" in schema and instance > schema["maximum"]:
@@ -295,8 +320,8 @@ def validate_supported_schema(schema: Any, path: str = "$") -> None:
 
 def extract_structured_claude_output(raw: str) -> Any:
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        value = strict_json_loads(raw)
+    except ContractError as exc:
         raise ContractError(f"Claude Code returned invalid JSON: {exc}") from exc
     if isinstance(value, dict) and "structured_output" in value:
         return value["structured_output"]
@@ -384,8 +409,8 @@ def read_validated_human_record(
 ) -> tuple[dict[str, Any], str]:
     try:
         raw = record_path.read_bytes()
-        record = json.loads(raw)
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        record = strict_json_loads(raw)
+    except (FileNotFoundError, ContractError) as exc:
         raise ContractError(f"invalid human action record: {record_path}") from exc
     if not isinstance(record, dict):
         raise ContractError("human action record must be an object")
@@ -413,7 +438,7 @@ def read_validated_human_record(
 def append_jsonl_once(path: Path, key: str, value: str, entry: dict[str, Any]) -> None:
     if path.exists():
         for line in path.read_text().splitlines():
-            if line.strip() and json.loads(line).get(key) == value:
+            if line.strip() and strict_json_loads(line).get(key) == value:
                 return
     append_jsonl(path, entry)
 
@@ -432,7 +457,7 @@ def validate_applied_action_receipt(
     if applied.get("plan_id") != plan_identity(plan_dir) or applied.get("action") != expected_action:
         raise ContractError("applied action receipt correlation mismatch")
     audit = plan_dir / "state" / "human_action_audit.jsonl"
-    entries = [json.loads(line) for line in audit.read_text().splitlines() if line.strip()] if audit.exists() else []
+    entries = [strict_json_loads(line) for line in audit.read_text().splitlines() if line.strip()] if audit.exists() else []
     match = next((entry for entry in entries if entry.get("record_id") == record_id), None)
     if match is None or any(
         match.get(field) != applied.get(field)
@@ -467,15 +492,67 @@ def command_create_human_action(args: argparse.Namespace) -> dict[str, Any]:
         details["worker_run_id"] = args.worker_run_id
     if args.resource_id:
         details["resource_id"] = args.resource_id
+    if bool(args.authorization_proposal) != bool(args.prepared_operation_id):
+        raise ContractError("authorization proposal and prepared operation id must be supplied together")
+    if args.authorization_proposal:
+        proposal_path = Path(args.authorization_proposal).resolve()
+        canonical_proposal = (plan_dir / "control" / "human_authorization_required.json").resolve()
+        if proposal_path != canonical_proposal:
+            raise ContractError("human action must bind the canonical authorization proposal")
+        proposal = read_json(proposal_path)
+        if (
+            proposal.get("status") != "AWAITING_HUMAN_AUTHORIZATION"
+            or proposal.get("prepared_operation_id") != args.prepared_operation_id
+        ):
+            raise ContractError("human action proposal operation identity mismatch")
+        details.update({
+            "authorization_proposal_path": str(proposal_path),
+            "authorization_proposal_sha256": sha256_file(proposal_path),
+            "prepared_operation_id": args.prepared_operation_id,
+        })
+    if args.action == "cleanup_resource":
+        manifest = read_json(plan_dir / "resource_manifest.json")
+        resource = next(
+            (item for item in manifest.get("resources", [])
+             if isinstance(item, dict) and item.get("resource_id") == args.resource_id),
+            None,
+        )
+        if resource is None:
+            raise ContractError("cleanup_resource requires a declared --resource-id")
+        path = normalize_owned_path(plan_dir, str(resource.get("path", "")))
+        if path.is_symlink() or not path.is_file():
+            raise ContractError("cleanup_resource requires an existing regular non-symlink file")
+        stat = path.stat()
+        generation = str(resource.get("ownership_generation", resource.get("ownership_nonce", "")))
+        if not generation:
+            raise ContractError("cleanup resource requires an ownership generation or nonce")
+        details.update({
+            "resource_path": str(path), "ownership_generation": generation,
+            "ownership_token": hashlib.sha256(
+                f"{manifest['plan_id']}\0{path}\0{generation}".encode()
+            ).hexdigest(),
+            "content_sha256": sha256_file(path),
+            "resource_identity": f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}",
+        })
     if args.action in {"waive_acceptance", "override_acceptance"}:
-        if not args.candidate or not args.tier:
-            raise ContractError("waiver actions require --candidate and --tier")
+        if not args.candidate or not args.verdict or not args.tier:
+            raise ContractError("waiver actions require --candidate, --verdict, and --tier")
         candidate = Path(args.candidate).resolve()
         contract_path = plan_dir / "state" / "evaluator_contract.json"
+        verdict_path = Path(args.verdict).resolve()
+        verdict = read_json(verdict_path)
+        canonical_verdict = plan_dir / "state" / "evaluator_verdicts" / f"{verdict.get('candidate_id', '')}.json"
+        if verdict_path != canonical_verdict.resolve():
+            raise ContractError("waiver verdict must be a canonical evaluator verdict")
+        if Path(verdict.get("candidate_path", "")).resolve() != candidate:
+            raise ContractError("waiver candidate does not match evaluator verdict")
         details.update({
             "candidate_path": str(candidate),
             "candidate_sha256": sha256_file(candidate),
+            "evaluator_contract_path": str(contract_path.resolve()),
             "evaluator_contract_sha256": sha256_file(contract_path),
+            "evaluator_verdict_path": str(verdict_path),
+            "evaluator_verdict_sha256": sha256_file(verdict_path),
             "tier": args.tier,
             "scope": "negative_result" if args.negative_result else "acceptance_override",
         })
@@ -560,8 +637,28 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
         journal = read_json(journal_path) if journal_path.exists() else None
         was_recovery = journal is not None
         if journal:
+            if journal.get("operation_id") != getattr(args, "operation_id", None):
+                raise ContractError("human action recovery operation identity mismatch")
             if journal.get("phase") == "COMMITTED":
-                raise ContractError("human action record was already applied")
+                if not getattr(args, "operation_id", None):
+                    raise ContractError("human action record was already applied")
+                if sha256_file(record_path) != journal.get("record_sha256"):
+                    raise ContractError("committed human action source bytes changed")
+                record = journal.get("record", {})
+                receipt = journal.get("receipt", {})
+                if (
+                    (args.expected_action and record.get("action") != args.expected_action)
+                    or (args.worker_run_id and receipt.get("worker_run_id") != args.worker_run_id)
+                ):
+                    raise ContractError("committed human action invocation mismatch")
+                exposed = {
+                    key: receipt[key] for key in ("receipt_path", "authorization_path", "waiver_path")
+                    if key in receipt
+                }
+                return {
+                    "ok": True, "idempotent": True, "recovered": True,
+                    "receipt": receipt, **exposed,
+                }
             if sha256_file(record_path) != journal.get("record_sha256"):
                 raise ContractError("prepared human action source bytes changed")
             record = journal["record"]
@@ -584,14 +681,37 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
                 raise ContractError("worker_run_id is valid only for cancel_worker")
             if action == "cleanup_resource" and not details.get("resource_id"):
                 raise ContractError("cleanup_resource requires details.resource_id")
+            if action == "cleanup_resource":
+                cleanup_path = Path(details.get("resource_path", ""))
+                if cleanup_path != normalize_owned_path(plan_dir, str(cleanup_path)):
+                    raise ContractError("cleanup resource path correlation mismatch")
+                if cleanup_path.is_symlink() or not cleanup_path.is_file():
+                    raise ContractError("cleanup resource changed before authorization application")
+                cleanup_stat = cleanup_path.stat()
+                identity = f"{cleanup_stat.st_dev}:{cleanup_stat.st_ino}:{cleanup_stat.st_size}:{cleanup_stat.st_mtime_ns}"
+                if sha256_file(cleanup_path) != details.get("content_sha256") or identity != details.get("resource_identity"):
+                    raise ContractError("cleanup resource content or identity changed before authorization application")
             if action in {"waive_acceptance", "override_acceptance"}:
-                required = {"candidate_path", "candidate_sha256", "evaluator_contract_sha256", "tier", "scope", "reason"}
+                required = {
+                    "candidate_path", "candidate_sha256", "evaluator_contract_path",
+                    "evaluator_contract_sha256", "evaluator_verdict_path",
+                    "evaluator_verdict_sha256", "tier", "scope", "reason",
+                }
                 if not required.issubset(details):
                     raise ContractError(f"waiver details missing: {sorted(required - set(details))}")
                 if sha256_file(Path(details["candidate_path"])) != details["candidate_sha256"]:
                     raise ContractError("waiver candidate hash mismatch")
-                if sha256_file(plan_dir / "state" / "evaluator_contract.json") != details["evaluator_contract_sha256"]:
+                contract_path = Path(details["evaluator_contract_path"]).resolve()
+                verdict_path = Path(details["evaluator_verdict_path"]).resolve()
+                if contract_path != (plan_dir / "state" / "evaluator_contract.json").resolve():
+                    raise ContractError("waiver evaluator contract path mismatch")
+                if sha256_file(contract_path) != details["evaluator_contract_sha256"]:
                     raise ContractError("waiver evaluator contract hash mismatch")
+                if sha256_file(verdict_path) != details["evaluator_verdict_sha256"]:
+                    raise ContractError("waiver evaluator verdict hash mismatch")
+                verdict = read_json(verdict_path)
+                if Path(verdict.get("candidate_path", "")).resolve() != Path(details["candidate_path"]).resolve():
+                    raise ContractError("waiver verdict candidate mismatch")
             applied_at = utc_now()
             canonical = plan_dir / "state" / "human_actions" / "applied" / f"{record['record_id']}.json"
             receipt = {
@@ -612,6 +732,7 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
             journal = {
                 "schema_version": 1, "phase": "PREPARED", "record": record,
                 "record_sha256": record_hash, "receipt": receipt, "worker_run_id": run_id,
+                "operation_id": getattr(args, "operation_id", None),
                 "prepared_at": applied_at,
             }
             atomic_write_json(journal_path, journal)
@@ -665,20 +786,30 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("simulated crash after action audit")
         journal.update({"phase": "COMMITTED", "committed_at": utc_now()})
         atomic_write_json(journal_path, journal)
-        return {"ok": True, "recovered": was_recovery, "receipt": receipt}
+        exposed = {
+            key: receipt[key] for key in ("receipt_path", "authorization_path", "waiver_path")
+            if key in receipt
+        }
+        return {"ok": True, "recovered": was_recovery, "receipt": receipt, **exposed}
 
 
 def require_transition_evidence(
     plan_dir: Path, transition_name: str, role_paths: dict[str, Path],
 ) -> dict[str, Any]:
-    receipt = check_transition_receipt(plan_dir, plan_identity(plan_dir), transition_name)
-    _, request = load_request(plan_dir, receipt["request_id"])
-    by_role = {item["purpose"]: item for item in request["context_manifest"]}
-    for role, path in role_paths.items():
-        item = by_role.get(role)
-        if item is None or Path(item["path"]).resolve() != path.resolve() or item["sha256"] != sha256_file(path):
-            raise ContractError(f"{transition_name} evidence does not bind role {role}")
-    return receipt
+    for candidate in transition_receipt_candidates(plan_dir, transition_name):
+        receipt = check_transition_receipt(
+            plan_dir, plan_identity(plan_dir), transition_name, candidate.stem,
+        )
+        _, request = load_request(plan_dir, receipt["request_id"])
+        by_role = {item["purpose"]: item for item in request["context_manifest"]}
+        if all(
+            (item := by_role.get(role)) is not None
+            and Path(item["path"]).resolve() == path.resolve()
+            and item["sha256"] == sha256_file(path)
+            for role, path in role_paths.items()
+        ):
+            return receipt
+    raise ContractError(f"{transition_name} evidence does not bind the required roles")
 
 
 def command_run_evaluator(args: argparse.Namespace) -> dict[str, Any]:
@@ -689,37 +820,37 @@ def command_run_evaluator(args: argparse.Namespace) -> dict[str, Any]:
     require_transition_evidence(plan_dir, "freeze_evaluator", {
         "evaluator": evaluator, "evidence_manifest": evidence,
     })
-    if not 1 <= args.timeout <= 86400:
-        raise ContractError("evaluator timeout must be between 1 and 86400")
-    command = [sys.executable, str(evaluator), "--evidence", str(evidence), "--candidate", str(candidate)]
-    try:
-        proc = subprocess.run(command, cwd=plan_dir, capture_output=True, text=True, timeout=args.timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise ContractError("frozen evaluator timed out") from exc
-    if proc.returncode != 0:
-        raise ContractError(f"frozen evaluator failed with exit {proc.returncode}: {proc.stderr[:300]}")
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise ContractError("frozen evaluator output is not JSON") from exc
-    if not isinstance(result, dict) or set(result) != {"metric", "value"}:
-        raise ContractError("frozen evaluator must output exactly metric and value")
-    if not isinstance(result["metric"], str) or not result["metric"]:
-        raise ContractError("evaluator metric must be a non-empty string")
-    if isinstance(result["value"], bool) or not isinstance(result["value"], (int, float)):
-        raise ContractError("evaluator value must be numeric")
-    run_id = f"evr_{uuid.uuid4().hex}"
+    spec = read_json(evaluator)
+    validate_schema(spec, read_json(DECLARATIVE_EVALUATOR_SCHEMA))
+    if spec["kind"] != "declarative-evaluator-v1" or spec["operation"] != "read_finite_number":
+        raise ContractError("only declarative-evaluator-v1 read_finite_number is supported")
+    if spec["source"] != "candidate":
+        raise ContractError("declarative evaluator must measure the candidate artifact")
+    value: Any = strict_json_loads(candidate.read_text())
+    for segment in spec["json_path"]:
+        if not isinstance(value, dict) or segment not in value:
+            raise ContractError(f"declarative evaluator JSON path is absent: {segment}")
+        value = value[segment]
+    value = require_finite_number(value, "declarative evaluator value")
+    operation_id = getattr(args, "operation_id", None)
+    run_id = "evr_" + (operation_id[3:35] if operation_id else uuid.uuid4().hex)
     receipt = {
         "schema_version": 1, "run_id": run_id, "purpose": args.purpose,
         "plan_id": plan_identity(plan_dir), "evaluator_path": str(evaluator),
         "evaluator_sha256": sha256_file(evaluator), "evidence_path": str(evidence),
         "evidence_sha256": sha256_file(evidence), "candidate_path": str(candidate),
-        "candidate_sha256": sha256_file(candidate), "metric": result["metric"],
-        "value": result["value"], "stdout_sha256": hashlib.sha256(proc.stdout.encode()).hexdigest(),
-        "stderr_sha256": hashlib.sha256(proc.stderr.encode()).hexdigest(),
-        "exit_code": proc.returncode, "python": sys.executable, "completed_at": utc_now(),
+        "candidate_sha256": sha256_file(candidate), "metric": spec["metric"],
+        "value": value, "evaluator_kind": spec["kind"],
+        "operation": spec["operation"], "source": spec["source"],
+        "json_path": spec["json_path"], "exit_code": 0, "completed_at": utc_now(),
     }
     target = plan_dir / "state" / "evaluator_runs" / f"{run_id}.json"
+    if target.exists():
+        prior = read_json(target)
+        stable = ("purpose", "plan_id", "evaluator_sha256", "evidence_sha256", "candidate_sha256", "metric", "value")
+        if any(prior.get(key) != receipt.get(key) for key in stable):
+            raise ContractError("deterministic evaluator run identity collision")
+        return {"ok": True, "idempotent": True, "execution_receipt": str(target), **prior}
     atomic_write_json(target, receipt, immutable=True)
     return {"ok": True, "execution_receipt": str(target), **receipt}
 
@@ -741,33 +872,52 @@ def load_evaluator_run(plan_dir: Path, path: Path) -> dict[str, Any]:
 def command_freeze_evaluator(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     target = plan_dir / "state" / "evaluator_contract.json"
-    if target.exists():
-        raise ContractError("evaluator contract is already frozen")
     run = load_evaluator_run(plan_dir, Path(args.execution_receipt).resolve())
     if run.get("purpose") != "calibration":
         raise ContractError("evaluator freeze requires a calibration execution receipt")
     evaluator = Path(run["evaluator_path"])
     evidence = Path(run["evidence_path"])
-    require_transition_evidence(plan_dir, "freeze_evaluator", {
+    receipt = require_transition_evidence(plan_dir, "freeze_evaluator", {
         "evaluator": evaluator, "evidence_manifest": evidence,
         "calibration_candidate": Path(run["candidate_path"]),
     })
-    if args.operator not in {"gte", "lte"}:
-        raise ContractError("operator must be gte or lte")
+    _, request = load_request(plan_dir, receipt["request_id"])
+    metric_item = next(
+        item for item in request["context_manifest"] if item["purpose"] == "metric_contract"
+    )
+    metric_path = Path(metric_item["path"])
+    metric_contract = read_json(metric_path)
+    validate_schema(metric_contract, read_json(METRIC_CONTRACT_SCHEMA))
+    require_finite_number(metric_contract["threshold"], "metric contract threshold")
+    require_finite_number(run["value"], "calibration value")
+    if sha256_file(metric_path) != metric_item["sha256"]:
+        raise ContractError("audited metric contract hash changed")
+    if run["metric"] != metric_contract["metric"]:
+        raise ContractError("calibration metric does not match audited metric contract")
     contract = {
         "schema_version": 1,
         "evaluator_sha256": sha256_file(evaluator),
         "evidence_sha256": sha256_file(evidence),
         "evaluator_path": str(evaluator),
         "evidence_path": str(evidence),
-        "metric": run["metric"],
-        "operator": args.operator,
-        "threshold": args.threshold,
+        "metric": metric_contract["metric"],
+        "operator": metric_contract["operator"],
+        "threshold": metric_contract["threshold"],
+        "metric_contract_path": str(metric_path),
+        "metric_contract_sha256": metric_item["sha256"],
         "calibration_execution_sha256": sha256_file(Path(args.execution_receipt).resolve()),
         "calibration_value": run["value"],
         "frozen_at": utc_now(),
     }
     contract["contract_sha256"] = sha256_json(contract)
+    if target.exists():
+        if read_json(target) != contract:
+            # Timestamps are not semantic; compare the already frozen provenance.
+            prior = read_json(target)
+            for key in set(contract) - {"frozen_at", "contract_sha256"}:
+                if prior.get(key) != contract.get(key):
+                    raise ContractError("evaluator contract is already frozen with different evidence")
+            return {"ok": True, "idempotent": True, "contract_path": str(target), **prior}
     atomic_write_json(target, contract, immutable=True)
     return {"ok": True, "contract_path": str(target), **contract}
 
@@ -782,6 +932,8 @@ def command_record_evaluator_verdict(args: argparse.Namespace) -> dict[str, Any]
         raise ContractError("frozen evaluator hash changed")
     if sha256_file(Path(contract["evidence_path"])) != contract["evidence_sha256"]:
         raise ContractError("frozen evidence hash changed")
+    if sha256_file(Path(contract["metric_contract_path"])) != contract["metric_contract_sha256"]:
+        raise ContractError("frozen metric contract hash changed")
     run_path = Path(args.execution_receipt).resolve()
     run = load_evaluator_run(plan_dir, run_path)
     if run.get("purpose") != "candidate":
@@ -789,6 +941,9 @@ def command_record_evaluator_verdict(args: argparse.Namespace) -> dict[str, Any]
     for field in ("evaluator_sha256", "evidence_sha256", "metric"):
         if run[field] != contract[field]:
             raise ContractError(f"evaluator execution {field} mismatch")
+    require_finite_number(contract["threshold"], "frozen threshold")
+    require_finite_number(contract["calibration_value"], "frozen calibration value")
+    require_finite_number(run["value"], "candidate evaluator value")
     candidate = Path(run["candidate_path"])
     passed = run["value"] >= contract["threshold"] if contract["operator"] == "gte" else run["value"] <= contract["threshold"]
     verdict = {
@@ -803,7 +958,12 @@ def command_record_evaluator_verdict(args: argparse.Namespace) -> dict[str, Any]
     validate_schema(verdict, read_json(EVALUATOR_VERDICT_SCHEMA))
     target = plan_dir / "state" / "evaluator_verdicts" / f"{verdict['candidate_id']}.json"
     if target.exists():
-        raise ContractError("candidate verdict is already recorded")
+        if read_json(target) != verdict:
+            prior = read_json(target)
+            for key in set(verdict) - {"evaluated_at"}:
+                if prior.get(key) != verdict.get(key):
+                    raise ContractError("candidate verdict is already recorded with different evidence")
+            return {"ok": True, "idempotent": True, "verdict_path": str(target), "verdict_sha256": sha256_file(target)}
     atomic_write_json(target, verdict, immutable=True)
     append_jsonl(plan_dir / "state" / "evaluator_audit.jsonl", {
         "ts": utc_now(), "candidate_id": verdict["candidate_id"], "verdict_sha256": sha256_file(target),
@@ -812,15 +972,33 @@ def command_record_evaluator_verdict(args: argparse.Namespace) -> dict[str, Any]
     return {"ok": True, "verdict_path": str(target), "verdict_sha256": sha256_file(target)}
 
 
-def transition_receipt_path(plan_dir: Path, transition_name: str) -> Path:
-    return plan_dir / "state" / "frontier" / "transitions" / f"{transition_name}.json"
+def transition_receipt_path(plan_dir: Path, transition_name: str, request_id: str) -> Path:
+    if not REQUEST_ID_RE.fullmatch(request_id):
+        raise ContractError("invalid request_id")
+    return plan_dir / "state" / "frontier" / "transitions" / transition_name / f"{request_id}.json"
 
 
-def check_transition_receipt(plan_dir: Path, plan_id: str, name: str) -> dict[str, Any]:
-    receipt = read_json(transition_receipt_path(plan_dir, name))
+def transition_receipt_candidates(plan_dir: Path, transition_name: str) -> list[Path]:
+    root = plan_dir / "state" / "frontier" / "transitions" / transition_name
+    return sorted(root.glob("far_*.json"), key=lambda path: path.stat().st_mtime_ns, reverse=True)
+
+
+def check_transition_receipt(
+    plan_dir: Path, plan_id: str, name: str, request_id: str | None = None,
+    *, verify_live_manifest: bool = True,
+) -> dict[str, Any]:
+    candidates = (
+        [transition_receipt_path(plan_dir, name, request_id)]
+        if request_id else transition_receipt_candidates(plan_dir, name)
+    )
+    if not candidates:
+        raise ContractError(f"missing applied transition receipt: {name}")
+    receipt = read_json(candidates[0])
     if receipt.get("plan_id") != plan_id or receipt.get("transition") != name:
         raise ContractError("dependent transition receipt correlation mismatch")
-    request_path, request = load_request(plan_dir, receipt["request_id"])
+    request_path, request = load_request(
+        plan_dir, receipt["request_id"], verify_live_manifest=verify_live_manifest,
+    )
     response_path = request_dir(plan_dir, receipt["request_id"]) / "response.json"
     if receipt.get("request_sha256") != sha256_file(request_path):
         raise ContractError("dependent transition request hash changed")
@@ -829,7 +1007,8 @@ def check_transition_receipt(plan_dir: Path, plan_id: str, name: str) -> dict[st
     context_hash = sha256_json(request["context_manifest"])
     if receipt.get("context_manifest_sha256") != context_hash:
         raise ContractError("dependent transition context hash changed")
-    verify_manifest_items(request["context_manifest"], base_dir=plan_dir)
+    if verify_live_manifest:
+        verify_manifest_items(request["context_manifest"], base_dir=plan_dir)
     return receipt
 
 
@@ -837,23 +1016,30 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     if bool(args.verdict) == bool(args.waiver):
         raise ContractError("writing gate requires exactly one of --verdict or --waiver")
-    transition_receipt = check_transition_receipt(plan_dir, plan_identity(plan_dir), "start_writing")
     source: str
     authority_path: Path
+    candidate_path: Path
+    contract_path = plan_dir / "state" / "evaluator_contract.json"
+    verdict_path: Path
     if args.verdict:
         verdict_path = Path(args.verdict).resolve()
         verdict = read_json(verdict_path)
         stored = plan_dir / "state" / "evaluator_verdicts" / f"{verdict.get('candidate_id', '')}.json"
         if stored.resolve() != verdict_path or verdict.get("verdict") != "PASS":
             raise ContractError("writing gate requires a stored validated PASS verdict")
-        contract = read_json(plan_dir / "state" / "evaluator_contract.json")
+        contract = read_json(contract_path)
         contract_body = {key: value for key, value in contract.items() if key != "contract_sha256"}
         if contract.get("contract_sha256") != sha256_json(contract_body):
             raise ContractError("frozen evaluator contract hash changed")
+        if sha256_file(Path(contract["metric_contract_path"])) != contract["metric_contract_sha256"]:
+            raise ContractError("frozen metric contract hash changed")
         if verdict.get("contract_sha256") != contract["contract_sha256"]:
             raise ContractError("verdict evaluator contract mismatch")
         if verdict.get("metric") != contract["metric"] or verdict.get("threshold") != contract["threshold"]:
             raise ContractError("verdict metric or threshold changed")
+        require_finite_number(verdict.get("value"), "verdict value")
+        require_finite_number(verdict.get("threshold"), "verdict threshold")
+        require_finite_number(contract["threshold"], "frozen threshold")
         passed = verdict.get("value") >= contract["threshold"] if contract["operator"] == "gte" else verdict.get("value") <= contract["threshold"]
         if not passed:
             raise ContractError("stored PASS no longer satisfies the frozen threshold")
@@ -863,10 +1049,11 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("evaluator hash changed")
         if sha256_file(Path(contract["evidence_path"])) != verdict["evidence_sha256"]:
             raise ContractError("evidence hash changed")
-        require_transition_evidence(plan_dir, "start_writing", {
-            "candidate": Path(verdict["candidate_path"]),
+        candidate_path = Path(verdict["candidate_path"])
+        transition_receipt = require_transition_evidence(plan_dir, "start_writing", {
+            "candidate": candidate_path,
             "evaluator_verdict": verdict_path,
-            "evaluator_contract": plan_dir / "state" / "evaluator_contract.json",
+            "evaluator_contract": contract_path,
         })
         source, authority_path = "validated_verdict", verdict_path
     else:
@@ -875,12 +1062,19 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
         details = waiver["details"]
         if details.get("tier") != args.tier:
             raise ContractError("waiver tier does not match writing tier")
-        candidate = Path(details["candidate_path"])
-        contract_path = plan_dir / "state" / "evaluator_contract.json"
-        if sha256_file(candidate) != details.get("candidate_sha256"):
+        candidate_path = Path(details["candidate_path"])
+        verdict_path = Path(details["evaluator_verdict_path"])
+        if sha256_file(candidate_path) != details.get("candidate_sha256"):
             raise ContractError("waiver candidate hash changed")
         if sha256_file(contract_path) != details.get("evaluator_contract_sha256"):
             raise ContractError("waiver evaluator contract hash changed")
+        if sha256_file(verdict_path) != details.get("evaluator_verdict_sha256"):
+            raise ContractError("waiver evaluator verdict hash changed")
+        transition_receipt = require_transition_evidence(plan_dir, "start_writing", {
+            "candidate": candidate_path,
+            "evaluator_contract": contract_path,
+            "evaluator_verdict": verdict_path,
+        })
         negative = details.get("scope") == "negative_result"
         if negative and args.tier != "arxiv":
             raise ContractError("negative-result waiver is arxiv-only")
@@ -889,13 +1083,25 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": 1, "plan_id": plan_identity(plan_dir), "tier": args.tier,
         "source": source, "authority_path": str(authority_path),
         "authority_sha256": sha256_file(authority_path),
-        "start_writing_receipt_sha256": sha256_file(transition_receipt_path(plan_dir, "start_writing")),
+        "candidate_path": str(candidate_path.resolve()),
+        "candidate_sha256": sha256_file(candidate_path),
+        "evaluator_contract_path": str(contract_path.resolve()),
+        "evaluator_contract_sha256": sha256_file(contract_path),
+        "evaluator_verdict_path": str(verdict_path.resolve()),
+        "evaluator_verdict_sha256": sha256_file(verdict_path),
+        "start_writing_request_id": transition_receipt["request_id"],
+        "start_writing_receipt_sha256": sha256_file(
+            transition_receipt_path(plan_dir, "start_writing", transition_receipt["request_id"])
+        ),
         "checked_at": utc_now(),
     }
     audit["decision_sha256"] = sha256_json({key: value for key, value in audit.items() if key != "checked_at"})
     append_jsonl_once(plan_dir / "state" / "writing_gate_audit.jsonl", "decision_sha256", audit["decision_sha256"], audit)
+    gate_path = plan_dir / "state" / "writing_gates" / f"{audit['decision_sha256']}.json"
+    if not gate_path.exists():
+        atomic_write_json(gate_path, audit, immutable=True)
     return {"ok": True, "tier": args.tier, "source": source, "audit": audit,
-            "transition_request_id": transition_receipt["request_id"]}
+            "gate_receipt": str(gate_path), "transition_request_id": transition_receipt["request_id"]}
 
 
 def failure_state_default(plan_dir: Path) -> dict[str, Any]:
@@ -908,6 +1114,11 @@ def failure_state_default(plan_dir: Path) -> dict[str, Any]:
         **{f"{kind}_count": 0 for kind in sorted(FAILURE_CLASSES)},
         "distinct_scientific_fingerprints": [],
         "direction_registry": {},
+        "pivot_epoch": 0,
+        "pivot_cursor": 0,
+        "epoch_direction_fingerprints": [],
+        "scientific_failure_events": [],
+        "consumed_scientific_event_ids": [],
         "seen": [],
         "scientific_pivot_threshold": threshold,
     }
@@ -945,7 +1156,16 @@ def command_record_failure(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("scientific failure candidate hash changed")
         if direction["candidate_sha256"] != verdict["candidate_sha256"]:
             raise ContractError("direction descriptor is not bound to the failed candidate")
-        fingerprint = sha256_json(direction)
+        frozen_evaluator_identity = verdict.get("contract_sha256")
+        if not isinstance(frozen_evaluator_identity, str) or len(frozen_evaluator_identity) != 64:
+            raise ContractError("scientific failure lacks a frozen evaluator identity")
+        scientific_descriptor = {
+            key: direction[key] for key in sorted(SCIENTIFIC_DIRECTION_FIELDS)
+        }
+        fingerprint = sha256_json({
+            "scientific_descriptor": scientific_descriptor,
+            "frozen_evaluator_identity": frozen_evaluator_identity,
+        })
     elif not fingerprint:
         raise ContractError("non-scientific failures require --fingerprint")
     target = plan_dir / "state" / "failure_state.json"
@@ -957,18 +1177,51 @@ def command_record_failure(args: argparse.Namespace) -> dict[str, Any]:
         expected_threshold = failure_state_default(plan_dir)["scientific_pivot_threshold"]
         if state.get("scientific_pivot_threshold") != expected_threshold:
             raise ContractError("scientific pivot threshold changed from the frozen policy")
-        key = f"{args.failure_class}:{fingerprint}"
+        key_fingerprint = fingerprint
+        if args.failure_class == "scientific_no_improvement":
+            key_fingerprint = hashlib.sha256(
+                f"{fingerprint}\0{verdict['candidate_sha256']}\0{sha256_file(verdict_path)}".encode()
+            ).hexdigest()
+        key = f"{args.failure_class}:{key_fingerprint}"
         if key in state.get("seen", []):
             return {"ok": True, "idempotent": True, "failure_class": args.failure_class, "state": state}
         state.setdefault("seen", []).append(key)
         count_key = f"{args.failure_class}_count"
         state[count_key] = int(state.get(count_key, 0)) + 1
         if args.failure_class == "scientific_no_improvement":
-            state.setdefault("distinct_scientific_fingerprints", []).append(fingerprint)
-            state.setdefault("direction_registry", {})[fingerprint] = {
-                "descriptor": direction, "verdict_path": str(verdict_path),
-                "verdict_sha256": sha256_file(verdict_path), "recorded_at": utc_now(),
-            }
+            registry = state.setdefault("direction_registry", {})
+            first_direction_outcome = fingerprint not in registry
+            if first_direction_outcome:
+                state.setdefault("distinct_scientific_fingerprints", []).append(fingerprint)
+                registry[fingerprint] = {
+                    "scientific_descriptor": scientific_descriptor,
+                    "frozen_evaluator_identity": frozen_evaluator_identity,
+                    "outcomes": [], "recorded_at": utc_now(),
+                }
+            registry[fingerprint].setdefault("outcomes", []).append({
+                "candidate_sha256": verdict["candidate_sha256"],
+                "verdict_path": str(verdict_path),
+                "verdict_sha256": sha256_file(verdict_path),
+                "recorded_at": utc_now(),
+            })
+            epoch_fingerprints = state.setdefault("epoch_direction_fingerprints", [])
+            if fingerprint not in epoch_fingerprints:
+                epoch = int(state.get("pivot_epoch", 0))
+                verdict_hash = sha256_file(verdict_path)
+                event_id = "sfe_" + hashlib.sha256(
+                    f"{epoch}\0{fingerprint}\0{verdict_hash}".encode()
+                ).hexdigest()
+                state.setdefault("scientific_failure_events", []).append({
+                    "event_id": event_id,
+                    "epoch": epoch,
+                    "fingerprint": fingerprint,
+                    "candidate_sha256": verdict["candidate_sha256"],
+                    "verdict_path": str(verdict_path),
+                    "verdict_sha256": verdict_hash,
+                    "validated": True,
+                    "recorded_at": utc_now(),
+                })
+                epoch_fingerprints.append(fingerprint)
         state["updated_at"] = utc_now()
         atomic_write_json(target, state)
         append_jsonl(plan_dir / "state" / "failure_events.jsonl", {
@@ -984,9 +1237,27 @@ def pivot_eligibility(plan_dir: Path) -> dict[str, Any]:
     expected_threshold = failure_state_default(plan_dir)["scientific_pivot_threshold"]
     if state.get("scientific_pivot_threshold") != expected_threshold:
         raise ContractError("scientific pivot threshold changed from the frozen policy")
-    distinct = len(set(state.get("distinct_scientific_fingerprints", [])))
+    epoch = int(state.get("pivot_epoch", 0))
+    consumed = set(state.get("consumed_scientific_event_ids", []))
+    events = [
+        event for event in state.get("scientific_failure_events", [])
+        if event.get("epoch") == epoch and event.get("validated") is True
+        and event.get("event_id") not in consumed
+    ]
+    distinct_events: dict[str, dict[str, Any]] = {}
+    for event in events:
+        distinct_events.setdefault(str(event.get("fingerprint")), event)
+    event_ids = sorted(event["event_id"] for event in distinct_events.values())
+    distinct = len(event_ids)
     threshold = expected_threshold
-    return {"eligible": distinct >= threshold, "distinct_scientific_failures": distinct, "threshold": threshold}
+    return {
+        "eligible": distinct >= threshold,
+        "distinct_scientific_failures": distinct,
+        "threshold": threshold,
+        "pivot_epoch": epoch,
+        "pivot_cursor": int(state.get("pivot_cursor", 0)),
+        "eligible_event_ids": event_ids,
+    }
 
 
 def command_pivot_eligibility(args: argparse.Namespace) -> dict[str, Any]:
@@ -995,13 +1266,56 @@ def command_pivot_eligibility(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_apply_structural_pivot(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    if not pivot_eligibility(plan_dir)["eligible"]:
-        raise ContractError("structural pivot threshold is not satisfied")
     proposal_path = Path(args.proposal).resolve()
     proposal = read_json(proposal_path)
-    require_transition_evidence(plan_dir, "authorize_structural_pivot", {"pivot_proposal": proposal_path})
+    failure_state = read_json(plan_dir / "state" / "failure_state.json")
+    last_applied = failure_state.get("last_applied_pivot")
+    recovering = (
+        isinstance(last_applied, dict)
+        and last_applied.get("proposal_path") == str(proposal_path)
+        and last_applied.get("proposal_sha256") == sha256_file(proposal_path)
+    )
+    if recovering:
+        recovery_request_id = last_applied.get("frontier_request_id")
+        if not isinstance(recovery_request_id, str):
+            raise ContractError("committed structural pivot request identity is invalid")
+        transition_receipt = check_transition_receipt(
+            plan_dir, plan_identity(plan_dir), "authorize_structural_pivot",
+            recovery_request_id, verify_live_manifest=False,
+        )
+        _, recovery_request = load_request(
+            plan_dir, transition_receipt["request_id"], verify_live_manifest=False,
+        )
+        proposal_items = [
+            item for item in recovery_request["context_manifest"]
+            if item.get("purpose") == "pivot_proposal"
+        ]
+        if len(proposal_items) != 1 or any((
+            Path(proposal_items[0]["path"]).resolve() != proposal_path,
+            proposal_items[0].get("sha256") != sha256_file(proposal_path),
+        )):
+            raise ContractError("committed structural pivot proposal binding mismatch")
+    else:
+        transition_receipt = require_transition_evidence(
+            plan_dir, "authorize_structural_pivot", {"pivot_proposal": proposal_path}
+        )
+    _, frontier_request = load_request(
+        plan_dir, transition_receipt["request_id"], verify_live_manifest=not recovering,
+    )
+    pre_state_items = [
+        item for item in frontier_request["context_manifest"]
+        if item.get("purpose") == "failure_state"
+    ]
+    if len(pre_state_items) != 1 or not isinstance(pre_state_items[0].get("sha256"), str):
+        raise ContractError("CP-03 request must bind one frozen failure state")
+    frozen_event_ids = frontier_request.get("pivot_event_ids")
+    request_epoch = frontier_request.get("pivot_epoch")
+    if isinstance(request_epoch, bool) or not isinstance(request_epoch, int) or request_epoch < 0:
+        raise ContractError("CP-03 request has an invalid pivot epoch")
+    if not isinstance(frozen_event_ids, list) or not all(isinstance(value, str) for value in frozen_event_ids):
+        raise ContractError("CP-03 request has invalid frozen failure events")
     direction = proposal.get("direction")
-    if not isinstance(direction, dict) or set(direction) != DIRECTION_FIELDS:
+    if not isinstance(direction, dict) or set(direction) != SCIENTIFIC_DIRECTION_FIELDS:
         raise ContractError("pivot proposal requires a complete direction descriptor")
     normalized = {
         key: " ".join(value.strip().lower().split()) if isinstance(value, str) else value
@@ -1009,22 +1323,89 @@ def command_apply_structural_pivot(args: argparse.Namespace) -> dict[str, Any]:
     }
     if not all(isinstance(value, str) and value for value in normalized.values()):
         raise ContractError("pivot direction fields must be non-empty strings")
-    direction_hash = sha256_json(normalized)
-    failure_state = read_json(plan_dir / "state" / "failure_state.json")
-    if direction_hash in failure_state.get("direction_registry", {}):
-        raise ContractError("pivot direction duplicates a failed scientific direction")
-    receipt = {
+    evaluator_contract = read_json(plan_dir / "state" / "evaluator_contract.json")
+    direction_hash = sha256_json({
+        "scientific_descriptor": normalized,
+        "frozen_evaluator_identity": evaluator_contract["contract_sha256"],
+    })
+    receipt_base = {
         "schema_version": 1, "plan_id": plan_identity(plan_dir), "direction": normalized,
         "direction_sha256": direction_hash, "proposal_path": str(proposal_path),
         "proposal_sha256": sha256_file(proposal_path),
-        "frontier_receipt_sha256": sha256_file(transition_receipt_path(plan_dir, "authorize_structural_pivot")),
-        "applied_at": utc_now(),
+        "frontier_request_id": transition_receipt["request_id"],
+        "pre_state_sha256": pre_state_items[0]["sha256"],
+        "pivot_epoch": request_epoch,
+        "consumed_event_ids": frozen_event_ids,
+        "frontier_receipt_sha256": sha256_file(
+            transition_receipt_path(
+                plan_dir, "authorize_structural_pivot", transition_receipt["request_id"]
+            )
+        ),
     }
-    target = plan_dir / "state" / "structural_pivots" / f"pivot_{direction_hash[:24]}.json"
+    target = plan_dir / "state" / "structural_pivots" / (
+        f"pivot_epoch_{request_epoch:04d}_{transition_receipt['request_id']}.json"
+    )
     if target.exists():
-        raise ContractError("structural pivot was already applied")
+        prior = read_json(target)
+        if all(prior.get(key) == value for key, value in receipt_base.items()):
+            return {"ok": True, "idempotent": True, "pivot_receipt": str(target), **prior}
+        raise ContractError("structural pivot request was already consumed with another proposal")
+    if isinstance(last_applied, dict) and last_applied.get("frontier_request_id") == transition_receipt["request_id"]:
+        if (
+            not all(last_applied.get(key) == value for key, value in receipt_base.items())
+            or last_applied.get("post_state_sha256") != sha256_json({
+                key: value for key, value in failure_state.items()
+                if key != "last_applied_pivot"
+            })
+            or failure_state.get("pivot_epoch") != request_epoch + 1
+            or not set(frozen_event_ids).issubset(
+                set(failure_state.get("consumed_scientific_event_ids", []))
+            )
+        ):
+            raise ContractError("committed structural pivot recovery identity mismatch")
+        atomic_write_json(target, last_applied, immutable=True)
+        append_jsonl_once(
+            plan_dir / "state" / "structural_pivot_audit.jsonl",
+            "frontier_request_id", transition_receipt["request_id"], last_applied,
+        )
+        return {"ok": True, "recovered": True, "pivot_receipt": str(target), **last_applied}
+    eligibility = pivot_eligibility(plan_dir)
+    if not eligibility["eligible"]:
+        raise ContractError("structural pivot threshold is not satisfied")
+    if request_epoch != eligibility["pivot_epoch"]:
+        raise ContractError("CP-03 request belongs to a different pivot epoch")
+    if frozen_event_ids != eligibility["eligible_event_ids"]:
+        raise ContractError("CP-03 request does not freeze the current eligible failure events")
+    if direction_hash in failure_state.get("direction_registry", {}):
+        raise ContractError("pivot direction duplicates a failed scientific direction")
+    receipt = {**receipt_base, "applied_at": utc_now()}
+    # failure_state is the atomic consumption authority. A receipt can be
+    # reconstructed from last_applied_pivot after interruption.
+    lock_path = plan_dir / "state" / ".failure.lock"
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        failure_state = read_json(plan_dir / "state" / "failure_state.json")
+        current = pivot_eligibility(plan_dir)
+        if current["pivot_epoch"] != eligibility["pivot_epoch"] or current["eligible_event_ids"] != frozen_event_ids:
+            raise ContractError("scientific failure epoch changed while applying pivot")
+        failure_state.setdefault("consumed_scientific_event_ids", []).extend(frozen_event_ids)
+        failure_state["pivot_cursor"] = int(failure_state.get("pivot_cursor", 0)) + len(frozen_event_ids)
+        failure_state["pivot_epoch"] = eligibility["pivot_epoch"] + 1
+        failure_state["epoch_direction_fingerprints"] = []
+        failure_state["updated_at"] = utc_now()
+        receipt["post_state_sha256"] = sha256_json({
+            key: value for key, value in failure_state.items()
+            if key != "last_applied_pivot"
+        })
+        failure_state["last_applied_pivot"] = receipt
+        atomic_write_json(plan_dir / "state" / "failure_state.json", failure_state)
+        if os.environ.get("HARNESS_FAULT_AFTER_PIVOT_STATE") == "1":
+            raise ContractError("simulated crash after structural pivot state commit")
     atomic_write_json(target, receipt, immutable=True)
-    append_jsonl(plan_dir / "state" / "structural_pivot_audit.jsonl", receipt)
+    append_jsonl_once(
+        plan_dir / "state" / "structural_pivot_audit.jsonl",
+        "frontier_request_id", transition_receipt["request_id"], receipt,
+    )
     return {"ok": True, "pivot_receipt": str(target), **receipt}
 
 
@@ -1032,7 +1413,9 @@ def command_resolve_acceptance_dispute(args: argparse.Namespace) -> dict[str, An
     plan_dir = Path(args.plan_dir).resolve()
     resolution_path = Path(args.resolution).resolve()
     resolution = read_json(resolution_path)
-    require_transition_evidence(plan_dir, "resolve_acceptance_dispute", {"dispute_record": resolution_path})
+    transition_receipt = require_transition_evidence(
+        plan_dir, "resolve_acceptance_dispute", {"dispute_record": resolution_path}
+    )
     if set(resolution) != {"candidate_id", "resolution", "rationale"}:
         raise ContractError("dispute resolution requires exactly candidate_id, resolution, rationale")
     if resolution["resolution"] not in {"accept", "reject", "rerun"}:
@@ -1040,12 +1423,24 @@ def command_resolve_acceptance_dispute(args: argparse.Namespace) -> dict[str, An
     receipt = {
         "schema_version": 1, "plan_id": plan_identity(plan_dir), **resolution,
         "resolution_path": str(resolution_path), "resolution_sha256": sha256_file(resolution_path),
-        "frontier_receipt_sha256": sha256_file(transition_receipt_path(plan_dir, "resolve_acceptance_dispute")),
+        "frontier_request_id": transition_receipt["request_id"],
+        "frontier_receipt_sha256": sha256_file(transition_receipt_path(
+            plan_dir, "resolve_acceptance_dispute", transition_receipt["request_id"]
+        )),
         "resolved_at": utc_now(),
     }
-    target = plan_dir / "state" / "acceptance_disputes" / f"{resolution['candidate_id']}.json"
+    target = (
+        plan_dir / "state" / "acceptance_disputes" / resolution["candidate_id"]
+        / f"{transition_receipt['request_id']}.json"
+    )
     if target.exists():
-        raise ContractError("acceptance dispute was already resolved")
+        prior = read_json(target)
+        if (
+            prior.get("resolution_sha256") == receipt["resolution_sha256"]
+            and prior.get("frontier_request_id") == receipt["frontier_request_id"]
+        ):
+            return {"ok": True, "idempotent": True, "resolution_receipt": str(target), **prior}
+        raise ContractError("acceptance dispute request was already consumed with another resolution")
     atomic_write_json(target, receipt, immutable=True)
     return {"ok": True, "resolution_receipt": str(target), **receipt}
 
@@ -1081,6 +1476,7 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
     normalized_worker = args.worker_model.lower().replace("-", "")
     if "minimax" not in normalized_worker or "m3" not in normalized_worker:
         raise ContractError("worker_model must pin the MiniMax M3 family")
+    require_finite_number(args.worker_max_budget_usd, "worker_max_budget_usd")
     if args.worker_max_budget_usd <= 0:
         raise ContractError("worker_max_budget_usd must be positive")
     atomic_write_json(target, policy, immutable=True)
@@ -1088,13 +1484,34 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "policy_path": str(target)}
 
 
+OUTPUT_CAPABILITY_CLASSES = {"research-intermediate", "paper-deliverable"}
+
+
+def normalized_task_id(raw: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    if not value:
+        raise ContractError("task_id does not have a usable normalized identity")
+    return value
+
+
 def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
-    if not isinstance(raw, dict) or set(raw) != {"artifact_id", "path", "content_field", "max_bytes"}:
-        raise ContractError("artifact_outputs entries require exactly artifact_id, path, content_field, max_bytes")
+    fields = {"artifact_id", "path", "content_field", "max_bytes", "capability"}
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise ContractError(
+            "artifact_outputs entries require exactly artifact_id, path, content_field, "
+            "max_bytes, capability"
+        )
     if not all(isinstance(raw.get(key), str) and raw[key] for key in ("artifact_id", "path", "content_field")):
         raise ContractError("artifact output identifiers and paths must be non-empty strings")
     if isinstance(raw.get("max_bytes"), bool) or not isinstance(raw.get("max_bytes"), int) or not 1 <= raw["max_bytes"] <= 100_000_000:
         raise ContractError("artifact output max_bytes must be in 1..100000000")
+    capability = raw.get("capability")
+    if (
+        not isinstance(capability, dict)
+        or set(capability) != {"class"}
+        or capability.get("class") not in OUTPUT_CAPABILITY_CLASSES
+    ):
+        raise ContractError("artifact output capability requires one supported exact class")
     path = normalize_owned_path(plan_dir, raw["path"])
     cursor = path.parent
     while cursor != plan_dir.parent:
@@ -1137,6 +1554,92 @@ def validate_worker_artifact_proposals(
     return checked
 
 
+def validate_writing_gate_receipt(plan_dir: Path, raw_path: str) -> dict[str, Any]:
+    path = Path(raw_path).resolve()
+    root = (plan_dir / "state" / "writing_gates").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ContractError("writing gate receipt is outside canonical state") from exc
+    gate = read_json(path)
+    if path.name != f"{gate.get('decision_sha256')}.json":
+        raise ContractError("writing gate receipt identity mismatch")
+    decision_body = {
+        key: value for key, value in gate.items()
+        if key not in {"checked_at", "decision_sha256"}
+    }
+    if gate.get("decision_sha256") != sha256_json(decision_body):
+        raise ContractError("writing gate decision identity mismatch")
+    if gate.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("writing gate belongs to another plan")
+    for role in ("candidate", "evaluator_contract", "evaluator_verdict"):
+        artifact = Path(gate[f"{role}_path"])
+        if sha256_file(artifact) != gate[f"{role}_sha256"]:
+            raise ContractError(f"writing gate {role} hash changed")
+    receipt_path = transition_receipt_path(
+        plan_dir, "start_writing", gate["start_writing_request_id"]
+    )
+    if sha256_file(receipt_path) != gate["start_writing_receipt_sha256"]:
+        raise ContractError("writing gate frontier receipt changed")
+    audit_path = plan_dir / "state" / "writing_gate_audit.jsonl"
+    audit_entries = [
+        strict_json_loads(line) for line in audit_path.read_text().splitlines() if line.strip()
+    ] if audit_path.exists() else []
+    if gate not in audit_entries:
+        raise ContractError("writing gate is absent from the canonical audit")
+    source = gate.get("source")
+    if source == "validated_verdict":
+        verdict, waiver = gate["evaluator_verdict_path"], None
+    elif source == "applied_waiver_receipt":
+        verdict, waiver = None, gate.get("authority_path")
+    else:
+        raise ContractError("writing gate has an unknown authority source")
+    revalidated = command_check_writing_gate(argparse.Namespace(
+        plan_dir=str(plan_dir), tier=gate.get("tier"), verdict=verdict, waiver=waiver,
+    ))
+    if Path(revalidated["gate_receipt"]).resolve() != path:
+        raise ContractError("writing gate no longer matches its complete authority chain")
+    return gate
+
+
+def require_writer_candidate_input(
+    inputs: list[dict[str, str]], gate: dict[str, Any],
+) -> None:
+    matches = [
+        item for item in inputs
+        if Path(item["path"]).resolve() == Path(gate["candidate_path"]).resolve()
+        and item["sha256"] == gate["candidate_sha256"]
+    ]
+    if len(matches) != 1:
+        raise ContractError("post-gate writer must consume the exact authorized candidate once")
+
+
+def enforce_output_capability(
+    plan_dir: Path, task_id: str, declarations: list[dict[str, Any]], gate_path: str | None,
+) -> None:
+    if gate_path:
+        paper_path = (plan_dir / "artifacts" / "paper" / "paper.md").resolve()
+        if (
+            len(declarations) != 1
+            or declarations[0]["artifact_id"] != "paper_deliverable"
+            or declarations[0]["capability"] != {"class": "paper-deliverable"}
+            or Path(declarations[0]["path"]) != paper_path
+        ):
+            raise ContractError("post-gate writer requires the exact canonical paper-deliverable capability")
+        return
+    root = (plan_dir / "artifacts" / "intermediate" / normalized_task_id(task_id)).resolve()
+    for declaration in declarations:
+        target = Path(declaration["path"])
+        if declaration["capability"] != {"class": "research-intermediate"}:
+            raise ContractError("ungated workers require the exact research-intermediate capability")
+        try:
+            relative = target.relative_to(root)
+        except ValueError as exc:
+            raise ContractError("research-intermediate output is outside its controller-owned task namespace") from exc
+        if relative == Path("."):
+            raise ContractError("research-intermediate output must name a file inside its task namespace")
+
+
 def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
@@ -1170,7 +1673,14 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("artifact output declarations must have unique artifact_id values")
     if len({item["path"] for item in declarations}) != len(declarations):
         raise ContractError("artifact output declarations must have unique paths")
+    writing_gate_path = getattr(args, "writing_gate_receipt", None)
+    writing_gate: dict[str, Any] | None = None
+    if writing_gate_path:
+        writing_gate = validate_writing_gate_receipt(plan_dir, writing_gate_path)
+    enforce_output_capability(plan_dir, task_id, declarations, writing_gate_path)
     inputs = verify_manifest_items(contract.get("inputs", []), base_dir=plan_dir)
+    if writing_gate is not None:
+        require_writer_candidate_input(inputs, writing_gate)
     allowed_tools = contract.get("allowed_tools", [])
     if not isinstance(allowed_tools, list) or not all(isinstance(v, str) for v in allowed_tools):
         raise ContractError("allowed_tools must be an array of strings")
@@ -1182,9 +1692,20 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         )
     if not 1 <= args.timeout <= 86400:
         raise ContractError("timeout must be between 1 and 86400 seconds")
-    run_id = f"cwr_{uuid.uuid4().hex}"
+    operation_id = getattr(args, "operation_id", None)
+    run_id = "cwr_" + (operation_id[3:35] if operation_id else uuid.uuid4().hex)
     (plan_dir / "state" / "worker_runs").mkdir(parents=True, exist_ok=True)
     run_dir = worker_run_dir(plan_dir, run_id, must_exist=False)
+    if run_dir.exists():
+        prior = read_json(run_dir / "status.json")
+        if prior.get("contract_sha256") != sha256_file(contract_path):
+            raise ContractError("deterministic worker operation identity collision")
+        if prior.get("status") == "RUNNING":
+            prior = update_worker_status(plan_dir, run_id, "PAUSED", {
+                "failure": "transport_outcome_uncertain", "reconciliation_required": True,
+            })
+            raise ContractError("worker delivery outcome is uncertain; inspect and explicitly reconcile")
+        return {**prior, "idempotent": True}
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = json.dumps({
         "role": "bounded research worker",
@@ -1194,6 +1715,7 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "inputs": inputs,
         "artifact_outputs": declarations,
         "artifact_contract": "return proposals only; the controller validates and promotes them",
+        "writing_gate": writing_gate,
     }, indent=2)
     cmd = [
         args.claude_bin, "-p", "--model", policy["worker_model"],
@@ -1210,9 +1732,16 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "worker_model": policy["worker_model"],
         "contract_path": str(contract_path),
         "contract_sha256": sha256_file(contract_path),
+        "artifact_outputs": declarations,
+        "output_capability_class": declarations[0]["capability"]["class"] if declarations else None,
         "model_policy_sha256": sha256_file(policy_path(plan_dir)),
         "started_at": utc_now(),
     }
+    if writing_gate_path:
+        started.update({
+            "writing_gate_receipt": str(Path(writing_gate_path).resolve()),
+            "writing_gate_receipt_sha256": sha256_file(Path(writing_gate_path).resolve()),
+        })
     atomic_write_json(run_dir / "status.json", started)
     try:
         proc = subprocess.run(
@@ -1260,30 +1789,128 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
     result_path = Path(status["result_path"])
     if sha256_file(contract_path) != status["contract_sha256"] or sha256_file(result_path) != status["result_sha256"]:
         raise ContractError("worker contract or result hash changed")
+    gate_path = status.get("writing_gate_receipt")
+    writing_gate: dict[str, Any] | None = None
+    if gate_path:
+        writing_gate = validate_writing_gate_receipt(plan_dir, gate_path)
+        if sha256_file(Path(gate_path)) != status.get("writing_gate_receipt_sha256"):
+            raise ContractError("writer gate receipt changed before promotion")
     contract = read_json(contract_path)
+    if writing_gate is not None:
+        require_writer_candidate_input(
+            verify_manifest_items(contract.get("inputs", []), base_dir=plan_dir),
+            writing_gate,
+        )
+    task_id = contract.get("task_id")
+    if not isinstance(task_id, str) or status.get("task_id") != task_id:
+        raise ContractError("worker task identity changed before promotion")
     declarations = [normalize_declared_output(plan_dir, item) for item in contract["artifact_outputs"]]
+    if status.get("artifact_outputs") != declarations:
+        raise ContractError("frozen artifact capability or path changed before promotion")
+    classes = {item["capability"]["class"] for item in declarations}
+    if declarations:
+        if len(classes) != 1 or status.get("output_capability_class") != next(iter(classes)):
+            raise ContractError("frozen output capability class changed before promotion")
+    elif status.get("output_capability_class") is not None:
+        raise ContractError("empty output contract cannot carry an output capability")
+    enforce_output_capability(plan_dir, task_id, declarations, gate_path)
     envelope = read_json(result_path)
     proposals = validate_worker_artifact_proposals(envelope["result"], declarations)
+    run_dir = worker_run_dir(plan_dir, args.worker_run_id)
+    journal_path = run_dir / "promotion-journal.json"
+    stage_dir = run_dir / "promotion-stage"
+    journal = read_json(journal_path) if journal_path.exists() else None
+    if journal and journal.get("phase") == "ROLLED_BACK":
+        journal_path.unlink()
+        journal = None
+    if journal and journal.get("phase") == "COMMITTED":
+        receipt_path = run_dir / "promotion-receipt.json"
+        return {"ok": True, "idempotent": True, "promotion_receipt": str(receipt_path), **read_json(receipt_path)}
+    if journal is None:
+        # Preflight the complete destination set before creating any destination.
+        for proposal in proposals:
+            target = Path(proposal["path"])
+            if target.exists():
+                raise ContractError(f"artifact promotion refuses overwrite: {target}")
+            cursor = target.parent
+            while cursor != plan_dir.parent:
+                if cursor.is_symlink():
+                    raise ContractError("artifact promotion destination has a symlink parent")
+                if cursor == plan_dir:
+                    break
+                cursor = cursor.parent
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        staged: list[dict[str, Any]] = []
+        for index, proposal in enumerate(proposals):
+            staged_path = stage_dir / f"{index:04d}.stage"
+            staged_path.write_text(proposal["content"])
+            if sha256_file(staged_path) != proposal["sha256"]:
+                raise ContractError("staged artifact hash mismatch")
+            staged.append({
+                "artifact_id": proposal["artifact_id"], "path": proposal["path"],
+                "sha256": proposal["sha256"], "staged_path": str(staged_path),
+            })
+        journal = {
+            "schema_version": 1, "phase": "PREPARED", "worker_run_id": args.worker_run_id,
+            "contract_sha256": status["contract_sha256"], "result_sha256": status["result_sha256"],
+            "artifacts": staged, "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+    elif (
+        journal.get("worker_run_id") != args.worker_run_id
+        or journal.get("contract_sha256") != status["contract_sha256"]
+        or journal.get("result_sha256") != status["result_sha256"]
+    ):
+        raise ContractError("prepared promotion journal does not match worker output")
+
     promoted: list[dict[str, Any]] = []
-    for proposal in proposals:
-        target = Path(proposal["path"])
-        if target.exists():
-            raise ContractError(f"artifact promotion refuses overwrite: {target}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
-        temporary.write_text(proposal["content"])
-        os.replace(temporary, target)
-        if sha256_file(target) != proposal["sha256"]:
-            raise ContractError("promoted artifact hash mismatch")
-        promoted.append({"artifact_id": proposal["artifact_id"], "path": str(target), "sha256": proposal["sha256"]})
+    try:
+        for index, item in enumerate(journal["artifacts"]):
+            target = Path(item["path"])
+            staged_path = Path(item["staged_path"])
+            if target.exists():
+                if sha256_file(target) != item["sha256"] or staged_path.exists():
+                    raise ContractError(f"artifact promotion encountered destination conflict: {target}")
+            else:
+                if not staged_path.is_file() or sha256_file(staged_path) != item["sha256"]:
+                    raise ContractError("prepared promotion stage is missing or changed")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_path, target)
+            promoted.append({"artifact_id": item["artifact_id"], "path": str(target), "sha256": item["sha256"]})
+            if getattr(args, "simulate_crash_after", 0) == index + 1:
+                raise ContractError(f"simulated crash after promotion destination {index + 1}")
+    except ContractError:
+        # A deliberate crash leaves PREPARED for deterministic roll-forward.
+        if not str(sys.exc_info()[1]).startswith("simulated crash"):
+            for item in promoted:
+                target = Path(item["path"])
+                if target.is_file() and sha256_file(target) == item["sha256"]:
+                    target.unlink()
+            journal["phase"] = "ROLLED_BACK"
+            journal["rolled_back_at"] = utc_now()
+            atomic_write_json(journal_path, journal)
+        raise
     receipt = {
         "schema_version": 1, "plan_id": plan_identity(plan_dir), "worker_run_id": args.worker_run_id,
         "contract_sha256": status["contract_sha256"], "result_sha256": status["result_sha256"],
-        "approve_execution_receipt_sha256": sha256_file(transition_receipt_path(plan_dir, "approve_execution")),
+        "approve_execution_request_id": transition_receipt["request_id"],
+        "approve_execution_receipt_sha256": sha256_file(transition_receipt_path(
+            plan_dir, "approve_execution", transition_receipt["request_id"]
+        )),
         "artifacts": promoted, "promoted_at": utc_now(),
     }
-    target = worker_run_dir(plan_dir, args.worker_run_id) / "promotion-receipt.json"
+    if gate_path:
+        receipt.update({
+            "writing_gate_receipt": gate_path,
+            "writing_gate_receipt_sha256": status["writing_gate_receipt_sha256"],
+        })
+    if len(promoted) == 1:
+        receipt["primary_artifact_path"] = promoted[0]["path"]
+        receipt["primary_artifact_sha256"] = promoted[0]["sha256"]
+    target = run_dir / "promotion-receipt.json"
     atomic_write_json(target, receipt, immutable=True)
+    journal.update({"phase": "COMMITTED", "committed_at": utc_now(), "receipt_sha256": sha256_file(target)})
+    atomic_write_json(journal_path, journal)
     return {"ok": True, "promotion_receipt": str(target), **receipt}
 
 
@@ -1314,11 +1941,22 @@ def command_send_worker_message(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("messages are accepted only for RUNNING or PAUSED workers")
     if not args.message or len(args.message) > 4000:
         raise ContractError("message must contain 1..4000 characters")
+    operation_id = getattr(args, "operation_id", None)
+    messages_path = worker_status_path(plan_dir, args.worker_run_id).parent / "messages.jsonl"
+    if operation_id and messages_path.exists():
+        for line in messages_path.read_text().splitlines():
+            prior = strict_json_loads(line) if line.strip() else None
+            if isinstance(prior, dict) and prior.get("operation_id") == operation_id:
+                if prior.get("message") != args.message:
+                    raise ContractError("worker message operation identity collision")
+                return {"ok": True, "idempotent": True, "receipt": prior}
     receipt = {
         "schema_version": 1, "worker_run_id": args.worker_run_id,
         "message": args.message, "authority": "advisory_only", "ts": utc_now(),
     }
-    append_jsonl(worker_status_path(plan_dir, args.worker_run_id).parent / "messages.jsonl", receipt)
+    if operation_id:
+        receipt["operation_id"] = operation_id
+    append_jsonl(messages_path, receipt)
     return {"ok": True, "receipt": receipt}
 
 
@@ -1393,11 +2031,8 @@ def command_remove_resource(args: argparse.Namespace) -> dict[str, Any]:
     if raw_resource_path.is_symlink():
         raise ContractError("resource must be an existing regular non-symlink file")
     path = normalize_owned_path(plan_dir, str(raw_resource_path))
-    if not path.is_file():
-        raise ContractError("resource must be an existing regular non-symlink file")
-    expected_token = hashlib.sha256(
-        f"{manifest['plan_id']}\0{path}\0{resource.get('ownership_nonce', '')}".encode()
-    ).hexdigest()
+    generation = str(resource.get("ownership_generation", resource.get("ownership_nonce", "")))
+    expected_token = hashlib.sha256(f"{manifest['plan_id']}\0{path}\0{generation}".encode()).hexdigest()
     if not hmac.compare_digest(args.ownership_token, expected_token):
         raise ContractError("ownership token mismatch")
     authorization = read_json(Path(args.authorization).resolve())
@@ -1410,7 +2045,7 @@ def command_remove_resource(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("cleanup authorization must be a stored applied receipt")
     audit_path = plan_dir / "state" / "human_action_audit.jsonl"
     audit_entries = [
-        json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
+        strict_json_loads(line) for line in audit_path.read_text().splitlines() if line.strip()
     ] if audit_path.exists() else []
     audit = next((item for item in audit_entries if item.get("record_id") == authorization.get("record_id")), None)
     if audit is None or any(
@@ -1418,12 +2053,82 @@ def command_remove_resource(args: argparse.Namespace) -> dict[str, Any]:
         for field in ("plan_id", "action", "record_id", "record_sha256", "resource_id")
     ):
         raise ContractError("cleanup authorization does not match the authenticated audit")
+    journal_path = plan_dir / "state" / "cleanup_journal" / f"{authorization['record_id']}.json"
+    journal = read_json(journal_path) if journal_path.exists() else None
+    if journal and journal.get("operation_id") != getattr(args, "operation_id", None):
+        raise ContractError("cleanup recovery operation identity mismatch")
+    if journal and journal.get("phase") == "COMMITTED":
+        if not getattr(args, "operation_id", None):
+            raise ContractError("cleanup authorization was already consumed")
+        if path.exists() or path.is_symlink():
+            raise ContractError("cleanup authorization was already consumed")
+        if (
+            journal.get("plan_id") != manifest["plan_id"]
+            or journal.get("resource_id") != args.resource_id
+            or journal.get("path") != str(path)
+            or journal.get("authorization_sha256") != sha256_file(Path(args.authorization).resolve())
+            or not isinstance(journal.get("receipt"), dict)
+        ):
+            raise ContractError("committed cleanup invocation mismatch")
+        return {"ok": True, "idempotent": True, "recovered": True, "receipt": journal["receipt"]}
+    if not path.is_file():
+        if journal and journal.get("phase") == "PREPARED" and journal.get("path") == str(path):
+            if journal.get("authorization_sha256") != sha256_file(Path(args.authorization).resolve()):
+                raise ContractError("prepared cleanup authorization changed")
+            receipt = {
+                "schema_version": 1, "plan_id": manifest["plan_id"], "resource_id": args.resource_id,
+                "path": str(path), "ownership_generation": generation,
+                "content_sha256": journal["content_sha256"], "resource_identity": journal["resource_identity"],
+                "authorization_record_id": authorization["record_id"], "removed_at": utc_now(),
+            }
+            append_jsonl_once(
+                plan_dir / "state" / "cleanup_receipts.jsonl",
+                "authorization_record_id", authorization["record_id"], receipt,
+            )
+            journal.update({"phase": "COMMITTED", "committed_at": utc_now(), "receipt": receipt})
+            atomic_write_json(journal_path, journal)
+            return {"ok": True, "recovered": True, "receipt": receipt}
+        raise ContractError("resource must be an existing regular non-symlink file")
+    details = authorization.get("details", {})
+    stat = path.stat()
+    current_identity = f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+    if (
+        details.get("resource_path") != str(path)
+        or details.get("ownership_generation") != generation
+        or details.get("ownership_token") != expected_token
+        or details.get("content_sha256") != sha256_file(path)
+        or details.get("resource_identity") != current_identity
+    ):
+        raise ContractError("cleanup authorization does not bind the current resource generation")
+    if journal is None:
+        journal = {
+            "schema_version": 1, "phase": "PREPARED", "plan_id": manifest["plan_id"],
+            "resource_id": args.resource_id, "path": str(path), "resource_identity": current_identity,
+            "content_sha256": sha256_file(path), "ownership_generation": generation,
+            "authorization_record_id": authorization["record_id"],
+            "authorization_sha256": sha256_file(Path(args.authorization).resolve()),
+            "operation_id": getattr(args, "operation_id", None),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+    elif any(journal.get(key) != value for key, value in {
+        "plan_id": manifest["plan_id"], "resource_id": args.resource_id, "path": str(path),
+        "resource_identity": current_identity, "content_sha256": sha256_file(path),
+        "ownership_generation": generation, "authorization_record_id": authorization["record_id"],
+    }.items()):
+        raise ContractError("prepared cleanup no longer matches the current resource generation")
     path.unlink()
+    if getattr(args, "simulate_crash_after", None) == "unlink":
+        raise ContractError("simulated crash after resource unlink")
     receipt = {
         "schema_version": 1, "plan_id": manifest["plan_id"], "resource_id": args.resource_id,
-        "path": str(path), "authorization_record_id": authorization["record_id"], "removed_at": utc_now(),
+        "path": str(path), "ownership_generation": generation,
+        "content_sha256": journal["content_sha256"], "resource_identity": journal["resource_identity"],
+        "authorization_record_id": authorization["record_id"], "removed_at": utc_now(),
     }
     append_jsonl(plan_dir / "state" / "cleanup_receipts.jsonl", receipt)
+    journal.update({"phase": "COMMITTED", "committed_at": utc_now(), "receipt": receipt})
+    atomic_write_json(journal_path, journal)
     return {"ok": True, "receipt": receipt}
 
 
@@ -1515,9 +2220,6 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("deadline_seconds must be between 1 and 86400")
     request_id = args.request_id or f"far_{uuid.uuid4().hex}"
     target_dir = request_dir(plan_dir, request_id)
-    if target_dir.exists():
-        existing = read_json(target_dir / "request.json")
-        return {"ok": True, "idempotent": True, "request_id": request_id, "request_path": str(target_dir / "request.json"), "request_sha256": sha256_file(target_dir / "request.json"), "checkpoint": existing["checkpoint"]}
     manifest_items = []
     for raw in args.artifact:
         path_text, separator, purpose = raw.partition("::")
@@ -1535,6 +2237,19 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             f"frontier checkpoint evidence profile mismatch; missing={sorted(required_roles - set(roles))}, "
             f"extra={sorted(set(roles) - required_roles)}"
         )
+    if args.checkpoint == "CP-02":
+        promotion_item = next(item for item in manifest if item["purpose"] == "promotion_receipt")
+        promotion_path = Path(promotion_item["path"])
+        promotion = read_json(promotion_path)
+        run_id = promotion.get("worker_run_id", "")
+        if promotion_path != worker_run_dir(plan_dir, run_id) / "promotion-receipt.json":
+            raise ContractError("CP-02 promotion receipt is not canonical for its worker run")
+        promotion_journal = read_json(promotion_path.parent / "promotion-journal.json")
+        if (
+            promotion_journal.get("phase") != "COMMITTED"
+            or promotion_journal.get("receipt_sha256") != sha256_file(promotion_path)
+        ):
+            raise ContractError("CP-02 requires a COMMITTED worker promotion receipt")
     request = {
         "schema_version": SCHEMA_VERSION,
         "request_id": request_id,
@@ -1554,11 +2269,28 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             + timedelta(seconds=args.deadline_seconds)
         ).isoformat().replace("+00:00", "Z"),
     }
+    if args.checkpoint == "CP-03":
+        eligibility = pivot_eligibility(plan_dir)
+        request["pivot_epoch"] = eligibility["pivot_epoch"]
+        request["pivot_cursor"] = eligibility["pivot_cursor"]
+        request["pivot_event_ids"] = eligibility["eligible_event_ids"]
     if not request["plan_id"] or not request["objective"] or not request["decision_required"]:
         raise ContractError("plan_id, objective, and decision_required are required")
     manifest_path = plan_dir / "resource_manifest.json"
     if manifest_path.exists() and request["plan_id"] != plan_identity(plan_dir):
         raise ContractError("frontier request plan_id does not match resource manifest")
+    if target_dir.exists():
+        existing_path = target_dir / "request.json"
+        existing = read_json(existing_path)
+        request["created_at"] = existing.get("created_at")
+        request["deadline_at"] = existing.get("deadline_at")
+        if sha256_json(request) != sha256_json(existing):
+            raise ContractError("frontier request_id collision: canonical request bytes differ")
+        return {
+            "ok": True, "idempotent": True, "request_id": request_id,
+            "request_path": str(existing_path), "request_sha256": sha256_file(existing_path),
+            "request_canonical_sha256": sha256_json(existing), "checkpoint": existing["checkpoint"],
+        }
     target_dir.mkdir(parents=True, exist_ok=False)
     request_path = target_dir / "request.json"
     atomic_write_json(request_path, request, immutable=True)
@@ -1570,17 +2302,23 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         deadline_at=request["deadline_at"],
         model_policy_sha256=sha256_file(policy_path(plan_dir)),
     )
-    return {"ok": True, "request_id": request_id, "request_path": str(request_path), "request_sha256": request_hash}
+    return {
+        "ok": True, "request_id": request_id, "request_path": str(request_path),
+        "request_sha256": request_hash, "request_canonical_sha256": sha256_json(request),
+    }
 
 
-def load_request(plan_dir: Path, request_id: str) -> tuple[Path, dict[str, Any]]:
+def load_request(
+    plan_dir: Path, request_id: str, *, verify_live_manifest: bool = True,
+) -> tuple[Path, dict[str, Any]]:
     path = request_dir(plan_dir, request_id) / "request.json"
     request = read_json(path)
     if request.get("request_id") != request_id:
         raise ContractError("request correlation mismatch")
     if request.get("checkpoint") not in CHECKPOINTS:
         raise ContractError("request checkpoint is not registered")
-    verify_manifest_items(request.get("context_manifest"), base_dir=plan_dir)
+    if verify_live_manifest:
+        verify_manifest_items(request.get("context_manifest"), base_dir=plan_dir)
     return path, request
 
 
@@ -1588,8 +2326,8 @@ def extract_usage(jsonl: str) -> dict[str, int]:
     best = {"input_tokens": 0, "output_tokens": 0}
     for line in jsonl.splitlines():
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            event = strict_json_loads(line)
+        except ContractError:
             continue
         stack = [event]
         while stack:
@@ -1838,7 +2576,7 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
         "lifecycle_mutation": False,
         "controller_note": args.controller_note,
     }
-    target = transition_receipt_path(plan_dir, args.dependent_transition)
+    target = transition_receipt_path(plan_dir, args.dependent_transition, args.request_id)
     lock_path = frontier_root(plan_dir) / ".transition.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+") as lock:
@@ -1849,8 +2587,6 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("validated response hash changed while applying")
         if target.exists():
             prior = read_json(target)
-            if prior.get("request_id") != args.request_id:
-                raise ContractError("dependent transition was already applied by another request")
             transition(plan_dir, args.request_id, "APPLIED", applied_event=prior)
             return {"ok": True, "idempotent": True, "request_id": args.request_id, "state": "APPLIED", "event": prior}
         atomic_write_json(target, event, immutable=True)
@@ -1866,7 +2602,9 @@ def command_status(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_assert_transition(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    receipt = check_transition_receipt(plan_dir, args.plan_id, args.transition)
+    receipt = check_transition_receipt(
+        plan_dir, args.plan_id, args.transition, getattr(args, "request_id", None),
+    )
     current = read_json(status_path(plan_dir, receipt["request_id"]))
     response_path = request_dir(plan_dir, receipt["request_id"]) / "response.json"
     validate_frontier_response_integrity(plan_dir, receipt["request_id"], current, response_path)
@@ -1912,11 +2650,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--task-contract", required=True)
     worker.add_argument("--claude-bin", default=os.environ.get("CLAUDE_BIN", "claude"))
     worker.add_argument("--timeout", type=int, default=1800)
+    worker.add_argument("--writing-gate-receipt")
     worker.set_defaults(handler=command_dispatch_worker)
 
     promote = sub.add_parser("promote-worker-artifacts")
     promote.add_argument("--plan-dir", required=True)
     promote.add_argument("--worker-run-id", required=True)
+    promote.add_argument("--simulate-crash-after", type=int, choices=range(1, 101))
     promote.set_defaults(handler=command_promote_worker_artifacts)
 
     inspect = sub.add_parser("inspect-worker")
@@ -1948,8 +2688,11 @@ def build_parser() -> argparse.ArgumentParser:
     human.add_argument("--worker-run-id")
     human.add_argument("--resource-id")
     human.add_argument("--candidate")
+    human.add_argument("--verdict")
     human.add_argument("--tier", choices=["arxiv", "conference", "journal-q1"])
     human.add_argument("--negative-result", action="store_true")
+    human.add_argument("--authorization-proposal")
+    human.add_argument("--prepared-operation-id")
     human.set_defaults(handler=command_create_human_action)
 
     apply_human = sub.add_parser("apply-human-action")
@@ -1987,8 +2730,6 @@ def build_parser() -> argparse.ArgumentParser:
     freeze = sub.add_parser("freeze-evaluator")
     freeze.add_argument("--plan-dir", required=True)
     freeze.add_argument("--execution-receipt", required=True)
-    freeze.add_argument("--operator", required=True, choices=["gte", "lte"])
-    freeze.add_argument("--threshold", type=float, required=True)
     freeze.set_defaults(handler=command_freeze_evaluator)
 
     verdict = sub.add_parser("record-evaluator-verdict")
@@ -2042,6 +2783,7 @@ def build_parser() -> argparse.ArgumentParser:
     remove.add_argument("--resource-id", required=True)
     remove.add_argument("--ownership-token", required=True)
     remove.add_argument("--authorization", required=True)
+    remove.add_argument("--simulate-crash-after", choices=["unlink"])
     remove.set_defaults(handler=command_remove_resource)
 
     create = sub.add_parser("create-frontier-request", help="create an immutable checkpoint request")
@@ -2099,14 +2841,142 @@ def build_parser() -> argparse.ArgumentParser:
     assertion.add_argument("--plan-dir", required=True)
     assertion.add_argument("--plan-id", required=True)
     assertion.add_argument("--transition", required=True)
+    assertion.add_argument("--request-id")
     assertion.set_defaults(handler=command_assert_transition)
+    for command_parser in sub.choices.values():
+        command_parser.add_argument(
+            "--operation-id",
+            help="stable caller operation identity for exact-once subprocess reconciliation",
+        )
     return parser
+
+
+def operation_effect_path(plan_dir: Path, operation_id: str) -> Path:
+    return plan_dir / "state" / "runtime_operations" / "effects" / f"{operation_id}.json"
+
+
+def read_operation_effect(
+    plan_dir: Path, operation_id: str, request_sha256: str,
+) -> dict[str, Any] | None:
+    path = operation_effect_path(plan_dir, operation_id)
+    if not path.exists():
+        return None
+    effect = read_json(path)
+    if (
+        effect.get("operation_id") != operation_id
+        or effect.get("request_sha256") != request_sha256
+        or not isinstance(effect.get("result"), dict)
+    ):
+        raise ContractError("operation effect receipt correlation mismatch")
+    return effect["result"]
+
+
+def write_operation_effect(
+    plan_dir: Path, operation_id: str, request_sha256: str,
+    command: str, result: dict[str, Any],
+) -> None:
+    path = operation_effect_path(plan_dir, operation_id)
+    effect = {
+        "schema_version": 1,
+        "operation_id": operation_id,
+        "request_sha256": request_sha256,
+        "command": command,
+        "result": result,
+        "effect_committed_at": utc_now(),
+    }
+    if path.exists():
+        prior = read_json(path)
+        if prior.get("request_sha256") != request_sha256 or prior.get("result") != result:
+            raise ContractError("operation effect receipt collision")
+        return
+    atomic_write_json(path, effect, immutable=True)
+
+
+def reconcile_ambiguous_prepared_operation(
+    args: argparse.Namespace, plan_dir: Path, operation_id: str,
+) -> dict[str, Any]:
+    """Reconcile external delivery or re-enter an exact local durable operation."""
+    if args.command == "dispatch-worker":
+        run_id = "cwr_" + operation_id[3:35]
+        run_dir = worker_run_dir(plan_dir, run_id, must_exist=False)
+        if not run_dir.exists():
+            return {**args.handler(args), "operation_reconciled": True}
+        if run_dir.is_dir() and (run_dir / "status.json").is_file():
+            status = read_json(run_dir / "status.json")
+            if status.get("status") in TERMINAL_WORKER_STATES:
+                return {**status, "operation_reconciled": True}
+            update_worker_status(plan_dir, run_id, "PAUSED", {
+                "failure": "transport_outcome_uncertain", "reconciliation_required": True,
+            })
+        raise ContractError("worker operation is ambiguous and PAUSED; explicit reconciliation is required")
+    if args.command == "send-frontier-request":
+        with request_send_lock(plan_dir, args.request_id):
+            reconciled = reconcile_frontier_locked(plan_dir, args.request_id)
+        if not reconciled.get("ok"):
+            raise ContractError("frontier delivery is PAUSED; explicit reconciliation is required")
+        return {**reconciled, "operation_reconciled": True}
+    # The PREPARED journal and request hash freeze the exact invocation. Local
+    # handlers are required to be idempotent or own a durable recovery journal,
+    # so re-entry lets that command-specific authority converge after a crash.
+    return {**args.handler(args), "operation_reconciled": True}
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        result = args.handler(args)
+        operation_id = getattr(args, "operation_id", None)
+        if operation_id:
+            if not OPERATION_ID_RE.fullmatch(operation_id):
+                raise ContractError("operation_id must be op_ followed by 64 lowercase hex characters")
+            plan_dir = Path(args.plan_dir).resolve()
+            request = {
+                key: value for key, value in vars(args).items()
+                if key not in {"handler", "operation_id"} and value is not None
+            }
+            request_sha256 = sha256_json(request)
+            journal_path = plan_dir / "state" / "runtime_operations" / f"{operation_id}.json"
+            lock_path = plan_dir / "state" / "runtime_operations" / f".{operation_id}.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                journal = read_json(journal_path) if journal_path.exists() else None
+                if journal:
+                    if journal.get("request_sha256") != request_sha256:
+                        raise ContractError("operation_id collision: canonical command request differs")
+                    if journal.get("phase") == "COMMITTED":
+                        result = {**journal["result"], "operation_reconciled": True}
+                    else:
+                        effect_result = read_operation_effect(
+                            plan_dir, operation_id, request_sha256,
+                        )
+                        result = (
+                            {**effect_result, "operation_reconciled": True}
+                            if effect_result is not None
+                            else reconcile_ambiguous_prepared_operation(args, plan_dir, operation_id)
+                        )
+                else:
+                    atomic_write_json(journal_path, {
+                        "schema_version": 1, "operation_id": operation_id, "phase": "PREPARED",
+                        "request": request, "request_sha256": request_sha256, "prepared_at": utc_now(),
+                    })
+                    result = args.handler(args)
+                    if os.environ.get("HARNESS_FAULT_AFTER_HANDLER") == args.command:
+                        raise ContractError(f"simulated crash after {args.command} handler effects")
+                    write_operation_effect(
+                        plan_dir, operation_id, request_sha256, args.command, result,
+                    )
+                if not journal or journal.get("phase") != "COMMITTED":
+                    if read_operation_effect(plan_dir, operation_id, request_sha256) is None:
+                        write_operation_effect(
+                            plan_dir, operation_id, request_sha256, args.command, result,
+                        )
+                    atomic_write_json(journal_path, {
+                        "schema_version": 1, "operation_id": operation_id, "phase": "COMMITTED",
+                        "request": request, "request_sha256": request_sha256,
+                        "result": result, "committed_at": utc_now(),
+                    })
+        else:
+            result = args.handler(args)
     except ContractError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 20 if args.command == "check-writing-gate" else 2

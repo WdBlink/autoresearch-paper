@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Controller-owned declarative evaluator",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "operation", "metric", "source", "json_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "declarative-evaluator-v1"},
+    "operation": {"enum": ["read_finite_number"]},
+    "metric": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source": {"const": "candidate"},
+    "json_path": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    }
+  }
+}

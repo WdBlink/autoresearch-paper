@@ -41,9 +41,14 @@ method agents start optimizing. Do not design the method yet.
 
 Outputs (write to {PLAN_DIR}/state):
 - task_spec.md — concise research problem and target claim.
-- evaluator.yaml — primary metric, secondary metrics, datasets/simulators,
-  seeds, allowed statistical tests, and pass threshold.
-- success_criteria.md — human-readable PASS / FAIL / WAIVE rules.
+- evaluator.yaml — evaluator implementation inputs, secondary metrics,
+  datasets/simulators, seeds, and allowed statistical tests. Do not duplicate
+  the primary comparison boundary here.
+- metric_contract.json — the sole machine source of the primary boundary,
+  with exactly `schema_version: 1`, `metric`, `operator` (`gte` or `lte`),
+  and numeric `threshold`.
+- success_criteria.md — human-readable explanation of PASS / FAIL / WAIVE;
+  it cannot override `metric_contract.json`.
 - baseline_contract.md — baselines that must be compared, including
   strongest known baseline or SOTA when available.
 - allowed_search_space.md — what method families, data sources, and
@@ -55,10 +60,12 @@ Outputs (write to {PLAN_DIR}/state):
 - directions_tried.json — initialize {"directions":[]}.
 - candidate_registry.jsonl — create empty file.
 - scoreboard.tsv — write header row.
-- evaluator contract inputs for the controller's CP-02 and `freeze-evaluator`.
+- evaluator contract inputs and `metric_contract.json` for CP-02 and
+  `freeze-evaluator`; do not pre-create `state/evaluator_contract.json`.
 
-Gate: T3 method-design cannot start until evaluator.yaml and
-success_criteria.md exist and name a measurable primary metric.
+Gate: T3 method-design cannot start until evaluator.yaml,
+metric_contract.json, and success_criteria.md exist and CP-02 has audited the
+sole metric/operator/threshold source.
 ```
 
 ## T1 — literature-review

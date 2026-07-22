@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "workflow_kind": "claude-research-conformance-v1",
+  "flow_id": "canonical_research_conformance",
+  "required_inputs": [
+    "plan_id", "codex_bin", "claude_bin", "task_contract", "evaluator",
+    "evidence_manifest", "metric_contract", "calibration_candidate",
+    "failure_candidate_1", "failure_candidate_2", "direction_1", "direction_2",
+    "pivot_proposal", "dispute_record", "final_candidate", "normalized_brief",
+    "execution_plan", "risk_budget", "baselines", "seeds_splits",
+    "leakage_controls", "claim_evidence_map", "raw_result_manifest",
+    "uncertainty_robustness", "writer_task_contract"
+  ],
+  "terminal_artifacts": [
+    {"type": "workflow_journal", "path": "${workflow.journal}"},
+    {"type": "evaluator_contract", "path": "state/evaluator_contract.json"},
+    {"type": "evaluator_verdict", "path": "${final_verdict.verdict_path}"},
+    {"type": "structural_pivot", "path": "${apply_pivot.pivot_receipt}"},
+    {"type": "writing_gate_audit", "path": "state/writing_gate_audit.jsonl"},
+    {"type": "paper_deliverable", "path": "${writer_promote.primary_artifact_path}"},
+    {"type": "cleanup_receipt", "path": "${await_human.authorization_receipt}"}
+  ],
+  "steps": [
+    {"stage":"cp01_plan","id":"cp01_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-01","objective":"Audit the initial research plan","decision_required":"approve_execution","artifact":["${input.normalized_brief}::normalized_brief","${input.execution_plan}::execution_plan","${input.risk_budget}::risk_budget"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_cp01"}},
+    {"stage":"cp01_plan","id":"cp01_send","command":"send-frontier-request","args":{"request_id":"far_canonical_cp01","codex_bin":"${input.codex_bin}"}},
+    {"stage":"cp01_plan","id":"cp01_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_cp01"}},
+    {"stage":"cp01_plan","id":"cp01_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_cp01","dependent_transition":"approve_execution","controller_note":"initial plan audit accepted"}},
+
+    {"stage":"worker_promotion","id":"worker_dispatch","command":"dispatch-worker","args":{"task_contract":"${input.task_contract}","claude_bin":"${input.claude_bin}"}},
+    {"stage":"worker_promotion","id":"worker_promote","command":"promote-worker-artifacts","args":{"worker_run_id":"${worker_dispatch.run_id}"}},
+
+    {"stage":"cp02_evaluator","id":"cp02_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-02","objective":"Audit and freeze the evaluator","decision_required":"freeze_evaluator","artifact":["${input.evaluator}::evaluator","${input.evidence_manifest}::evidence_manifest","${input.metric_contract}::metric_contract","${input.baselines}::baselines","${input.seeds_splits}::seeds_splits","${input.leakage_controls}::leakage_controls","${input.calibration_candidate}::calibration_candidate","${worker_promote.promotion_receipt}::promotion_receipt"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_cp02"}},
+    {"stage":"cp02_evaluator","id":"cp02_send","command":"send-frontier-request","args":{"request_id":"far_canonical_cp02","codex_bin":"${input.codex_bin}"}},
+    {"stage":"cp02_evaluator","id":"cp02_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_cp02"}},
+    {"stage":"cp02_evaluator","id":"cp02_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_cp02","dependent_transition":"freeze_evaluator","controller_note":"evaluator audit accepted"}},
+    {"stage":"cp02_evaluator","id":"calibration_run","command":"run-evaluator","args":{"evaluator":"${input.evaluator}","evidence":"${input.evidence_manifest}","candidate":"${input.calibration_candidate}","purpose":"calibration"}},
+    {"stage":"cp02_evaluator","id":"freeze_evaluator","command":"freeze-evaluator","args":{"execution_receipt":"${calibration_run.execution_receipt}"}},
+
+    {"stage":"scientific_failures","id":"failure_run_1","command":"run-evaluator","args":{"evaluator":"${input.evaluator}","evidence":"${input.evidence_manifest}","candidate":"${input.failure_candidate_1}","purpose":"candidate"}},
+    {"stage":"scientific_failures","id":"failure_verdict_1","command":"record-evaluator-verdict","args":{"execution_receipt":"${failure_run_1.execution_receipt}","candidate_id":"canonical_failure_1"}},
+    {"stage":"scientific_failures","id":"failure_record_1","command":"record-failure","args":{"class":"scientific_no_improvement","direction":"${input.direction_1}","verdict":"${failure_verdict_1.verdict_path}","source":"canonical-conformance-workflow"}},
+    {"stage":"scientific_failures","id":"failure_run_2","command":"run-evaluator","args":{"evaluator":"${input.evaluator}","evidence":"${input.evidence_manifest}","candidate":"${input.failure_candidate_2}","purpose":"candidate"}},
+    {"stage":"scientific_failures","id":"failure_verdict_2","command":"record-evaluator-verdict","args":{"execution_receipt":"${failure_run_2.execution_receipt}","candidate_id":"canonical_failure_2"}},
+    {"stage":"scientific_failures","id":"failure_record_2","command":"record-failure","args":{"class":"scientific_no_improvement","direction":"${input.direction_2}","verdict":"${failure_verdict_2.verdict_path}","source":"canonical-conformance-workflow"}},
+
+    {"stage":"cp03_structural_pivot","id":"cp03_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-03","objective":"Audit the structural pivot","decision_required":"authorize_structural_pivot","artifact":["state/failure_state.json::failure_state","state/failure_state.json::direction_registry","${input.pivot_proposal}::pivot_proposal","${failure_verdict_2.verdict_path}::evaluator_verdict"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_cp03"}},
+    {"stage":"cp03_structural_pivot","id":"cp03_send","command":"send-frontier-request","args":{"request_id":"far_canonical_cp03","codex_bin":"${input.codex_bin}"}},
+    {"stage":"cp03_structural_pivot","id":"cp03_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_cp03"}},
+    {"stage":"cp03_structural_pivot","id":"cp03_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_cp03","dependent_transition":"authorize_structural_pivot","controller_note":"structural pivot accepted"}},
+    {"stage":"cp03_structural_pivot","id":"apply_pivot","command":"apply-structural-pivot","args":{"proposal":"${input.pivot_proposal}"}},
+
+    {"stage":"cp04_final_evidence_dispute","id":"dispute_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-04","checkpoint_subtype":"acceptance_dispute","objective":"Resolve the research acceptance dispute","decision_required":"resolve_acceptance_dispute","artifact":["state/evaluator_contract.json::evaluator_contract","${failure_verdict_2.verdict_path}::evaluator_verdict","${input.dispute_record}::dispute_record","${input.failure_candidate_2}::candidate"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_dispute"}},
+    {"stage":"cp04_final_evidence_dispute","id":"dispute_send","command":"send-frontier-request","args":{"request_id":"far_canonical_dispute","codex_bin":"${input.codex_bin}"}},
+    {"stage":"cp04_final_evidence_dispute","id":"dispute_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_dispute"}},
+    {"stage":"cp04_final_evidence_dispute","id":"dispute_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_dispute","dependent_transition":"resolve_acceptance_dispute","controller_note":"dispute evidence accepted"}},
+    {"stage":"cp04_final_evidence_dispute","id":"resolve_dispute","command":"resolve-acceptance-dispute","args":{"resolution":"${input.dispute_record}"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_run","command":"run-evaluator","args":{"evaluator":"${input.evaluator}","evidence":"${input.evidence_manifest}","candidate":"${input.final_candidate}","purpose":"candidate"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_verdict","command":"record-evaluator-verdict","args":{"execution_receipt":"${final_run.execution_receipt}","candidate_id":"canonical_final"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-04","checkpoint_subtype":"prewriting_final_evidence","objective":"Audit final evidence before writing","decision_required":"start_writing","artifact":["${input.final_candidate}::candidate","${input.claim_evidence_map}::claim_evidence_map","state/evaluator_contract.json::evaluator_contract","${final_verdict.verdict_path}::evaluator_verdict","${input.raw_result_manifest}::raw_result_manifest","${input.baselines}::baselines","${input.uncertainty_robustness}::uncertainty_robustness"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_final"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_send","command":"send-frontier-request","args":{"request_id":"far_canonical_final","codex_bin":"${input.codex_bin}"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_final"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_final","dependent_transition":"start_writing","controller_note":"final evidence accepted"}},
+
+    {"stage":"writing_gate","id":"writing_gate","command":"check-writing-gate","args":{"tier":"conference","verdict":"${final_verdict.verdict_path}"}},
+
+    {"stage":"post_gate_writing","id":"writer_dispatch","command":"dispatch-worker","args":{"task_contract":"${input.writer_task_contract}","claude_bin":"${input.claude_bin}","writing_gate_receipt":"${writing_gate.gate_receipt}"}},
+    {"stage":"post_gate_writing","id":"writer_promote","command":"promote-worker-artifacts","args":{"worker_run_id":"${writer_dispatch.run_id}"}},
+
+    {"stage":"patrol_stop_cleanup","id":"schedule_patrol","command":"schedule-patrol","args":{"interval_seconds":60}},
+    {"stage":"patrol_stop_cleanup","id":"run_patrol","command":"run-patrol","args":{"stale_seconds":60}},
+    {"stage":"patrol_stop_cleanup","id":"await_human","command":"await-human-actions","args":{}}
+  ]
+}

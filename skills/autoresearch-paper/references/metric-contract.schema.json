@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Frozen evaluator metric contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "metric", "operator", "threshold"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "metric": {"type": "string", "minLength": 1, "maxLength": 128},
+    "operator": {"type": "string", "enum": ["gte", "lte"]},
+    "threshold": {"type": "number"}
+  }
+}

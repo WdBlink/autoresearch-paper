@@ -56,6 +56,8 @@ for path in \
   "${ROOT_DIR}/references/frontier-response.schema.json" \
   "${ROOT_DIR}/references/human-action.schema.json" \
   "${ROOT_DIR}/references/evaluator-verdict.schema.json" \
+  "${ROOT_DIR}/references/metric-contract.schema.json" \
+  "${ROOT_DIR}/references/canonical-conformance-workflow.json" \
   "${ROOT_DIR}/references/scripts/harness-runtime.py" \
   "${ROOT_DIR}/references/scripts/run-claude-harness.py" \
   "${ROOT_DIR}/references/scripts/cleanup-plan-resources.sh" \

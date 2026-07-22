@@ -81,6 +81,10 @@ adapter provides:
 - complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
 - durable Codex transport, response validation, exact-once dependent
   transitions, timeout, and restart inspection.
+- the packaged `references/canonical-conformance-workflow.json`
+  `claude-research-conformance-v1` fixture, which rejects incomplete M1
+  conformance runs and verifies terminal artifacts. It is not the production
+  topic-to-paper trigger; that state-driven cutover remains an M5 gate.
 
 MAVIS bootstrap/watchdog scripts are compatibility fixtures. They never define
 target Harness semantics and run only through explicit legacy entry points.
@@ -131,7 +135,8 @@ Generated plans must initialize:
 - `state/candidate_registry.jsonl`
 - `state/scoreboard.tsv`
 - `state/research_acceptance.md`
-- `state/evaluator_contract.json`
+- a closed `metric_contract` input for CP-02; do not pre-create
+  `state/evaluator_contract.json` (the controller freezes it after CP-02)
 - `state/failure_state.json`
 - `control/`
 - `resource_manifest.json`
@@ -166,7 +171,8 @@ Read these modules when generating a plan:
 ## Research Gate
 
 `state/evaluator_contract.json` is frozen from a controller-executed calibration
-receipt. Candidate value and PASS/FAIL are also derived from controller-owned
+receipt and the exact CP-02-audited `metric_contract` containing metric,
+operator, and threshold. Candidate value and PASS/FAIL are also derived from controller-owned
 execution receipts. Bare `research_acceptance.md` values are never authority.
 Human waivers must be applied receipts bound to tier, candidate, evaluator
 contract, and scope; pending signed records are not authority. Negative-result
