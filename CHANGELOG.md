@@ -12,6 +12,26 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.13.0] - 2026-07-23
+
+### Added
+
+- Frozen acceptance profiles covering the exact seven T008 fault scenarios,
+  planned soak duration, required session restarts, and allowed claim kinds.
+- Evidence-bound fault and session completion receipts that reject duplicate
+  transitions, lost accepted evidence, excess overlap, unauthorized recovery,
+  insufficient restarts, or insufficient measured duration.
+- Claim validation that caps duration at the measured interval and enforces
+  minimum evidence for 24h and 7×24 labels.
+- A production-path acceptance regression executing all seven faults and a
+  real multi-process/session bounded soak.
+
+### Limitations
+
+- The committed evidence validates bounded fault and restart behavior, not
+  24-hour, 7×24, or full-cutover stability. Those labels remain mechanically
+  rejected by the shipped profile and claim gate.
+
 ## [0.12.0] - 2026-07-23
 
 ### Added

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.12.0"
+  version: "0.13.0"
 ---
 
 # Autoresearch Paper
@@ -92,6 +92,9 @@ adapter provides:
 - two-stage episode→audited-memory→proposal learning gates with replay,
   held-out/regression evidence, independent audits, and human-only evaluator
   proposal authorization;
+- seven-scenario fault evidence, real multi-session soak accounting, and
+  measured-duration claim gates that reject unsupported 24h/7×24/full-cutover
+  language;
 - complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
 - launchd-backed external registration, generation-bound tick leases,
   canonical state/event/evidence revisions, rebuildable projections, and fresh
@@ -360,6 +363,7 @@ On completion, report:
 - `references/lifecycle-contract.md` — manifest, resume, cleanup contract
 - `references/claude-code-runtime.md` — target runtime commands and migration boundary
 - `references/learning-promotion-contract.md` — two-stage audited memory and proposal gates
+- `references/fault-soak-acceptance-contract.md` — seven faults, soak evidence, and bounded claims
 - `references/frontier-response.schema.json` — Codex advisory response schema
 - `references/watchdog-prompt-template.md` — watchdog system prompt template
 - `references/first-action-last-seen.md` — hook registration contract
@@ -374,6 +378,10 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.13.0 (2026-07-23)** — Bounded T008 acceptance: all seven production
+  fault classes, multi-session restart soak accounting, evidence manifests,
+  duplicate/loss/overlap/authority checks, and measured-duration claim gates.
+  This release does not claim 24h or 7×24 stability.
 - **v0.12.0 (2026-07-23)** — Deterministic autonomy and gated learning:
   closes the existing bounded-worker/deterministic-recovery slice and adds
   two-stage audited memory/proposal promotion, rejection memory, novelty

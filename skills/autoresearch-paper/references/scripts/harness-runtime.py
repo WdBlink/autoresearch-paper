@@ -1628,6 +1628,20 @@ def record_detected_research_integrity(plan_dir: Path) -> None:
 
 
 LEARNING_TARGET_KINDS = {"skill", "policy", "spec", "evaluator"}
+ACCEPTANCE_FAULT_SCENARIOS = {
+    "process_death", "missed_tick", "duplicate_trigger", "state_corruption",
+    "budget_exhaustion", "evaluator_drift", "multi_session_restart",
+}
+ACCEPTANCE_CLAIM_KINDS = {
+    "bounded_fault_acceptance", "long_stability", "seven_by_twenty_four",
+    "full_cutover",
+}
+ACCEPTANCE_CLAIM_MINIMUM_SECONDS = {
+    "bounded_fault_acceptance": 0,
+    "long_stability": 86400,
+    "seven_by_twenty_four": 7 * 24 * 60 * 60,
+    "full_cutover": 0,
+}
 
 
 def learning_root(plan_dir: Path) -> Path:
@@ -1978,6 +1992,348 @@ def command_promote_learning_proposal(args: argparse.Namespace) -> dict[str, Any
         "proposal_receipt": str(target),
         **receipt,
     }
+
+
+def acceptance_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "acceptance"
+
+
+def acceptance_profile_path(plan_dir: Path, profile_id: Any) -> Path:
+    if (
+        not isinstance(profile_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", profile_id)
+    ):
+        raise ContractError("invalid acceptance profile_id")
+    return acceptance_root(plan_dir) / "profiles" / f"{profile_id}.json"
+
+
+def command_start_acceptance_profile(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    source_path = normalize_owned_path(
+        plan_dir, str(Path(args.profile).resolve()),
+    )
+    source = read_json(source_path)
+    if set(source) != {
+        "schema_version", "profile_id", "planned_duration_seconds",
+        "required_session_restarts", "fault_scenarios", "allowed_claims",
+    }:
+        raise ContractError("acceptance profile has an invalid closed shape")
+    fault_scenarios = source.get("fault_scenarios")
+    allowed_claims = source.get("allowed_claims")
+    if (
+        source.get("schema_version") != SCHEMA_VERSION
+        or isinstance(source.get("planned_duration_seconds"), bool)
+        or not isinstance(source.get("planned_duration_seconds"), int)
+        or not 1 <= source["planned_duration_seconds"] <= 31 * 24 * 60 * 60
+        or isinstance(source.get("required_session_restarts"), bool)
+        or not isinstance(source.get("required_session_restarts"), int)
+        or not 1 <= source["required_session_restarts"] <= 10000
+        or not isinstance(fault_scenarios, list)
+        or not all(isinstance(value, str) for value in fault_scenarios)
+        or len(fault_scenarios) != len(set(fault_scenarios))
+        or set(fault_scenarios) != ACCEPTANCE_FAULT_SCENARIOS
+        or not isinstance(allowed_claims, list)
+        or not allowed_claims
+        or not all(isinstance(value, str) for value in allowed_claims)
+        or len(allowed_claims) != len(set(allowed_claims))
+        or not set(allowed_claims).issubset(ACCEPTANCE_CLAIM_KINDS)
+    ):
+        raise ContractError("acceptance profile values are invalid or incomplete")
+    target = acceptance_profile_path(plan_dir, source["profile_id"])
+    identity = {
+        **source,
+        "plan_id": plan_identity(plan_dir),
+        "source_profile_path": str(source_path),
+        "source_profile_sha256": sha256_file(source_path),
+    }
+    if target.exists():
+        prior = read_json(target)
+        stable = {key: value for key, value in prior.items() if key != "started_at"}
+        if stable != identity:
+            raise ContractError("acceptance profile identity collision")
+        return {
+            "ok": True, "idempotent": True, "profile_path": str(target), **prior,
+        }
+    profile = {**identity, "started_at": utc_now()}
+    atomic_write_json(target, profile, immutable=True)
+    append_jsonl_once(
+        acceptance_root(plan_dir) / "profile_audit.jsonl",
+        "profile_id", profile["profile_id"], profile,
+    )
+    return {"ok": True, "profile_path": str(target), **profile}
+
+
+def load_acceptance_evidence_file(
+    plan_dir: Path, path: Path, expected_fields: set[str], name: str,
+) -> dict[str, Any]:
+    path = normalize_owned_path(plan_dir, str(path.resolve()))
+    if path.is_symlink() or not path.is_file():
+        raise ContractError(f"{name} must be an existing regular file")
+    value = read_json(path)
+    if set(value) != expected_fields:
+        raise ContractError(f"{name} has an invalid closed shape")
+    return value
+
+
+def command_complete_acceptance_profile(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    profile_path = acceptance_profile_path(plan_dir, args.profile_id)
+    profile = read_json(profile_path)
+    target = acceptance_root(plan_dir) / "completed" / f"{args.profile_id}.json"
+    if target.exists():
+        return {
+            "ok": True, "idempotent": True,
+            "acceptance_receipt": str(target), **read_json(target),
+        }
+    fault_paths = [Path(value).resolve() for value in args.fault_evidence]
+    if len(fault_paths) != len(ACCEPTANCE_FAULT_SCENARIOS):
+        raise ContractError("acceptance completion requires exactly seven fault records")
+    faults: dict[str, dict[str, Any]] = {}
+    manifest: list[dict[str, str]] = []
+    for path in fault_paths:
+        fault = load_acceptance_evidence_file(
+            plan_dir, path,
+            {
+                "schema_version", "profile_id", "scenario", "status",
+                "checks", "evidence",
+            },
+            "fault evidence",
+        )
+        scenario = fault.get("scenario")
+        if (
+            fault.get("schema_version") != SCHEMA_VERSION
+            or fault.get("profile_id") != args.profile_id
+            or scenario not in ACCEPTANCE_FAULT_SCENARIOS
+            or scenario in faults
+            or fault.get("status") != "PASS"
+            or fault.get("checks") != {
+                "authority": True,
+                "idempotency": True,
+                "recovery": True,
+                "evidence": True,
+            }
+        ):
+            raise ContractError("fault evidence did not pass the complete acceptance profile")
+        checked_evidence = verify_manifest_items(
+            fault["evidence"], base_dir=plan_dir,
+        )
+        faults[scenario] = fault
+        manifest.append({
+            "path": str(path),
+            "sha256": sha256_file(path),
+            "purpose": f"fault:{scenario}",
+        })
+        manifest.extend({
+            **item,
+            "purpose": f"fault:{scenario}:{item['purpose']}",
+        } for item in checked_evidence)
+    if set(faults) != ACCEPTANCE_FAULT_SCENARIOS:
+        raise ContractError("fault evidence does not cover the exact scenario registry")
+    session_paths = [Path(value).resolve() for value in args.session_observation]
+    required_sessions = profile["required_session_restarts"] + 1
+    if len(session_paths) < required_sessions:
+        raise ContractError("soak has fewer sessions than the frozen restart requirement")
+    sessions: list[dict[str, Any]] = []
+    for path in session_paths:
+        session = load_acceptance_evidence_file(
+            plan_dir, path,
+            {
+                "schema_version", "profile_id", "session_id", "started_at",
+                "completed_at", "new_transition_ids", "accepted_evidence_ids",
+                "max_controller_overlap", "unauthorized_recovery_actions",
+            },
+            "session observation",
+        )
+        if (
+            session.get("schema_version") != SCHEMA_VERSION
+            or session.get("profile_id") != args.profile_id
+            or not isinstance(session.get("session_id"), str)
+            or not session["session_id"]
+            or session["session_id"] in {
+                value["session_id"] for value in sessions
+            }
+            or session.get("max_controller_overlap") != 1
+            or session.get("unauthorized_recovery_actions") != 0
+            or not isinstance(session.get("new_transition_ids"), list)
+            or len(session["new_transition_ids"])
+            != len(set(session["new_transition_ids"]))
+            or not all(
+                isinstance(value, str) and value
+                for value in session["new_transition_ids"]
+            )
+            or not isinstance(session.get("accepted_evidence_ids"), list)
+            or len(session["accepted_evidence_ids"])
+            != len(set(session["accepted_evidence_ids"]))
+            or not all(
+                isinstance(value, str) and value
+                for value in session["accepted_evidence_ids"]
+            )
+        ):
+            raise ContractError("session observation violates the frozen soak contract")
+        started = parse_utc(session["started_at"])
+        completed = parse_utc(session["completed_at"])
+        if completed <= started:
+            raise ContractError("session must have a positive observed duration")
+        session["_started"] = started
+        session["_completed"] = completed
+        sessions.append(session)
+        manifest.append({
+            "path": str(path),
+            "sha256": sha256_file(path),
+            "purpose": f"session:{session['session_id']}",
+        })
+    sessions.sort(key=lambda value: value["_started"])
+    transitions: set[str] = set()
+    prior_evidence: set[str] = set()
+    for session in sessions:
+        new_transitions = set(session["new_transition_ids"])
+        if transitions & new_transitions:
+            raise ContractError("soak contains a duplicate applied transition")
+        transitions |= new_transitions
+        current_evidence = set(session["accepted_evidence_ids"])
+        if not prior_evidence.issubset(current_evidence):
+            raise ContractError("soak lost previously accepted evidence")
+        prior_evidence = current_evidence
+    overlap_events: list[tuple[datetime, int]] = []
+    for session in sessions:
+        overlap_events.extend([
+            (session["_started"], 1),
+            (session["_completed"], -1),
+        ])
+    active = 0
+    measured_max_overlap = 0
+    for _, delta in sorted(overlap_events, key=lambda item: (item[0], item[1])):
+        active += delta
+        measured_max_overlap = max(measured_max_overlap, active)
+    if measured_max_overlap > 1:
+        raise ContractError("soak observed overlapping controller sessions")
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    started_at = parse_utc(profile["started_at"])
+    if any(
+        session["_started"] < started_at
+        or session["_completed"] > completed_at + timedelta(seconds=5)
+        for session in sessions
+    ):
+        raise ContractError("session observation falls outside the measured profile interval")
+    measured_duration = int((completed_at - started_at).total_seconds())
+    if measured_duration < profile["planned_duration_seconds"]:
+        raise ContractError("soak completed before its frozen planned duration")
+    clean_sessions = [
+        {
+            key: value for key, value in session.items()
+            if not key.startswith("_")
+        }
+        for session in sessions
+    ]
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "profile_id": args.profile_id,
+        "profile_path": str(profile_path),
+        "profile_sha256": sha256_file(profile_path),
+        "status": "PASS",
+        "fault_scenarios": sorted(faults),
+        "session_ids": [value["session_id"] for value in clean_sessions],
+        "observed_session_restarts": len(clean_sessions) - 1,
+        "measured_duration_seconds": measured_duration,
+        "measured_max_controller_overlap": measured_max_overlap,
+        "applied_transition_ids": sorted(transitions),
+        "accepted_evidence_ids": sorted(prior_evidence),
+        "unauthorized_recovery_actions": 0,
+        "evidence_manifest": manifest,
+        "evidence_manifest_sha256": sha256_json(manifest),
+        "started_at": profile["started_at"],
+        "completed_at": completed_at.isoformat().replace("+00:00", "Z"),
+    }
+    atomic_write_json(target, receipt, immutable=True)
+    append_jsonl_once(
+        acceptance_root(plan_dir) / "completion_audit.jsonl",
+        "profile_id", args.profile_id, receipt,
+    )
+    return {"ok": True, "acceptance_receipt": str(target), **receipt}
+
+
+def reject_acceptance_claim(
+    plan_dir: Path, profile_id: str, claim_kind: str, reason: str,
+) -> None:
+    append_jsonl(acceptance_root(plan_dir) / "claim_rejections.jsonl", {
+        "schema_version": SCHEMA_VERSION,
+        "profile_id": profile_id,
+        "claim_kind": claim_kind,
+        "reason": reason,
+        "rejected_at": utc_now(),
+    })
+    raise ContractError(reason)
+
+
+def command_validate_acceptance_claim(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    claimed = require_non_negative_int(
+        args.claimed_duration_seconds, "claimed_duration_seconds",
+    )
+    profile_path = acceptance_profile_path(plan_dir, args.profile_id)
+    profile = read_json(profile_path)
+    receipt_path = acceptance_root(plan_dir) / "completed" / f"{args.profile_id}.json"
+    receipt = read_json(receipt_path)
+    if (
+        receipt.get("status") != "PASS"
+        or receipt.get("profile_sha256") != sha256_file(profile_path)
+        or receipt.get("evidence_manifest_sha256")
+        != sha256_json(receipt.get("evidence_manifest"))
+    ):
+        reject_acceptance_claim(
+            plan_dir, args.profile_id, args.claim_kind,
+            "acceptance receipt is missing or invalid",
+        )
+    try:
+        verify_manifest_items(receipt["evidence_manifest"], base_dir=plan_dir)
+    except ContractError:
+        reject_acceptance_claim(
+            plan_dir, args.profile_id, args.claim_kind,
+            "acceptance evidence changed after completion",
+        )
+    if args.claim_kind not in profile["allowed_claims"]:
+        reject_acceptance_claim(
+            plan_dir, args.profile_id, args.claim_kind,
+            "claim kind is not authorized by the frozen acceptance profile",
+        )
+    measured = receipt["measured_duration_seconds"]
+    if claimed > measured:
+        reject_acceptance_claim(
+            plan_dir, args.profile_id, args.claim_kind,
+            "claimed duration exceeds the completed measured interval",
+        )
+    minimum = ACCEPTANCE_CLAIM_MINIMUM_SECONDS[args.claim_kind]
+    if measured < minimum or claimed < minimum:
+        reject_acceptance_claim(
+            plan_dir, args.profile_id, args.claim_kind,
+            "measured interval does not satisfy the claim-kind minimum",
+        )
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "profile_id": args.profile_id,
+        "claim_kind": args.claim_kind,
+        "claimed_duration_seconds": claimed,
+        "measured_duration_seconds": measured,
+        "acceptance_receipt_path": str(receipt_path),
+        "acceptance_receipt_sha256": sha256_file(receipt_path),
+        "bounded_by_measured_evidence": True,
+    }
+    claim_id = f"claim_{sha256_json(identity)}"
+    target = acceptance_root(plan_dir) / "claims" / f"{claim_id}.json"
+    if target.exists():
+        return {
+            "ok": True, "idempotent": True, "claim_receipt": str(target),
+            **read_json(target),
+        }
+    claim = {**identity, "claim_id": claim_id, "validated_at": utc_now()}
+    atomic_write_json(target, claim, immutable=True)
+    append_jsonl_once(
+        acceptance_root(plan_dir) / "claim_audit.jsonl",
+        "claim_id", claim_id, claim,
+    )
+    return {"ok": True, "claim_receipt": str(target), **claim}
 
 
 def pivot_eligibility(plan_dir: Path) -> dict[str, Any]:
@@ -5428,6 +5784,33 @@ def build_parser() -> argparse.ArgumentParser:
     learning.add_argument("--auditor-identity", required=True)
     learning.add_argument("--authorization")
     learning.set_defaults(handler=command_promote_learning_proposal)
+
+    acceptance_start = sub.add_parser("start-acceptance-profile")
+    acceptance_start.add_argument("--plan-dir", required=True)
+    acceptance_start.add_argument("--profile", required=True)
+    acceptance_start.set_defaults(handler=command_start_acceptance_profile)
+
+    acceptance_complete = sub.add_parser("complete-acceptance-profile")
+    acceptance_complete.add_argument("--plan-dir", required=True)
+    acceptance_complete.add_argument("--profile-id", required=True)
+    acceptance_complete.add_argument(
+        "--fault-evidence", action="append", default=[], required=True,
+    )
+    acceptance_complete.add_argument(
+        "--session-observation", action="append", default=[], required=True,
+    )
+    acceptance_complete.set_defaults(handler=command_complete_acceptance_profile)
+
+    acceptance_claim = sub.add_parser("validate-acceptance-claim")
+    acceptance_claim.add_argument("--plan-dir", required=True)
+    acceptance_claim.add_argument("--profile-id", required=True)
+    acceptance_claim.add_argument(
+        "--claim-kind", required=True, choices=sorted(ACCEPTANCE_CLAIM_KINDS),
+    )
+    acceptance_claim.add_argument(
+        "--claimed-duration-seconds", type=int, required=True,
+    )
+    acceptance_claim.set_defaults(handler=command_validate_acceptance_claim)
 
     pivot = sub.add_parser("pivot-eligibility")
     pivot.add_argument("--plan-dir", required=True)

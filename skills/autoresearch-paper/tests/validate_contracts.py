@@ -48,6 +48,7 @@ def main() -> int:
         "references/guardian-observation.schema.json",
         "references/evaluator-admission.schema.json",
         "references/learning-promotion-contract.md",
+        "references/fault-soak-acceptance-contract.md",
         "references/canonical-conformance-workflow.json",
         "tests/test_runtime_contracts.py",
         "tests/test_claude_cutover_e2e.py",
@@ -57,6 +58,7 @@ def main() -> int:
         "tests/test_production_transport.py",
         "tests/test_scientific_truth_and_failure_routing.py",
         "tests/test_gated_learning_promotion.py",
+        "tests/test_fault_soak_acceptance.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -84,6 +86,8 @@ def main() -> int:
             "check-scientific-acceptance", "check-research-integrity",
             "promote-episode-memory", "promote-learning-proposal",
             "authorize_evaluator_change",
+            "start-acceptance-profile", "complete-acceptance-profile",
+            "validate-acceptance-claim",
             "context-capsule", "applied", "advisory",
         ),
         "Claude runtime reference must document the complete target controller",
@@ -209,8 +213,18 @@ def main() -> int:
         "test_evaluator_proposal_requires_hash_bound_human_authorization",
     ):
         require(f"def {test_name}" in learning_tests, f"missing M4 regression {test_name}", errors)
-    require('version: "0.12.0"' in read("SKILL.md"), "SKILL.md version must be 0.12.0", errors)
-    require("Current version:** v0.12.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.12.0", errors)
+    acceptance_tests = read("tests/test_fault_soak_acceptance.py")
+    require(
+        "def test_seven_faults_multisession_soak_and_bounded_claim" in acceptance_tests,
+        "missing T008 fault/soak acceptance regression", errors,
+    )
+    for scenario in (
+        "process_death", "missed_tick", "duplicate_trigger", "state_corruption",
+        "budget_exhaustion", "evaluator_drift", "multi_session_restart",
+    ):
+        require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
+    require('version: "0.13.0"' in read("SKILL.md"), "SKILL.md version must be 0.13.0", errors)
+    require("Current version:** v0.13.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.13.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -233,6 +247,10 @@ def main() -> int:
             "goal_drift", "evaluator_integrity", "freeze_controller_material",
             "command_promote_episode_memory", "command_promote_learning_proposal",
             "application_authority", "authorize_evaluator_change",
+            "command_start_acceptance_profile",
+            "command_complete_acceptance_profile",
+            "command_validate_acceptance_claim",
+            "ACCEPTANCE_FAULT_SCENARIOS",
         )),
         "harness runtime is missing run-4 safety and reconciliation contracts",
         errors,

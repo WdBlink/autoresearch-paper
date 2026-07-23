@@ -378,6 +378,14 @@ Every removal needs its own applied `cleanup_resource` receipt bound to the
 current resource generation and consumed once; aggregate destruction is
 legacy-only.
 
+## Fault, Soak, and Claim Acceptance
+
+Read `fault-soak-acceptance-contract.md` for T008. The controller freezes the
+seven-scenario profile, validates fault and multi-session evidence, and issues
+only duration-bounded claim receipts through `start-acceptance-profile`,
+`complete-acceptance-profile`, and `validate-acceptance-claim`. Short bounded
+acceptance never implies 24h, 7×24, or full-cutover evidence.
+
 ## M1 Closed Conformance Entry
 
 ```bash
