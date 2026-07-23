@@ -75,14 +75,14 @@ class DurableLoopRuntimeTests(unittest.TestCase):
                     "phase": "research",
                     "depends_on": [],
                     "task_contract": self.artifact(first_contract),
-                    "inputs": [self.artifact(task_input)],
+                    "inputs": [{**self.artifact(task_input), "purpose": "task_input"}],
                 },
                 {
                     "task_id": "second",
                     "phase": "evaluate",
                     "depends_on": ["first"],
                     "task_contract": self.artifact(second_contract),
-                    "inputs": [self.artifact(task_input)],
+                    "inputs": [{**self.artifact(task_input), "purpose": "task_input"}],
                 },
             ],
         }, indent=2))

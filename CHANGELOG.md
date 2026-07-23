@@ -12,6 +12,27 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.10.0] - 2026-07-23
+
+### Added
+
+- Capsule-bound MiniMax production dispatch with exact task-contract,
+  purpose-bearing input-manifest, state-revision, promotion, and durable
+  evidence correlation.
+- Durable Codex checkpoint request derivation from the canonical capsule and
+  exact checkpoint evidence-role profile.
+- Exact-once controller commits that admit only immutable worker promotion or
+  frontier dependent-transition receipts into the durable work-unit loop.
+- Closed production transport regressions for both worker and frontier paths.
+
+### Changed
+
+- The production procedure no longer reconstructs worker or frontier context
+  from conversation history. Generic frontier request creation remains for
+  non-durable gates such as initial CP-01 approval.
+- Codex advice remains read-only and cannot directly complete a durable task;
+  only the deterministic controller's applied transition receipt is evidence.
+
 ## [0.9.0] - 2026-07-23
 
 ### Added

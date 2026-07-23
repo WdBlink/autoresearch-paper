@@ -31,7 +31,7 @@
     "task_contract": {"$ref": "#/$defs/artifact"},
     "input_manifest": {
       "type": "array",
-      "items": {"$ref": "#/$defs/artifact"}
+      "items": {"$ref": "#/$defs/contextArtifact"}
     },
     "input_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "prior_direction_refs": {
@@ -53,6 +53,16 @@
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "contextArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "purpose"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "purpose": {"type": "string", "minLength": 1}
       }
     }
   }

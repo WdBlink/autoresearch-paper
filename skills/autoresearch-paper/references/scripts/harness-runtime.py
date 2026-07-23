@@ -1709,6 +1709,24 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         writing_gate = validate_writing_gate_receipt(plan_dir, writing_gate_path)
     enforce_output_capability(plan_dir, task_id, declarations, writing_gate_path)
     inputs = verify_manifest_items(contract.get("inputs", []), base_dir=plan_dir)
+    context_capsule_path_arg = getattr(args, "context_capsule", None)
+    context_capsule: dict[str, Any] | None = None
+    if context_capsule_path_arg:
+        context_capsule, _, _, durable_task = validate_context_capsule(
+            plan_dir, Path(context_capsule_path_arg).resolve(),
+        )
+        if (
+            context_capsule["task_id"] != task_id
+            or Path(durable_task["task_contract"]["path"]).resolve() != contract_path
+            or durable_task["task_contract"]["sha256"] != sha256_file(contract_path)
+        ):
+            raise ContractError("worker task contract is not bound to the current context capsule")
+        capsule_inputs = [
+            {"path": item["path"], "sha256": item["sha256"], "purpose": item["purpose"]}
+            for item in context_capsule["input_manifest"]
+        ]
+        if inputs != capsule_inputs:
+            raise ContractError("worker inputs are not the exact frozen context capsule manifest")
     if writing_gate is not None:
         require_writer_candidate_input(inputs, writing_gate)
     allowed_tools = contract.get("allowed_tools", [])
@@ -1730,6 +1748,11 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         prior = read_json(run_dir / "status.json")
         if prior.get("contract_sha256") != sha256_file(contract_path):
             raise ContractError("deterministic worker operation identity collision")
+        if context_capsule and (
+            prior.get("context_capsule_id") != context_capsule["capsule_id"]
+            or prior.get("context_capsule_sha256") != context_capsule["capsule_sha256"]
+        ):
+            raise ContractError("deterministic worker operation was rebound to another capsule")
         if prior.get("status") == "RUNNING":
             prior = update_worker_status(plan_dir, run_id, "PAUSED", {
                 "failure": "transport_outcome_uncertain", "reconciliation_required": True,
@@ -1746,6 +1769,7 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "artifact_outputs": declarations,
         "artifact_contract": "return proposals only; the controller validates and promotes them",
         "writing_gate": writing_gate,
+        "context_capsule": context_capsule,
     }, indent=2)
     cmd = [
         args.claude_bin, "-p", "--model", policy["worker_model"],
@@ -1771,6 +1795,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         started.update({
             "writing_gate_receipt": str(Path(writing_gate_path).resolve()),
             "writing_gate_receipt_sha256": sha256_file(Path(writing_gate_path).resolve()),
+        })
+    if context_capsule is not None:
+        started.update({
+            "context_capsule_path": str(Path(context_capsule_path_arg).resolve()),
+            "context_capsule_id": context_capsule["capsule_id"],
+            "context_capsule_sha256": context_capsule["capsule_sha256"],
+            "context_state_revision": context_capsule["state_revision"],
         })
     atomic_write_json(run_dir / "status.json", started)
     try:
@@ -1815,6 +1846,17 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
     status = read_json(worker_status_path(plan_dir, args.worker_run_id))
     if status.get("status") != "COMPLETED":
         raise ContractError("only COMPLETED worker runs can be promoted")
+    bound_capsule: dict[str, Any] | None = None
+    if status.get("context_capsule_path"):
+        bound_capsule, _, _, _ = validate_context_capsule(
+            plan_dir, Path(status["context_capsule_path"]),
+        )
+        if (
+            bound_capsule["capsule_id"] != status.get("context_capsule_id")
+            or bound_capsule["capsule_sha256"] != status.get("context_capsule_sha256")
+            or bound_capsule["state_revision"] != status.get("context_state_revision")
+        ):
+            raise ContractError("worker context capsule binding changed before promotion")
     contract_path = Path(status["contract_path"])
     result_path = Path(status["result_path"])
     if sha256_file(contract_path) != status["contract_sha256"] or sha256_file(result_path) != status["result_sha256"]:
@@ -1929,6 +1971,12 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
         )),
         "artifacts": promoted, "promoted_at": utc_now(),
     }
+    if bound_capsule is not None:
+        receipt.update({
+            "context_capsule_id": bound_capsule["capsule_id"],
+            "context_capsule_sha256": bound_capsule["capsule_sha256"],
+            "context_state_revision": bound_capsule["state_revision"],
+        })
     if gate_path:
         receipt.update({
             "writing_gate_receipt": gate_path,
@@ -1942,6 +1990,131 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
     journal.update({"phase": "COMMITTED", "committed_at": utc_now(), "receipt_sha256": sha256_file(target)})
     atomic_write_json(journal_path, journal)
     return {"ok": True, "promotion_receipt": str(target), **receipt}
+
+
+@contextmanager
+def durable_result_commit_lock(plan_dir: Path, identity: str) -> Iterator[None]:
+    lock_name = hashlib.sha256(identity.encode()).hexdigest()
+    lock_path = durable_root(plan_dir) / "commit_locks" / f"{lock_name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def command_commit_durable_worker_result(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    with durable_result_commit_lock(plan_dir, f"worker:{args.worker_run_id}"):
+        return commit_durable_worker_result_locked(args, plan_dir)
+
+
+def commit_durable_worker_result_locked(
+    args: argparse.Namespace, plan_dir: Path,
+) -> dict[str, Any]:
+    run_dir = worker_run_dir(plan_dir, args.worker_run_id)
+    target = durable_root(plan_dir) / "worker_commits" / f"{args.worker_run_id}.json"
+    if target.exists():
+        return {"ok": True, "idempotent": True, **read_json(target)}
+    status = read_json(run_dir / "status.json")
+    if not status.get("context_capsule_path"):
+        raise ContractError("worker run is not bound to a durable context capsule")
+    promotion_path = run_dir / "promotion-receipt.json"
+    promotion = read_json(promotion_path)
+    journal = read_json(run_dir / "promotion-journal.json")
+    if (
+        journal.get("phase") != "COMMITTED"
+        or journal.get("receipt_sha256") != sha256_file(promotion_path)
+        or promotion.get("context_capsule_id") != status.get("context_capsule_id")
+        or promotion.get("context_capsule_sha256") != status.get("context_capsule_sha256")
+    ):
+        raise ContractError("durable worker commit requires a matching committed promotion")
+    result_path = durable_root(plan_dir) / "controller_results" / f"{args.worker_run_id}.json"
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "capsule_id": status["context_capsule_id"],
+        "task_id": status["task_id"],
+        "evidence": [{
+            "path": str(promotion_path),
+            "sha256": sha256_file(promotion_path),
+        }],
+    }
+    if result_path.exists():
+        if read_json(result_path) != result:
+            raise ContractError("durable worker controller-result identity collision")
+    else:
+        atomic_write_json(result_path, result, immutable=True)
+    commit_journal_path = run_dir / "durable-commit-journal.json"
+    commit_journal = read_json(commit_journal_path) if commit_journal_path.exists() else None
+    if commit_journal is None:
+        commit_journal = {
+            "schema_version": SCHEMA_VERSION,
+            "phase": "PREPARED",
+            "worker_run_id": args.worker_run_id,
+            "capsule_id": status["context_capsule_id"],
+            "promotion_receipt_sha256": sha256_file(promotion_path),
+            "controller_result_path": str(result_path),
+            "controller_result_sha256": sha256_file(result_path),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(commit_journal_path, commit_journal)
+    elif any(
+        commit_journal.get(field) != expected for field, expected in (
+            ("worker_run_id", args.worker_run_id),
+            ("capsule_id", status["context_capsule_id"]),
+            ("promotion_receipt_sha256", sha256_file(promotion_path)),
+            ("controller_result_sha256", sha256_file(result_path)),
+        )
+    ):
+        raise ContractError("durable worker commit journal correlation mismatch")
+    applied: dict[str, Any] | None = None
+    evidence_root = durable_root(plan_dir) / "evidence"
+    if evidence_root.exists():
+        for evidence_path in evidence_root.glob("evidence_*.json"):
+            evidence = read_json(evidence_path)
+            if (
+                evidence.get("capsule_id") == status["context_capsule_id"]
+                and evidence.get("result_path") == str(result_path)
+                and evidence.get("result_sha256") == sha256_file(result_path)
+            ):
+                applied = {
+                    "ok": True,
+                    "recovered": True,
+                    "evidence_record": str(evidence_path),
+                    "evidence_id": evidence["evidence_id"],
+                    "projection": read_json(durable_root(plan_dir) / "projection.json"),
+                }
+                break
+    if applied is None:
+        applied = command_apply_work_unit_result(argparse.Namespace(
+            plan_dir=str(plan_dir),
+            capsule=status["context_capsule_path"],
+            result=str(result_path),
+        ))
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "worker_run_id": args.worker_run_id,
+        "capsule_id": status["context_capsule_id"],
+        "capsule_sha256": status["context_capsule_sha256"],
+        "promotion_receipt_path": str(promotion_path),
+        "promotion_receipt_sha256": sha256_file(promotion_path),
+        "evidence_id": applied["evidence_id"],
+        "evidence_record": applied["evidence_record"],
+        "state_revision": applied["projection"]["state_revision"],
+        "committed_at": utc_now(),
+    }
+    atomic_write_json(target, receipt, immutable=True)
+    commit_journal.update({
+        "phase": "COMMITTED",
+        "commit_receipt_path": str(target),
+        "commit_receipt_sha256": sha256_file(target),
+        "committed_at": receipt["committed_at"],
+    })
+    atomic_write_json(commit_journal_path, commit_journal)
+    return {"ok": True, "commit_receipt": str(target), **receipt}
 
 
 def command_inspect_worker(args: argparse.Namespace) -> dict[str, Any]:
@@ -2048,9 +2221,17 @@ def durable_loop_lock(plan_dir: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def durable_artifact(plan_dir: Path, raw: Any, name: str) -> dict[str, str]:
-    if not isinstance(raw, dict) or set(raw) != {"path", "sha256"}:
-        raise ContractError(f"{name} must contain exactly path and sha256")
+def durable_artifact(
+    plan_dir: Path,
+    raw: Any,
+    name: str,
+    *,
+    require_purpose: bool = False,
+) -> dict[str, str]:
+    expected_fields = {"path", "sha256", "purpose"} if require_purpose else {"path", "sha256"}
+    if not isinstance(raw, dict) or set(raw) != expected_fields:
+        suffix = ", sha256, and purpose" if require_purpose else " and sha256"
+        raise ContractError(f"{name} must contain exactly path{suffix}")
     if not isinstance(raw.get("path"), str) or not isinstance(raw.get("sha256"), str):
         raise ContractError(f"{name} path and sha256 must be strings")
     unresolved = Path(raw["path"])
@@ -2064,7 +2245,13 @@ def durable_artifact(plan_dir: Path, raw: Any, name: str) -> dict[str, str]:
     digest = sha256_file(path)
     if digest != raw["sha256"]:
         raise ContractError(f"{name} hash mismatch")
-    return {"path": str(path), "sha256": digest}
+    result = {"path": str(path), "sha256": digest}
+    if require_purpose:
+        purpose = raw.get("purpose")
+        if not isinstance(purpose, str) or not purpose:
+            raise ContractError(f"{name} purpose must be a non-empty string")
+        result["purpose"] = purpose
+    return result
 
 
 def validate_durable_graph(plan_dir: Path, raw: dict[str, Any]) -> dict[str, Any]:
@@ -2114,7 +2301,10 @@ def validate_durable_graph(plan_dir: Path, raw: dict[str, Any]) -> dict[str, Any
                 plan_dir, task["task_contract"], f"tasks[{index}].task_contract",
             ),
             "inputs": [
-                durable_artifact(plan_dir, item, f"tasks[{index}].inputs[{input_index}]")
+                durable_artifact(
+                    plan_dir, item, f"tasks[{index}].inputs[{input_index}]",
+                    require_purpose=True,
+                )
                 for input_index, item in enumerate(inputs)
             ],
         })
@@ -2380,7 +2570,7 @@ def validate_live_durable_artifacts(
     if task is not None:
         durable_artifact(plan_dir, task["task_contract"], "task_contract")
         for index, item in enumerate(task["inputs"]):
-            durable_artifact(plan_dir, item, f"task input {index}")
+            durable_artifact(plan_dir, item, f"task input {index}", require_purpose=True)
 
 
 def evaluator_admission_root(plan_dir: Path) -> Path:
@@ -3743,6 +3933,22 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             + timedelta(seconds=args.deadline_seconds)
         ).isoformat().replace("+00:00", "Z"),
     }
+    context_capsule_arg = getattr(args, "context_capsule", None)
+    if context_capsule_arg:
+        capsule, _, _, _ = validate_context_capsule(
+            plan_dir, Path(context_capsule_arg).resolve(),
+        )
+        if manifest != capsule["input_manifest"]:
+            raise ContractError(
+                "frontier context manifest is not the exact frozen context capsule manifest"
+            )
+        request["durable_context"] = {
+            "capsule_path": str(Path(context_capsule_arg).resolve()),
+            "capsule_id": capsule["capsule_id"],
+            "capsule_sha256": capsule["capsule_sha256"],
+            "state_revision": capsule["state_revision"],
+            "task_id": capsule["task_id"],
+        }
     if args.checkpoint == "CP-03":
         eligibility = pivot_eligibility(plan_dir)
         request["pivot_epoch"] = eligibility["pivot_epoch"]
@@ -3780,6 +3986,84 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True, "request_id": request_id, "request_path": str(request_path),
         "request_sha256": request_hash, "request_canonical_sha256": sha256_json(request),
     }
+
+
+def validate_request_durable_context(
+    plan_dir: Path, request: dict[str, Any], *, require_current: bool,
+) -> dict[str, Any] | None:
+    binding = request.get("durable_context")
+    if binding is None:
+        return None
+    if not isinstance(binding, dict) or set(binding) != {
+        "capsule_path", "capsule_id", "capsule_sha256", "state_revision", "task_id",
+    }:
+        raise ContractError("frontier durable context binding has an invalid closed shape")
+    capsule_path = Path(binding["capsule_path"])
+    if require_current:
+        capsule, _, _, _ = validate_context_capsule(plan_dir, capsule_path)
+    else:
+        expected_root = (durable_root(plan_dir) / "capsules").resolve()
+        try:
+            capsule_path.resolve().relative_to(expected_root)
+        except ValueError as exc:
+            raise ContractError(
+                "frontier context capsule is outside canonical durable state"
+            ) from exc
+        capsule = read_json(capsule_path)
+        validate_schema(capsule, read_json(CONTEXT_CAPSULE_SCHEMA))
+        if capsule_path.resolve() != context_capsule_path(
+            plan_dir, capsule["capsule_id"],
+        ).resolve():
+            raise ContractError("frontier context capsule path/identity mismatch")
+        body = {key: value for key, value in capsule.items() if key != "capsule_sha256"}
+        if capsule.get("capsule_sha256") != sha256_json(body):
+            raise ContractError("frontier context capsule hash changed")
+    if capsule.get("plan_id") != request.get("plan_id"):
+        raise ContractError("frontier context capsule belongs to another plan")
+    checks = {
+        "capsule_id": capsule["capsule_id"],
+        "capsule_sha256": capsule["capsule_sha256"],
+        "state_revision": capsule["state_revision"],
+        "task_id": capsule["task_id"],
+    }
+    if any(binding.get(field) != expected for field, expected in checks.items()):
+        raise ContractError("frontier request was rebound to another durable context")
+    return capsule
+
+
+def command_create_durable_request(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    capsule, _, _, _ = validate_context_capsule(
+        plan_dir, Path(args.context_capsule).resolve(),
+    )
+    key = (args.checkpoint, args.checkpoint_subtype)
+    required_roles = CHECKPOINT_EVIDENCE_PROFILES.get(key)
+    if required_roles is None:
+        raise ContractError("checkpoint/subtype is not registered")
+    manifest = capsule["input_manifest"]
+    roles = [item["purpose"] for item in manifest]
+    if len(roles) != len(set(roles)) or set(roles) != required_roles:
+        raise ContractError(
+            f"durable capsule evidence profile mismatch; missing={sorted(required_roles - set(roles))}, "
+            f"extra={sorted(set(roles) - required_roles)}"
+        )
+    forwarded = argparse.Namespace(
+        plan_dir=str(plan_dir),
+        plan_id=capsule["plan_id"],
+        checkpoint=args.checkpoint,
+        checkpoint_subtype=args.checkpoint_subtype,
+        attempt=args.attempt,
+        objective=args.objective,
+        decision_required=args.decision_required,
+        artifact=[f"{item['path']}::{item['purpose']}" for item in manifest],
+        constraint=args.constraint,
+        max_input_tokens=args.max_input_tokens,
+        max_output_tokens=args.max_output_tokens,
+        request_id=args.request_id,
+        deadline_seconds=args.deadline_seconds,
+        context_capsule=str(Path(args.context_capsule).resolve()),
+    )
+    return command_create_request(forwarded)
 
 
 def load_request(
@@ -3842,6 +4126,9 @@ def validate_frontier_response_integrity(
     plan_dir: Path, request_id: str, current: dict[str, Any], response_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     request_path, request = load_request(plan_dir, request_id)
+    validate_request_durable_context(
+        plan_dir, request, require_current=current.get("state") != "APPLIED",
+    )
     response = read_json(response_path)
     validate_schema(response, read_json(RESPONSE_SCHEMA))
     registry = CHECKPOINTS[request["checkpoint"]]
@@ -3921,6 +4208,9 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
         policy = load_policy(plan_dir)
         request_path, request = load_request(plan_dir, args.request_id)
         current = read_json(status_path(plan_dir, args.request_id))
+        validate_request_durable_context(
+            plan_dir, request, require_current=current.get("state") != "APPLIED",
+        )
         if current["state"] in {"RECEIVED", "VALIDATED", "APPLIED"}:
             return {"ok": True, "idempotent": True, **current}
         if current["state"] in {"SENT", "WAITING"}:
@@ -4069,6 +4359,139 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "request_id": args.request_id, "state": "APPLIED", "event": event}
 
 
+def command_commit_durable_frontier_result(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    with durable_result_commit_lock(plan_dir, f"frontier:{args.request_id}"):
+        return commit_durable_frontier_result_locked(args, plan_dir)
+
+
+def commit_durable_frontier_result_locked(
+    args: argparse.Namespace, plan_dir: Path,
+) -> dict[str, Any]:
+    target = durable_root(plan_dir) / "frontier_commits" / f"{args.request_id}.json"
+    if target.exists():
+        return {"ok": True, "idempotent": True, **read_json(target)}
+    request_path, request = load_request(plan_dir, args.request_id)
+    capsule = validate_request_durable_context(
+        plan_dir, request, require_current=True,
+    )
+    if capsule is None:
+        raise ContractError("frontier request is not bound to a durable context capsule")
+    current = read_json(status_path(plan_dir, args.request_id))
+    if current.get("state") != "APPLIED":
+        raise ContractError("durable frontier commit requires an APPLIED controller transition")
+    registry_key = (request["checkpoint"], request.get("checkpoint_subtype"))
+    expected = DEPENDENT_TRANSITIONS.get(registry_key)
+    if expected is None:
+        raise ContractError("frontier request has no registered dependent transition")
+    applied_event = current.get("applied_event")
+    if (
+        not isinstance(applied_event, dict)
+        or applied_event.get("transition") != expected[0]
+        or applied_event.get("request_id") != args.request_id
+        or applied_event.get("request_sha256") != sha256_file(request_path)
+        or applied_event.get("lifecycle_mutation") is not False
+        or applied_event.get("advisory_only") is not True
+    ):
+        raise ContractError("frontier APPLIED state is not bound to the registered controller transition")
+    transition_path = transition_receipt_path(
+        plan_dir, expected[0], args.request_id,
+    )
+    if not transition_path.is_file() or read_json(transition_path) != applied_event:
+        raise ContractError("canonical frontier transition receipt is missing or changed")
+    result_path = (
+        durable_root(plan_dir) / "controller_results"
+        / f"frontier-{args.request_id}.json"
+    )
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "capsule_id": capsule["capsule_id"],
+        "task_id": capsule["task_id"],
+        "evidence": [{
+            "path": str(transition_path),
+            "sha256": sha256_file(transition_path),
+        }],
+    }
+    if result_path.exists():
+        if read_json(result_path) != result:
+            raise ContractError("durable frontier controller-result identity collision")
+    else:
+        atomic_write_json(result_path, result, immutable=True)
+    run_dir = request_dir(plan_dir, args.request_id)
+    journal_path = run_dir / "durable-commit-journal.json"
+    journal = read_json(journal_path) if journal_path.exists() else None
+    if journal is None:
+        journal = {
+            "schema_version": SCHEMA_VERSION,
+            "phase": "PREPARED",
+            "request_id": args.request_id,
+            "capsule_id": capsule["capsule_id"],
+            "transition": expected[0],
+            "transition_receipt_sha256": sha256_file(transition_path),
+            "controller_result_path": str(result_path),
+            "controller_result_sha256": sha256_file(result_path),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+    elif any(
+        journal.get(field) != value for field, value in (
+            ("request_id", args.request_id),
+            ("capsule_id", capsule["capsule_id"]),
+            ("transition", expected[0]),
+            ("transition_receipt_sha256", sha256_file(transition_path)),
+            ("controller_result_sha256", sha256_file(result_path)),
+        )
+    ):
+        raise ContractError("durable frontier commit journal correlation mismatch")
+    applied: dict[str, Any] | None = None
+    evidence_root = durable_root(plan_dir) / "evidence"
+    if evidence_root.exists():
+        for evidence_path in evidence_root.glob("evidence_*.json"):
+            evidence = read_json(evidence_path)
+            if (
+                evidence.get("capsule_id") == capsule["capsule_id"]
+                and evidence.get("result_path") == str(result_path)
+                and evidence.get("result_sha256") == sha256_file(result_path)
+            ):
+                applied = {
+                    "ok": True,
+                    "recovered": True,
+                    "evidence_record": str(evidence_path),
+                    "evidence_id": evidence["evidence_id"],
+                    "projection": read_json(durable_root(plan_dir) / "projection.json"),
+                }
+                break
+    if applied is None:
+        applied = command_apply_work_unit_result(argparse.Namespace(
+            plan_dir=str(plan_dir),
+            capsule=request["durable_context"]["capsule_path"],
+            result=str(result_path),
+        ))
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "request_id": args.request_id,
+        "capsule_id": capsule["capsule_id"],
+        "capsule_sha256": capsule["capsule_sha256"],
+        "transition": expected[0],
+        "transition_receipt_path": str(transition_path),
+        "transition_receipt_sha256": sha256_file(transition_path),
+        "evidence_id": applied["evidence_id"],
+        "evidence_record": applied["evidence_record"],
+        "state_revision": applied["projection"]["state_revision"],
+        "committed_at": utc_now(),
+    }
+    atomic_write_json(target, receipt, immutable=True)
+    journal.update({
+        "phase": "COMMITTED",
+        "commit_receipt_path": str(target),
+        "commit_receipt_sha256": sha256_file(target),
+        "committed_at": receipt["committed_at"],
+    })
+    atomic_write_json(journal_path, journal)
+    return {"ok": True, "commit_receipt": str(target), **receipt}
+
+
 def command_status(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     return read_json(status_path(plan_dir, args.request_id))
@@ -4125,6 +4548,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--claude-bin", default=os.environ.get("CLAUDE_BIN", "claude"))
     worker.add_argument("--timeout", type=int, default=1800)
     worker.add_argument("--writing-gate-receipt")
+    worker.add_argument("--context-capsule")
     worker.set_defaults(handler=command_dispatch_worker)
 
     promote = sub.add_parser("promote-worker-artifacts")
@@ -4132,6 +4556,11 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--worker-run-id", required=True)
     promote.add_argument("--simulate-crash-after", type=int, choices=range(1, 101))
     promote.set_defaults(handler=command_promote_worker_artifacts)
+
+    commit_worker = sub.add_parser("commit-durable-worker-result")
+    commit_worker.add_argument("--plan-dir", required=True)
+    commit_worker.add_argument("--worker-run-id", required=True)
+    commit_worker.set_defaults(handler=command_commit_durable_worker_result)
 
     inspect = sub.add_parser("inspect-worker")
     inspect.add_argument("--plan-dir", required=True)
@@ -4374,7 +4803,26 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--max-output-tokens", type=int, required=True)
     create.add_argument("--request-id")
     create.add_argument("--deadline-seconds", type=int, default=1800)
+    create.add_argument("--context-capsule")
     create.set_defaults(handler=command_create_request)
+
+    create_durable = sub.add_parser(
+        "create-durable-frontier-request",
+        help="derive an immutable checkpoint request from the current durable capsule",
+    )
+    create_durable.add_argument("--plan-dir", required=True)
+    create_durable.add_argument("--context-capsule", required=True)
+    create_durable.add_argument("--checkpoint", required=True)
+    create_durable.add_argument("--checkpoint-subtype")
+    create_durable.add_argument("--attempt", type=int, default=1)
+    create_durable.add_argument("--objective", required=True)
+    create_durable.add_argument("--decision-required", required=True)
+    create_durable.add_argument("--constraint", action="append", default=[])
+    create_durable.add_argument("--max-input-tokens", type=int, required=True)
+    create_durable.add_argument("--max-output-tokens", type=int, required=True)
+    create_durable.add_argument("--request-id")
+    create_durable.add_argument("--deadline-seconds", type=int, default=1800)
+    create_durable.set_defaults(handler=command_create_durable_request)
 
     send = sub.add_parser("send-frontier-request", help="reserve budget and call Codex")
     send.add_argument("--plan-dir", required=True)
@@ -4399,6 +4847,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--controller-note", required=True)
     apply.add_argument("--dependent-transition", required=True)
     apply.set_defaults(handler=command_apply_response)
+
+    commit_frontier = sub.add_parser("commit-durable-frontier-result")
+    commit_frontier.add_argument("--plan-dir", required=True)
+    commit_frontier.add_argument("--request-id", required=True)
+    commit_frontier.set_defaults(handler=command_commit_durable_frontier_result)
 
     status = sub.add_parser("frontier-status", help="read durable checkpoint state")
     status.add_argument("--plan-dir", required=True)

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.9.0"
+  version: "0.10.0"
 ---
 
 # Autoresearch Paper
@@ -60,6 +60,9 @@ at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent t
 write watchdog-system-prompt.md from references/watchdog-prompt-template.md
 schedule and run deterministic file-backed patrol through harness-runtime.py
 initialize the canonical durable task graph and register its external trigger
+advance one canonical work unit and dispatch only from its fresh context capsule
+for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
+for Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
     observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
@@ -92,6 +95,8 @@ adapter provides:
   pre-authorized lifecycle actions;
 - durable Codex transport, response validation, exact-once dependent
   transitions, timeout, and restart inspection.
+- capsule-bound production dispatch for both MiniMax and Codex, with exact
+  task/manifest/revision correlation and controller-only durable commits.
 - the packaged `references/canonical-conformance-workflow.json`
   `claude-research-conformance-v1` fixture, which rejects incomplete M1
   conformance runs and verifies terminal artifacts. It is not the production
@@ -363,6 +368,10 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.10.0 (2026-07-23)** — Production transport cutover: canonical context
+  capsules now bind MiniMax task contracts and inputs, derive Codex checkpoint
+  manifests, and admit only controller promotion/transition receipts into the
+  durable evidence loop with exact-once commit recovery.
 - **v0.9.0 (2026-07-23)** — Durable production loop and evaluator admission:
   launchd registration, generation-bound tick claims, canonical revisions and
   projections, fresh context capsules, metadata-only Guardian recovery, and

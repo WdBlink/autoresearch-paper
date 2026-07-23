@@ -53,6 +53,7 @@ def main() -> int:
         "tests/test_runtime_v2_security.py",
         "tests/test_durable_loop_runtime.py",
         "tests/test_evaluator_admission.py",
+        "tests/test_production_transport.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -75,7 +76,9 @@ def main() -> int:
             "run-evaluator", "register-durable-trigger", "init-durable-plan",
             "apply-work-unit-result", "apply-guardian-proposal",
             "guardian-validate-lifecycle", "admit-evaluator",
-            "check-autonomy-eligibility", "applied", "advisory",
+            "check-autonomy-eligibility", "create-durable-frontier-request",
+            "commit-durable-frontier-result", "commit-durable-worker-result",
+            "context-capsule", "applied", "advisory",
         ),
         "Claude runtime reference must document the complete target controller",
         errors,
@@ -182,8 +185,14 @@ def main() -> int:
         "test_typed_failures_runtime_operations_and_owned_cleanup",
     ):
         require(f"def {test_name}" in runtime_tests, f"missing restored runtime regression {test_name}", errors)
-    require('version: "0.9.0"' in read("SKILL.md"), "SKILL.md version must be 0.9.0", errors)
-    require("Current version:** v0.9.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.9.0", errors)
+    production_tests = read("tests/test_production_transport.py")
+    for test_name in (
+        "test_minimax_worker_is_capsule_bound_and_commits_exactly_once",
+        "test_codex_frontier_is_capsule_derived_advisory_and_exact_once",
+    ):
+        require(f"def {test_name}" in production_tests, f"missing T007 regression {test_name}", errors)
+    require('version: "0.10.0"' in read("SKILL.md"), "SKILL.md version must be 0.10.0", errors)
+    require("Current version:** v0.10.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.10.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -200,6 +209,8 @@ def main() -> int:
             "pivot_epoch", "consumed_event_ids", "writing_gate_receipt",
             "operation_effect_path", "reconcile_ambiguous_prepared_operation",
             "claim_tick_locked", "commit_durable_revision", "validate_context_capsule",
+            "command_create_durable_request", "command_commit_durable_worker_result",
+            "command_commit_durable_frontier_result", "validate_request_durable_context",
         )),
         "harness runtime is missing run-4 safety and reconciliation contracts",
         errors,

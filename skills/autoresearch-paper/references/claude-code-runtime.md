@@ -60,8 +60,10 @@ Allowed tools are limited to `Read`, `Glob`, `Grep`, `WebSearch`, and
 
 ```bash
 python3 references/scripts/harness-runtime.py dispatch-worker \
-  --plan-dir PLAN --task-contract task.json
+  --plan-dir PLAN --task-contract task.json --context-capsule CAPSULE
 python3 references/scripts/harness-runtime.py promote-worker-artifacts \
+  --plan-dir PLAN --worker-run-id RUN
+python3 references/scripts/harness-runtime.py commit-durable-worker-result \
   --plan-dir PLAN --worker-run-id RUN
 python3 references/scripts/harness-runtime.py inspect-worker \
   --plan-dir PLAN --worker-run-id RUN
@@ -76,6 +78,13 @@ CP-01 `approve_execution`. Messages are durable, advisory, and queued for the
 next controller observation; they are not a live channel to an executing
 process. `wait-worker` polls every 100ms and
 returns non-zero for `FAILED`, `PAUSED`, `CANCELLED`, or deadline expiry.
+
+On the production durable path, `--context-capsule` is required by the
+controller procedure. The runtime revalidates that the capsule is the current
+claimed work unit and that its task contract and complete purpose-bearing input
+manifest exactly match the worker contract. Promotion repeats that validation.
+Only the immutable controller promotion receipt becomes durable work-unit
+evidence; worker output never advances the task graph directly.
 
 ## Authenticated Human Actions
 
@@ -259,6 +268,34 @@ The registry and dependent transitions are fixed:
 | CP-04 | `acceptance_dispute` | `accept` | `resolve_acceptance_dispute` |
 | CP-04 | `prewriting_final_evidence` | `accept` | `start_writing` |
 
+For a checkpoint that is itself a durable work unit, derive the request from
+the current capsule. Do not reconstruct its context from chat history:
+
+```bash
+python3 references/scripts/harness-runtime.py create-durable-frontier-request \
+  --plan-dir PLAN --context-capsule CAPSULE --checkpoint CP-04 \
+  --checkpoint-subtype acceptance_dispute --attempt 1 \
+  --objective "resolve bounded evidence dispute" \
+  --decision-required resolve_acceptance_dispute \
+  --max-input-tokens 20000 --max-output-tokens 5000
+python3 references/scripts/harness-runtime.py send-frontier-request \
+  --plan-dir PLAN --request-id FAR_ID
+python3 references/scripts/harness-runtime.py validate-frontier-response \
+  --plan-dir PLAN --request-id FAR_ID
+python3 references/scripts/harness-runtime.py apply-frontier-response \
+  --plan-dir PLAN --request-id FAR_ID \
+  --dependent-transition resolve_acceptance_dispute \
+  --controller-note "bounded evidence accepted"
+python3 references/scripts/harness-runtime.py commit-durable-frontier-result \
+  --plan-dir PLAN --request-id FAR_ID
+```
+
+The capsule must expose exactly the registered checkpoint evidence roles.
+Create, send, validate, and apply recheck the immutable request/capsule
+correlation. Codex remains read-only and advisory: durable completion consumes
+the controller-issued dependent-transition receipt, never the response itself.
+The commit journal recovers an applied work-unit result without duplication.
+
 ```bash
 python3 references/scripts/harness-runtime.py create-frontier-request \
   --plan-dir PLAN --plan-id PLAN_ID --checkpoint CP-01 \
@@ -283,7 +320,9 @@ python3 references/scripts/harness-runtime.py assert-transition \
 Responses bind plan ID, checkpoint, subtype, request hash, canonical context
 manifest hash, model, and observed transport usage. Apply is exact-once and
 writes a transition receipt. `assert-transition` rechecks request, response,
-context, and every current artifact hash after restart.
+context, and every current artifact hash after restart. The generic
+`create-frontier-request` form remains available for non-durable gates such as
+the initial CP-01 approval.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
 `status=completed`, no blockers or critical findings, and evidence citations
