@@ -12,6 +12,27 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.0] - 2026-07-23
+
+### Added
+
+- Two-stage episode-to-audited-memory and memory-to-proposal promotion with
+  identical replay, held-out/regression validation, and independent audits at
+  both boundaries.
+- Skill-defect versus execution-lapse diagnosis, persistent rejected receipts,
+  and a registry preventing rejected identical proposal bytes from returning
+  as unreviewed novelty.
+- Proposal-bound `authorize_evaluator_change` human actions.
+
+### Security
+
+- Learning receipts are proposal-only and explicitly carry no application
+  authority. No command automatically edits skills, policy, specs, or
+  evaluators.
+- Learning gate evidence and auditor identity are excluded from worker-owned
+  namespaces; evaluator proposals require an applied authenticated human
+  receipt bound to the exact bytes.
+
 ## [0.11.0] - 2026-07-23
 
 ### Added

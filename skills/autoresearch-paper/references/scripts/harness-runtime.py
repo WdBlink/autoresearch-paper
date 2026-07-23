@@ -49,7 +49,7 @@ DEPENDENT_TRANSITIONS = {
 }
 HUMAN_ACTIONS = {
     "pause", "resume", "stop", "cancel_worker", "waive_acceptance",
-    "override_acceptance", "cleanup_resource",
+    "override_acceptance", "cleanup_resource", "authorize_evaluator_change",
 }
 INTEGRITY_FAILURE_CLASSES = {"goal_drift", "evaluator_integrity"}
 FAILURE_CLASSES = {
@@ -598,6 +598,23 @@ def command_create_human_action(args: argparse.Namespace) -> dict[str, Any]:
         })
         if args.negative_result and args.tier != "arxiv":
             raise ContractError("negative-result waiver is arxiv-only")
+    if args.action == "authorize_evaluator_change":
+        if not args.learning_proposal:
+            raise ContractError(
+                "authorize_evaluator_change requires --learning-proposal"
+            )
+        proposal_path = normalize_owned_path(
+            plan_dir, str(Path(args.learning_proposal).resolve()),
+        )
+        if proposal_path.is_symlink() or not proposal_path.is_file():
+            raise ContractError(
+                "evaluator-change proposal must be an existing regular file"
+            )
+        details.update({
+            "learning_proposal_path": str(proposal_path),
+            "learning_proposal_sha256": sha256_file(proposal_path),
+            "learning_target_kind": "evaluator",
+        })
     payload = {
         "schema_version": 1,
         "record_id": record_id,
@@ -752,6 +769,26 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
                 verdict = read_json(verdict_path)
                 if Path(verdict.get("candidate_path", "")).resolve() != Path(details["candidate_path"]).resolve():
                     raise ContractError("waiver verdict candidate mismatch")
+            if action == "authorize_evaluator_change":
+                required = {
+                    "learning_proposal_path", "learning_proposal_sha256",
+                    "learning_target_kind", "reason",
+                }
+                if not required.issubset(details):
+                    raise ContractError(
+                        "evaluator-change authorization details are incomplete"
+                    )
+                proposal_path = Path(details["learning_proposal_path"])
+                if (
+                    details["learning_target_kind"] != "evaluator"
+                    or proposal_path.is_symlink()
+                    or not proposal_path.is_file()
+                    or sha256_file(proposal_path)
+                    != details["learning_proposal_sha256"]
+                ):
+                    raise ContractError(
+                        "evaluator-change proposal hash changed before authorization"
+                    )
             applied_at = utc_now()
             canonical = plan_dir / "state" / "human_actions" / "applied" / f"{record['record_id']}.json"
             receipt = {
@@ -1588,6 +1625,359 @@ def record_detected_research_integrity(plan_dir: Path) -> None:
         # Preserve the original boundary error when canonical state is too
         # damaged for a complete classification.
         return
+
+
+LEARNING_TARGET_KINDS = {"skill", "policy", "spec", "evaluator"}
+
+
+def learning_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "learning"
+
+
+def validate_learning_gate_artifact(
+    plan_dir: Path, raw_path: str, name: str, *, read_only: bool = False,
+) -> Path:
+    path = Path(raw_path).resolve()
+    if path.is_symlink() or not path.is_file():
+        raise ContractError(f"{name} must be an existing regular non-symlink file")
+    normalize_owned_path(plan_dir, str(path))
+    worker_roots = (
+        (plan_dir / "artifacts" / "intermediate").resolve(),
+        (plan_dir / "state" / "worker_runs").resolve(),
+    )
+    if any(path == root or root in path.parents for root in worker_roots):
+        raise ContractError(f"{name} must be independent of worker-owned namespaces")
+    if read_only and path.stat().st_mode & 0o222:
+        raise ContractError(f"{name} must be filesystem read-only")
+    return path
+
+
+def validate_learning_evidence(
+    plan_dir: Path,
+    *,
+    subject_sha256: str,
+    subject_kind: str,
+    diagnosis_sha256: str | None,
+    replay_path: Path,
+    validation_path: Path,
+    audit_path: Path,
+    auditor_identity_path: Path,
+) -> dict[str, Any]:
+    replay_path = validate_learning_gate_artifact(
+        plan_dir, str(replay_path), "learning replay",
+    )
+    validation_path = validate_learning_gate_artifact(
+        plan_dir, str(validation_path), "learning validation",
+    )
+    audit_path = validate_learning_gate_artifact(
+        plan_dir, str(audit_path), "learning audit",
+    )
+    auditor_identity_path = validate_learning_gate_artifact(
+        plan_dir, str(auditor_identity_path), "learning auditor identity",
+        read_only=True,
+    )
+    replay = read_json(replay_path)
+    if set(replay) != {
+        "schema_version", "subject_sha256", "first_result_sha256",
+        "second_result_sha256", "status",
+    }:
+        raise ContractError("learning replay has an invalid closed shape")
+    replay_passed = (
+        replay.get("schema_version") == SCHEMA_VERSION
+        and replay.get("subject_sha256") == subject_sha256
+        and replay.get("first_result_sha256")
+        == replay.get("second_result_sha256")
+        and replay.get("status") == "PASS"
+    )
+    validation = read_json(validation_path)
+    if set(validation) != {
+        "schema_version", "subject_sha256", "kind", "status",
+        "failed_cases", "total_cases",
+    }:
+        raise ContractError("learning validation has an invalid closed shape")
+    validation_passed = (
+        validation.get("schema_version") == SCHEMA_VERSION
+        and validation.get("subject_sha256") == subject_sha256
+        and validation.get("kind") in {"held_out", "regression"}
+        and validation.get("status") == "PASS"
+        and validation.get("failed_cases") == 0
+        and isinstance(validation.get("total_cases"), int)
+        and not isinstance(validation.get("total_cases"), bool)
+        and validation["total_cases"] > 0
+    )
+    audit = read_json(audit_path)
+    if set(audit) != {
+        "schema_version", "audit_id", "subject_kind", "subject_sha256",
+        "diagnosis_sha256", "auditor_identity_sha256", "independent",
+        "status", "findings",
+    }:
+        raise ContractError("learning audit has an invalid closed shape")
+    audit_passed = (
+        audit.get("schema_version") == SCHEMA_VERSION
+        and isinstance(audit.get("audit_id"), str)
+        and bool(audit["audit_id"])
+        and audit.get("subject_kind") == subject_kind
+        and audit.get("subject_sha256") == subject_sha256
+        and audit.get("diagnosis_sha256") == diagnosis_sha256
+        and audit.get("auditor_identity_sha256")
+        == sha256_file(auditor_identity_path)
+        and audit.get("independent") is True
+        and audit.get("status") == "PASS"
+        and audit.get("findings") == []
+        and sha256_file(auditor_identity_path) != subject_sha256
+    )
+    reasons = []
+    if not replay_passed:
+        reasons.append("replay_failed")
+    if not validation_passed:
+        reasons.append("validation_failed")
+    if not audit_passed:
+        reasons.append("independent_audit_failed")
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "replay_path": str(replay_path),
+        "replay_sha256": sha256_file(replay_path),
+        "validation_path": str(validation_path),
+        "validation_sha256": sha256_file(validation_path),
+        "audit_path": str(audit_path),
+        "audit_sha256": sha256_file(audit_path),
+        "audit_id": audit.get("audit_id"),
+        "auditor_identity_path": str(auditor_identity_path),
+        "auditor_identity_sha256": sha256_file(auditor_identity_path),
+    }
+
+
+def command_promote_episode_memory(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    episode_path = normalize_owned_path(
+        plan_dir, str(Path(args.episode_manifest).resolve()),
+    )
+    diagnosis_path = normalize_owned_path(
+        plan_dir, str(Path(args.diagnosis).resolve()),
+    )
+    if (
+        episode_path.is_symlink() or not episode_path.is_file()
+        or diagnosis_path.is_symlink() or not diagnosis_path.is_file()
+    ):
+        raise ContractError("episode manifest and diagnosis must be regular files")
+    episode = read_json(episode_path)
+    if set(episode) != {
+        "schema_version", "episode_id", "plan_id", "outcome", "evidence",
+    }:
+        raise ContractError("learning episode manifest has an invalid closed shape")
+    if (
+        episode.get("schema_version") != SCHEMA_VERSION
+        or episode.get("plan_id") != plan_identity(plan_dir)
+        or not isinstance(episode.get("episode_id"), str)
+        or not episode["episode_id"]
+        or episode.get("outcome") not in {"success", "failure", "mixed"}
+    ):
+        raise ContractError("learning episode manifest correlation mismatch")
+    evidence = verify_manifest_items(episode["evidence"], base_dir=plan_dir)
+    diagnosis = read_json(diagnosis_path)
+    if set(diagnosis) != {
+        "schema_version", "episode_id", "classification", "rationale",
+        "evidence_manifest_sha256",
+    }:
+        raise ContractError("learning diagnosis has an invalid closed shape")
+    if (
+        diagnosis.get("schema_version") != SCHEMA_VERSION
+        or diagnosis.get("episode_id") != episode["episode_id"]
+        or diagnosis.get("classification")
+        not in {"skill_defect", "execution_lapse"}
+        or not isinstance(diagnosis.get("rationale"), str)
+        or not diagnosis["rationale"].strip()
+        or diagnosis.get("evidence_manifest_sha256") != sha256_json(evidence)
+    ):
+        raise ContractError("learning diagnosis is not bound to the episode evidence")
+    episode_sha = sha256_file(episode_path)
+    diagnosis_sha = sha256_file(diagnosis_path)
+    gate = validate_learning_evidence(
+        plan_dir,
+        subject_sha256=episode_sha,
+        subject_kind="episode",
+        diagnosis_sha256=diagnosis_sha,
+        replay_path=Path(args.replay),
+        validation_path=Path(args.validation),
+        audit_path=Path(args.audit),
+        auditor_identity_path=Path(args.auditor_identity),
+    )
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": episode["plan_id"],
+        "episode_id": episode["episode_id"],
+        "episode_manifest_path": str(episode_path),
+        "episode_manifest_sha256": episode_sha,
+        "diagnosis_path": str(diagnosis_path),
+        "diagnosis_sha256": diagnosis_sha,
+        "classification": diagnosis["classification"],
+        "evidence_manifest": evidence,
+        **{key: value for key, value in gate.items() if key != "passed"},
+    }
+    memory_id = f"memory_{sha256_json(identity)}"
+    target = learning_root(plan_dir) / "memories" / f"{memory_id}.json"
+    if target.exists():
+        prior = read_json(target)
+        return {
+            "ok": prior["status"] == "AUDITED",
+            "idempotent": True,
+            "memory_receipt": str(target),
+            **prior,
+        }
+    status = "AUDITED" if gate["passed"] else "REJECTED"
+    receipt = {
+        **identity,
+        "memory_id": memory_id,
+        "status": status,
+        "proposal_eligible": (
+            status == "AUDITED"
+            and diagnosis["classification"] == "skill_defect"
+        ),
+        "recorded_at": utc_now(),
+    }
+    atomic_write_json(target, receipt, immutable=True)
+    append_jsonl_once(
+        learning_root(plan_dir) / "memory_audit.jsonl",
+        "memory_id", memory_id, receipt,
+    )
+    return {
+        "ok": status == "AUDITED",
+        "memory_receipt": str(target),
+        **receipt,
+    }
+
+
+def command_promote_learning_proposal(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    memory_path = Path(args.memory_receipt).resolve()
+    memory = read_json(memory_path)
+    canonical_memory = (
+        learning_root(plan_dir) / "memories"
+        / f"{memory.get('memory_id', '')}.json"
+    )
+    if memory_path != canonical_memory.resolve() or memory.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("learning memory receipt is not canonical for this plan")
+    for path_key, sha_key in (
+        ("episode_manifest_path", "episode_manifest_sha256"),
+        ("diagnosis_path", "diagnosis_sha256"),
+        ("replay_path", "replay_sha256"),
+        ("validation_path", "validation_sha256"),
+        ("audit_path", "audit_sha256"),
+        ("auditor_identity_path", "auditor_identity_sha256"),
+    ):
+        source_path = Path(memory[path_key])
+        if not source_path.is_file() or sha256_file(source_path) != memory[sha_key]:
+            raise ContractError(f"audited memory source changed: {path_key}")
+    verify_manifest_items(memory["evidence_manifest"], base_dir=plan_dir)
+    proposal_path = normalize_owned_path(
+        plan_dir, str(Path(args.proposal).resolve()),
+    )
+    if proposal_path.is_symlink() or not proposal_path.is_file():
+        raise ContractError("learning proposal must be an existing regular file")
+    proposal_sha = sha256_file(proposal_path)
+    gate = validate_learning_evidence(
+        plan_dir,
+        subject_sha256=proposal_sha,
+        subject_kind="proposal",
+        diagnosis_sha256=None,
+        replay_path=Path(args.replay),
+        validation_path=Path(args.validation),
+        audit_path=Path(args.audit),
+        auditor_identity_path=Path(args.auditor_identity),
+    )
+    if gate["audit_sha256"] == memory.get("audit_sha256"):
+        raise ContractError("proposal promotion requires a fresh independent audit")
+    authorization_id: str | None = None
+    authorization_sha: str | None = None
+    if args.target_kind == "evaluator":
+        if not args.authorization:
+            raise ContractError(
+                "evaluator-change proposal requires authenticated human authorization"
+            )
+        authorization_path = Path(args.authorization).resolve()
+        authorization = validate_applied_action_receipt(
+            plan_dir, authorization_path, "authorize_evaluator_change",
+        )
+        details = authorization["details"]
+        if (
+            Path(details.get("learning_proposal_path", "")).resolve()
+            != proposal_path
+            or details.get("learning_proposal_sha256") != proposal_sha
+            or details.get("learning_target_kind") != "evaluator"
+        ):
+            raise ContractError(
+                "human evaluator-change authorization is bound to another proposal"
+            )
+        authorization_id = authorization["record_id"]
+        authorization_sha = sha256_file(authorization_path)
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "memory_id": memory["memory_id"],
+        "memory_receipt_path": str(memory_path),
+        "memory_receipt_sha256": sha256_file(memory_path),
+        "target_kind": args.target_kind,
+        "proposal_path": str(proposal_path),
+        "proposal_sha256": proposal_sha,
+        "human_authorization_record_id": authorization_id,
+        "human_authorization_sha256": authorization_sha,
+        **{key: value for key, value in gate.items() if key != "passed"},
+    }
+    proposal_id = f"proposal_{sha256_json(identity)}"
+    registry_path = learning_root(plan_dir) / "proposal_registry" / f"{proposal_sha}.json"
+    if registry_path.exists():
+        prior_pointer = read_json(registry_path)
+        prior_path = Path(prior_pointer["receipt_path"])
+        prior = read_json(prior_path)
+        if prior.get("proposal_id") != proposal_id:
+            raise ContractError(
+                "identical proposal bytes were already reviewed and cannot reenter as novelty"
+            )
+        return {
+            "ok": prior["status"] == "APPROVED",
+            "idempotent": True,
+            "proposal_receipt": str(prior_path),
+            **prior,
+        }
+    eligible = (
+        memory.get("status") == "AUDITED"
+        and memory.get("proposal_eligible") is True
+        and gate["passed"]
+    )
+    rejection_reasons = list(gate["reasons"])
+    if memory.get("status") != "AUDITED":
+        rejection_reasons.append("memory_not_audited")
+    if memory.get("proposal_eligible") is not True:
+        rejection_reasons.append("diagnosed_as_execution_lapse")
+    receipt = {
+        **identity,
+        "proposal_id": proposal_id,
+        "status": "APPROVED" if eligible else "REJECTED",
+        "rejection_reasons": sorted(set(rejection_reasons)),
+        "proposal_only": True,
+        "application_authority": False,
+        "recorded_at": utc_now(),
+    }
+    target = learning_root(plan_dir) / "proposals" / f"{proposal_id}.json"
+    atomic_write_json(target, receipt, immutable=True)
+    atomic_write_json(registry_path, {
+        "schema_version": SCHEMA_VERSION,
+        "proposal_sha256": proposal_sha,
+        "proposal_id": proposal_id,
+        "receipt_path": str(target),
+        "receipt_sha256": sha256_file(target),
+        "status": receipt["status"],
+    }, immutable=True)
+    append_jsonl_once(
+        learning_root(plan_dir) / "proposal_audit.jsonl",
+        "proposal_id", proposal_id, receipt,
+    )
+    return {
+        "ok": eligible,
+        "proposal_receipt": str(target),
+        **receipt,
+    }
 
 
 def pivot_eligibility(plan_dir: Path) -> dict[str, Any]:
@@ -4939,6 +5329,7 @@ def build_parser() -> argparse.ArgumentParser:
     human.add_argument("--verdict")
     human.add_argument("--tier", choices=["arxiv", "conference", "journal-q1"])
     human.add_argument("--negative-result", action="store_true")
+    human.add_argument("--learning-proposal")
     human.add_argument("--authorization-proposal")
     human.add_argument("--prepared-operation-id")
     human.set_defaults(handler=command_create_human_action)
@@ -5013,6 +5404,30 @@ def build_parser() -> argparse.ArgumentParser:
     integrity = sub.add_parser("check-research-integrity")
     integrity.add_argument("--plan-dir", required=True)
     integrity.set_defaults(handler=command_check_research_integrity)
+
+    memory = sub.add_parser("promote-episode-memory")
+    memory.add_argument("--plan-dir", required=True)
+    memory.add_argument("--episode-manifest", required=True)
+    memory.add_argument("--diagnosis", required=True)
+    memory.add_argument("--replay", required=True)
+    memory.add_argument("--validation", required=True)
+    memory.add_argument("--audit", required=True)
+    memory.add_argument("--auditor-identity", required=True)
+    memory.set_defaults(handler=command_promote_episode_memory)
+
+    learning = sub.add_parser("promote-learning-proposal")
+    learning.add_argument("--plan-dir", required=True)
+    learning.add_argument("--memory-receipt", required=True)
+    learning.add_argument("--proposal", required=True)
+    learning.add_argument(
+        "--target-kind", required=True, choices=sorted(LEARNING_TARGET_KINDS),
+    )
+    learning.add_argument("--replay", required=True)
+    learning.add_argument("--validation", required=True)
+    learning.add_argument("--audit", required=True)
+    learning.add_argument("--auditor-identity", required=True)
+    learning.add_argument("--authorization")
+    learning.set_defaults(handler=command_promote_learning_proposal)
 
     pivot = sub.add_parser("pivot-eligibility")
     pivot.add_argument("--plan-dir", required=True)

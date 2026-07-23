@@ -20,14 +20,15 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.11.0
+- **Current version:** v0.12.0
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
   owned cleanup, the launchd-backed durable state loop, evaluator admission,
   capsule-bound MiniMax/Codex production transport, replayed scientific
-  acceptance, and deterministic integrity-failure routing are implemented.
+  acceptance, deterministic integrity-failure routing, and two-stage gated
+  learning promotion are implemented.
   The packaged `claude-research-conformance-v1` workflow is a closed M1
   conformance fixture: it journals operation IDs and verifies terminal
   evidence, but does not claim to be the production topic-to-paper trigger.
@@ -329,6 +330,8 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.12.0** — audited episode memory, defect-versus-lapse diagnosis,
+  replay/regression-gated proposal receipts, and human-only evaluator proposals.
 - **v0.11.0** — controller-owned evaluator snapshots, replayed scientific
   acceptance, and isolated goal/evaluator integrity failure routing.
 - **v0.10.0** — capsule-bound MiniMax dispatch and Codex request derivation,
@@ -372,7 +375,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.11.0}
+  version = {0.12.0}
 }
 ```
 
@@ -384,7 +387,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.11.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.12.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

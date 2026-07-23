@@ -47,6 +47,7 @@ def main() -> int:
         "references/context-capsule.schema.json",
         "references/guardian-observation.schema.json",
         "references/evaluator-admission.schema.json",
+        "references/learning-promotion-contract.md",
         "references/canonical-conformance-workflow.json",
         "tests/test_runtime_contracts.py",
         "tests/test_claude_cutover_e2e.py",
@@ -55,6 +56,7 @@ def main() -> int:
         "tests/test_evaluator_admission.py",
         "tests/test_production_transport.py",
         "tests/test_scientific_truth_and_failure_routing.py",
+        "tests/test_gated_learning_promotion.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -80,6 +82,8 @@ def main() -> int:
             "check-autonomy-eligibility", "create-durable-frontier-request",
             "commit-durable-frontier-result", "commit-durable-worker-result",
             "check-scientific-acceptance", "check-research-integrity",
+            "promote-episode-memory", "promote-learning-proposal",
+            "authorize_evaluator_change",
             "context-capsule", "applied", "advisory",
         ),
         "Claude runtime reference must document the complete target controller",
@@ -199,8 +203,14 @@ def main() -> int:
         "test_integrity_drift_has_isolated_controller_owned_routes",
     ):
         require(f"def {test_name}" in m3_tests, f"missing M3 regression {test_name}", errors)
-    require('version: "0.11.0"' in read("SKILL.md"), "SKILL.md version must be 0.11.0", errors)
-    require("Current version:** v0.11.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.11.0", errors)
+    learning_tests = read("tests/test_gated_learning_promotion.py")
+    for test_name in (
+        "test_two_stage_promotion_rejects_lapse_and_rejected_novelty",
+        "test_evaluator_proposal_requires_hash_bound_human_authorization",
+    ):
+        require(f"def {test_name}" in learning_tests, f"missing M4 regression {test_name}", errors)
+    require('version: "0.12.0"' in read("SKILL.md"), "SKILL.md version must be 0.12.0", errors)
+    require("Current version:** v0.12.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.12.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -221,6 +231,8 @@ def main() -> int:
             "command_commit_durable_frontier_result", "validate_request_durable_context",
             "command_check_scientific_acceptance", "command_check_research_integrity",
             "goal_drift", "evaluator_integrity", "freeze_controller_material",
+            "command_promote_episode_memory", "command_promote_learning_proposal",
+            "application_authority", "authorize_evaluator_change",
         )),
         "harness runtime is missing run-4 safety and reconciliation contracts",
         errors,

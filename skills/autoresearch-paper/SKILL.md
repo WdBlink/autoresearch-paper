@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.11.0"
+  version: "0.12.0"
 ---
 
 # Autoresearch Paper
@@ -89,6 +89,9 @@ adapter provides:
 - typed runtime/scientific failure counters and CP-03 eligibility;
 - controller-replayed scientific-acceptance receipts plus isolated goal-drift
   and evaluator-integrity detection/routes;
+- two-stage episode→audited-memory→proposal learning gates with replay,
+  held-out/regression evidence, independent audits, and human-only evaluator
+  proposal authorization;
 - complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
 - launchd-backed external registration, generation-bound tick leases,
   canonical state/event/evidence revisions, rebuildable projections, and fresh
@@ -356,6 +359,7 @@ On completion, report:
 - `references/research-state-contract.md` — state schema and research gate
 - `references/lifecycle-contract.md` — manifest, resume, cleanup contract
 - `references/claude-code-runtime.md` — target runtime commands and migration boundary
+- `references/learning-promotion-contract.md` — two-stage audited memory and proposal gates
 - `references/frontier-response.schema.json` — Codex advisory response schema
 - `references/watchdog-prompt-template.md` — watchdog system prompt template
 - `references/first-action-last-seen.md` — hook registration contract
@@ -370,6 +374,10 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.12.0 (2026-07-23)** — Deterministic autonomy and gated learning:
+  closes the existing bounded-worker/deterministic-recovery slice and adds
+  two-stage audited memory/proposal promotion, rejection memory, novelty
+  protection, and proposal-bound human evaluator authorization.
 - **v0.11.0 (2026-07-23)** — Scientific-truth and failure-routing closure:
   controller-owned evaluator material snapshots, replayed scientific
   acceptance with current admission, and isolated deterministic goal-drift /

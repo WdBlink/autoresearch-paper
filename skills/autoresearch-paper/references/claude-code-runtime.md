@@ -89,7 +89,8 @@ evidence; worker output never advances the task graph directly.
 ## Authenticated Human Actions
 
 Allowed actions are `pause`, `resume`, `stop`, `cancel_worker`,
-`waive_acceptance`, `override_acceptance`, and `cleanup_resource`.
+`waive_acceptance`, `override_acceptance`, `cleanup_resource`, and
+proposal-only `authorize_evaluator_change`.
 
 ```bash
 python3 references/scripts/harness-runtime.py create-human-action \
@@ -110,6 +111,16 @@ the committed mutation returns the same receipt idempotently; an unbound replay
 or a fresh operation ID is rejected. The same inner-journal binding applies to
 owned cleanup. Downstream gates consume immutable applied receipts
 present in the audit, never pending signed records.
+
+## Gated Learning
+
+Read `learning-promotion-contract.md` before promoting persistent learning.
+`promote-episode-memory` separates skill defects from execution lapses and
+requires replay, held-out/regression validation, and independent audit.
+`promote-learning-proposal` revalidates that memory and requires a second
+replay/validation plus a fresh audit. Results are proposal-only receipts and
+never mutate source files. Evaluator proposals additionally consume an applied
+`authorize_evaluator_change` human receipt bound to the exact proposal hash.
 
 `cancel-worker` is an authenticated alias requiring the same run ID in the
 record and command. Waiver and cleanup actions produce immutable receipts.
