@@ -51,9 +51,19 @@ HUMAN_ACTIONS = {
     "pause", "resume", "stop", "cancel_worker", "waive_acceptance",
     "override_acceptance", "cleanup_resource",
 }
+INTEGRITY_FAILURE_CLASSES = {"goal_drift", "evaluator_integrity"}
 FAILURE_CLASSES = {
     "runtime_stall", "implementation_failure", "scientific_no_improvement",
-    "duplicate_direction", "verifier_rejection",
+    "duplicate_direction", "verifier_rejection", *INTEGRITY_FAILURE_CLASSES,
+}
+FAILURE_ROUTES = {
+    "runtime_stall": "deterministic_runtime_recovery",
+    "implementation_failure": "bounded_implementation_repair",
+    "scientific_no_improvement": "distinct_direction_or_pivot",
+    "duplicate_direction": "reject_and_select_distinct_direction",
+    "verifier_rejection": "repair_evidence_or_candidate",
+    "goal_drift": "pause_and_rebaseline_goal",
+    "evaluator_integrity": "revoke_autonomy_and_re_admit_evaluator",
 }
 TERMINAL_WORKER_STATES = {"COMPLETED", "FAILED", "PAUSED", "CANCELLED"}
 READ_ONLY_CLAUDE_TOOLS = {"Read", "Glob", "Grep", "WebSearch", "WebFetch"}
@@ -844,12 +854,35 @@ def require_transition_evidence(
 
 def command_run_evaluator(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    evaluator = Path(args.evaluator).resolve()
-    evidence = Path(args.evidence).resolve()
+    supplied_evaluator = Path(args.evaluator).resolve()
+    supplied_evidence = Path(args.evidence).resolve()
     candidate = Path(args.candidate).resolve()
-    require_transition_evidence(plan_dir, "freeze_evaluator", {
-        "evaluator": evaluator, "evidence_manifest": evidence,
-    })
+    evaluator = supplied_evaluator
+    evidence = supplied_evidence
+    frozen_contract_path = plan_dir / "state" / "evaluator_contract.json"
+    if args.purpose == "candidate" and frozen_contract_path.exists():
+        frozen = read_json(frozen_contract_path)
+        frozen_body = {
+            key: value for key, value in frozen.items() if key != "contract_sha256"
+        }
+        if frozen.get("contract_sha256") != sha256_json(frozen_body):
+            raise ContractError("frozen evaluator contract hash changed")
+        if (
+            sha256_file(supplied_evaluator) != frozen.get("evaluator_sha256")
+            or sha256_file(supplied_evidence) != frozen.get("evidence_sha256")
+        ):
+            raise ContractError("candidate evaluator inputs differ from the frozen controller materials")
+        evaluator = Path(frozen["evaluator_path"])
+        evidence = Path(frozen["evidence_path"])
+        if (
+            sha256_file(evaluator) != frozen["evaluator_sha256"]
+            or sha256_file(evidence) != frozen["evidence_sha256"]
+        ):
+            raise ContractError("frozen controller evaluator materials changed")
+    else:
+        require_transition_evidence(plan_dir, "freeze_evaluator", {
+            "evaluator": evaluator, "evidence_manifest": evidence,
+        })
     spec = read_json(evaluator)
     validate_schema(spec, read_json(DECLARATIVE_EVALUATOR_SCHEMA))
     if spec["kind"] != "declarative-evaluator-v1" or spec["operation"] != "read_finite_number":
@@ -899,6 +932,21 @@ def load_evaluator_run(plan_dir: Path, path: Path) -> dict[str, Any]:
     return run
 
 
+def freeze_controller_material(plan_dir: Path, source: Path, role: str) -> Path:
+    digest = sha256_file(source)
+    suffix = source.suffix if source.suffix else ".bin"
+    target = (
+        plan_dir / "state" / "evaluator_materials"
+        / f"{role}-{digest}{suffix}"
+    )
+    if target.exists():
+        if sha256_file(target) != digest:
+            raise ContractError(f"canonical {role} material hash changed")
+        return target
+    atomic_write_bytes(target, source.read_bytes(), immutable=True)
+    return target
+
+
 def command_freeze_evaluator(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     target = plan_dir / "state" / "evaluator_contract.json"
@@ -924,17 +972,29 @@ def command_freeze_evaluator(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("audited metric contract hash changed")
     if run["metric"] != metric_contract["metric"]:
         raise ContractError("calibration metric does not match audited metric contract")
+    canonical_evaluator = freeze_controller_material(
+        plan_dir, evaluator, "evaluator",
+    )
+    canonical_evidence = freeze_controller_material(
+        plan_dir, evidence, "evidence",
+    )
+    canonical_metric = freeze_controller_material(
+        plan_dir, metric_path, "metric-contract",
+    )
     contract = {
         "schema_version": 1,
-        "evaluator_sha256": sha256_file(evaluator),
-        "evidence_sha256": sha256_file(evidence),
-        "evaluator_path": str(evaluator),
-        "evidence_path": str(evidence),
+        "evaluator_sha256": sha256_file(canonical_evaluator),
+        "evidence_sha256": sha256_file(canonical_evidence),
+        "evaluator_path": str(canonical_evaluator),
+        "evidence_path": str(canonical_evidence),
         "metric": metric_contract["metric"],
         "operator": metric_contract["operator"],
         "threshold": metric_contract["threshold"],
-        "metric_contract_path": str(metric_path),
-        "metric_contract_sha256": metric_item["sha256"],
+        "metric_contract_path": str(canonical_metric),
+        "metric_contract_sha256": sha256_file(canonical_metric),
+        "source_evaluator_path": str(evaluator),
+        "source_evidence_path": str(evidence),
+        "source_metric_contract_path": str(metric_path),
         "calibration_execution_sha256": sha256_file(Path(args.execution_receipt).resolve()),
         "calibration_value": run["value"],
         "frozen_at": utc_now(),
@@ -1002,6 +1062,120 @@ def command_record_evaluator_verdict(args: argparse.Namespace) -> dict[str, Any]
     return {"ok": True, "verdict_path": str(target), "verdict_sha256": sha256_file(target)}
 
 
+def command_check_scientific_acceptance(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    verdict_path = Path(args.verdict).resolve()
+    verdict = read_json(verdict_path)
+    validate_schema(verdict, read_json(EVALUATOR_VERDICT_SCHEMA))
+    canonical_verdict = (
+        plan_dir / "state" / "evaluator_verdicts"
+        / f"{verdict.get('candidate_id', '')}.json"
+    )
+    if verdict_path != canonical_verdict.resolve():
+        raise ContractError("scientific acceptance requires a canonical evaluator verdict")
+    contract_path = plan_dir / "state" / "evaluator_contract.json"
+    contract = read_json(contract_path)
+    contract_body = {
+        key: value for key, value in contract.items() if key != "contract_sha256"
+    }
+    if contract.get("contract_sha256") != sha256_json(contract_body):
+        raise ContractError("frozen evaluator contract hash changed")
+    run_path = Path(verdict["execution_receipt_path"]).resolve()
+    if sha256_file(run_path) != verdict.get("execution_receipt_sha256"):
+        raise ContractError("scientific acceptance execution receipt hash changed")
+    run = load_evaluator_run(plan_dir, run_path)
+    checks = {
+        "candidate_sha256": run["candidate_sha256"],
+        "evaluator_sha256": run["evaluator_sha256"],
+        "evidence_sha256": run["evidence_sha256"],
+        "metric": run["metric"],
+        "value": run["value"],
+        "contract_sha256": contract["contract_sha256"],
+    }
+    if any(verdict.get(field) != expected for field, expected in checks.items()):
+        raise ContractError("scientific verdict is not bound to its evaluator execution")
+    if (
+        contract.get("evaluator_sha256") != verdict["evaluator_sha256"]
+        or contract.get("evidence_sha256") != verdict["evidence_sha256"]
+        or contract.get("metric") != verdict["metric"]
+        or contract.get("threshold") != verdict["threshold"]
+    ):
+        raise ContractError("scientific verdict is not bound to the frozen evaluator contract")
+    for field in ("evaluator", "evidence", "metric_contract"):
+        if sha256_file(Path(contract[f"{field}_path"])) != contract[f"{field}_sha256"]:
+            raise ContractError(f"scientific acceptance {field} hash changed")
+    candidate_path = Path(verdict["candidate_path"])
+    if (
+        candidate_path.resolve() != Path(run["candidate_path"]).resolve()
+        or sha256_file(candidate_path) != verdict["candidate_sha256"]
+    ):
+        raise ContractError("scientific acceptance candidate hash changed")
+    threshold = require_finite_number(contract["threshold"], "frozen threshold")
+    value = require_finite_number(run["value"], "candidate evaluator value")
+    passed = value >= threshold if contract["operator"] == "gte" else value <= threshold
+    expected_verdict = "PASS" if passed else "FAIL"
+    if verdict.get("verdict") != expected_verdict:
+        raise ContractError("scientific verdict disagrees with the frozen comparison")
+    admission_id: str | None = None
+    graph_path = plan_dir / "state" / "durable_loop" / "canonical" / "graph.json"
+    if graph_path.exists():
+        try:
+            graph = read_json(graph_path)
+            if graph["evaluator"]["sha256"] != contract["evaluator_sha256"]:
+                raise ContractError("durable plan evaluator differs from the frozen evaluator")
+            admission = require_durable_autonomy_eligibility(plan_dir)
+            admission_id = admission.get("admission_id") if admission else None
+        except ContractError:
+            record_detected_research_integrity(plan_dir)
+            raise
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "candidate_id": verdict["candidate_id"],
+        "decision": expected_verdict,
+        "candidate_path": str(candidate_path),
+        "candidate_sha256": verdict["candidate_sha256"],
+        "evaluator_sha256": verdict["evaluator_sha256"],
+        "evidence_sha256": verdict["evidence_sha256"],
+        "metric": verdict["metric"],
+        "operator": contract["operator"],
+        "threshold": threshold,
+        "value": value,
+        "verdict_path": str(verdict_path),
+        "verdict_sha256": sha256_file(verdict_path),
+        "contract_path": str(contract_path),
+        "contract_sha256": sha256_file(contract_path),
+        "execution_receipt_path": str(run_path),
+        "execution_receipt_sha256": sha256_file(run_path),
+        "evaluator_admission_id": admission_id,
+        "authority": "deterministic_controller",
+    }
+    acceptance_id = f"acceptance_{sha256_json(identity)}"
+    target = (
+        plan_dir / "state" / "scientific_acceptance"
+        / verdict["candidate_id"] / f"{acceptance_id}.json"
+    )
+    if target.exists():
+        prior = read_json(target)
+        if any(prior.get(key) != value for key, value in identity.items()):
+            raise ContractError("scientific acceptance identity collision")
+        return {
+            "ok": True, "idempotent": True, "acceptance_receipt": str(target),
+            **prior,
+        }
+    receipt = {
+        **identity,
+        "acceptance_id": acceptance_id,
+        "checked_at": utc_now(),
+    }
+    atomic_write_json(target, receipt, immutable=True)
+    append_jsonl_once(
+        plan_dir / "state" / "scientific_acceptance_audit.jsonl",
+        "acceptance_id", acceptance_id, receipt,
+    )
+    return {"ok": True, "acceptance_receipt": str(target), **receipt}
+
+
 def transition_receipt_path(plan_dir: Path, transition_name: str, request_id: str) -> Path:
     if not REQUEST_ID_RE.fullmatch(request_id):
         raise ContractError("invalid request_id")
@@ -1051,6 +1225,7 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
     candidate_path: Path
     contract_path = plan_dir / "state" / "evaluator_contract.json"
     verdict_path: Path
+    acceptance_path: Path | None = None
     if args.verdict:
         verdict_path = Path(args.verdict).resolve()
         verdict = read_json(verdict_path)
@@ -1085,6 +1260,12 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
             "evaluator_verdict": verdict_path,
             "evaluator_contract": contract_path,
         })
+        acceptance = command_check_scientific_acceptance(argparse.Namespace(
+            plan_dir=str(plan_dir), verdict=str(verdict_path),
+        ))
+        if acceptance.get("decision") != "PASS":
+            raise ContractError("writing gate requires a PASS scientific acceptance")
+        acceptance_path = Path(acceptance["acceptance_receipt"])
         source, authority_path = "validated_verdict", verdict_path
     else:
         waiver_path = Path(args.waiver).resolve()
@@ -1125,6 +1306,11 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "checked_at": utc_now(),
     }
+    if acceptance_path is not None:
+        audit.update({
+            "scientific_acceptance_path": str(acceptance_path),
+            "scientific_acceptance_sha256": sha256_file(acceptance_path),
+        })
     audit["decision_sha256"] = sha256_json({key: value for key, value in audit.items() if key != "checked_at"})
     append_jsonl_once(plan_dir / "state" / "writing_gate_audit.jsonl", "decision_sha256", audit["decision_sha256"], audit)
     gate_path = plan_dir / "state" / "writing_gates" / f"{audit['decision_sha256']}.json"
@@ -1158,6 +1344,10 @@ def command_record_failure(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     if args.failure_class not in FAILURE_CLASSES:
         raise ContractError("unsupported failure class")
+    if args.failure_class in INTEGRITY_FAILURE_CLASSES:
+        raise ContractError(
+            "integrity failures are controller-detected by check-research-integrity"
+        )
     if not args.source:
         raise ContractError("source is required")
     fingerprint = getattr(args, "fingerprint", None)
@@ -1257,8 +1447,147 @@ def command_record_failure(args: argparse.Namespace) -> dict[str, Any]:
         append_jsonl(plan_dir / "state" / "failure_events.jsonl", {
             "ts": utc_now(), "class": args.failure_class, "fingerprint": fingerprint,
             "source": args.source, "direction": direction,
+            "route": FAILURE_ROUTES[args.failure_class],
         })
-    return {"ok": True, "idempotent": False, "failure_class": args.failure_class, "state": state}
+    return {
+        "ok": True,
+        "idempotent": False,
+        "failure_class": args.failure_class,
+        "route": FAILURE_ROUTES[args.failure_class],
+        "state": state,
+    }
+
+
+def record_integrity_failure(
+    plan_dir: Path,
+    failure_class: str,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    if failure_class not in INTEGRITY_FAILURE_CLASSES:
+        raise ContractError("invalid integrity failure class")
+    fingerprint = sha256_json({
+        "class": failure_class,
+        "details": details,
+    })
+    target = plan_dir / "state" / "failure_state.json"
+    lock_path = plan_dir / "state" / ".failure.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = read_json(target) if target.exists() else failure_state_default(plan_dir)
+        key = f"{failure_class}:{fingerprint}"
+        if key in state.get("seen", []):
+            return {
+                "failure_class": failure_class,
+                "fingerprint": fingerprint,
+                "route": FAILURE_ROUTES[failure_class],
+                "idempotent": True,
+            }
+        state.setdefault("seen", []).append(key)
+        count_key = f"{failure_class}_count"
+        state[count_key] = int(state.get(count_key, 0)) + 1
+        event = {
+            "ts": utc_now(),
+            "class": failure_class,
+            "fingerprint": fingerprint,
+            "source": "deterministic_integrity_check",
+            "route": FAILURE_ROUTES[failure_class],
+            "details": details,
+        }
+        state.setdefault("integrity_events", []).append(event)
+        state["updated_at"] = event["ts"]
+        atomic_write_json(target, state)
+        append_jsonl(plan_dir / "state" / "failure_events.jsonl", event)
+    return {
+        "failure_class": failure_class,
+        "fingerprint": fingerprint,
+        "route": FAILURE_ROUTES[failure_class],
+        "idempotent": False,
+    }
+
+
+def artifact_drift_observation(item: dict[str, Any]) -> dict[str, Any] | None:
+    path = Path(str(item.get("path", "")))
+    expected = item.get("sha256")
+    observed: str | None = None
+    if path.is_file() and not path.is_symlink():
+        observed = sha256_file(path)
+    if observed == expected:
+        return None
+    return {
+        "path": str(path),
+        "expected_sha256": expected,
+        "observed_sha256": observed,
+    }
+
+
+def command_check_research_integrity(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    graph_path = plan_dir / "state" / "durable_loop" / "canonical" / "graph.json"
+    graph = read_json(graph_path)
+    goal_drift = {
+        role: observation
+        for role in ("objective", "constraints")
+        if (observation := artifact_drift_observation(graph[role])) is not None
+    }
+    evaluator_drift: dict[str, Any] = {}
+    evaluator_observation = artifact_drift_observation(graph["evaluator"])
+    if evaluator_observation is not None:
+        evaluator_drift["durable_evaluator"] = evaluator_observation
+    contract_path = plan_dir / "state" / "evaluator_contract.json"
+    if contract_path.exists():
+        try:
+            contract = read_json(contract_path)
+            contract_body = {
+                key: value for key, value in contract.items()
+                if key != "contract_sha256"
+            }
+            if contract.get("contract_sha256") != sha256_json(contract_body):
+                raise ContractError("frozen evaluator contract identity changed")
+            if contract.get("evaluator_sha256") != graph["evaluator"]["sha256"]:
+                raise ContractError("frozen evaluator differs from durable plan evaluator")
+            for role in ("evaluator", "evidence", "metric_contract"):
+                observation = artifact_drift_observation({
+                    "path": contract[f"{role}_path"],
+                    "sha256": contract[f"{role}_sha256"],
+                })
+                if observation is not None:
+                    evaluator_drift[f"contract_{role}"] = observation
+        except (ContractError, KeyError, TypeError) as exc:
+            evaluator_drift["frozen_contract"] = {"error": str(exc)}
+    if graph.get("execution_mode") == "unattended" and graph.get("target_tier") in {
+        "conference", "journal-q1",
+    }:
+        try:
+            require_durable_autonomy_eligibility(plan_dir)
+        except ContractError as exc:
+            evaluator_drift["admission"] = {"error": str(exc)}
+    findings: list[dict[str, Any]] = []
+    if goal_drift:
+        findings.append(record_integrity_failure(
+            plan_dir, "goal_drift", {"artifacts": goal_drift},
+        ))
+    if evaluator_drift:
+        findings.append(record_integrity_failure(
+            plan_dir, "evaluator_integrity", {"artifacts": evaluator_drift},
+        ))
+    state_path = plan_dir / "state" / "failure_state.json"
+    state = read_json(state_path) if state_path.exists() else failure_state_default(plan_dir)
+    return {
+        "ok": not findings,
+        "integrity": "PASS" if not findings else "BLOCKED",
+        "findings": findings,
+        "state": state,
+    }
+
+
+def record_detected_research_integrity(plan_dir: Path) -> None:
+    try:
+        command_check_research_integrity(argparse.Namespace(plan_dir=str(plan_dir)))
+    except ContractError:
+        # Preserve the original boundary error when canonical state is too
+        # damaged for a complete classification.
+        return
 
 
 def pivot_eligibility(plan_dir: Path) -> dict[str, Any]:
@@ -2906,7 +3235,11 @@ def make_context_capsule(
 
 def command_advance_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    require_durable_autonomy_eligibility(plan_dir)
+    try:
+        require_durable_autonomy_eligibility(plan_dir)
+    except ContractError:
+        record_detected_research_integrity(plan_dir)
+        raise
     with durable_loop_lock(plan_dir):
         graph = read_json(durable_graph_path(plan_dir))
         state = read_durable_state(plan_dir)
@@ -2923,7 +3256,11 @@ def command_advance_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
         if task is None:
             projection = write_durable_projection(plan_dir, state)
             return {"ok": True, "complete": projection["next_action"]["kind"] == "complete", "projection": projection}
-        validate_live_durable_artifacts(plan_dir, graph, task)
+        try:
+            validate_live_durable_artifacts(plan_dir, graph, task)
+        except ContractError:
+            record_detected_research_integrity(plan_dir)
+            raise
         capsule = make_context_capsule(plan_dir, graph, state, task)
         next_state = {
             **state,
@@ -2989,11 +3326,19 @@ def validate_context_capsule(
 
 def command_apply_work_unit_result(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    require_durable_autonomy_eligibility(plan_dir)
+    try:
+        require_durable_autonomy_eligibility(plan_dir)
+    except ContractError:
+        record_detected_research_integrity(plan_dir)
+        raise
     with durable_loop_lock(plan_dir):
-        capsule, graph, state, task = validate_context_capsule(
-            plan_dir, Path(args.capsule).resolve(),
-        )
+        try:
+            capsule, graph, state, task = validate_context_capsule(
+                plan_dir, Path(args.capsule).resolve(),
+            )
+        except ContractError:
+            record_detected_research_integrity(plan_dir)
+            raise
         unresolved_result = Path(args.result)
         if not unresolved_result.is_absolute():
             unresolved_result = plan_dir / unresolved_result
@@ -4641,6 +4986,11 @@ def build_parser() -> argparse.ArgumentParser:
     verdict.add_argument("--candidate-id", required=True)
     verdict.set_defaults(handler=command_record_evaluator_verdict)
 
+    scientific_acceptance = sub.add_parser("check-scientific-acceptance")
+    scientific_acceptance.add_argument("--plan-dir", required=True)
+    scientific_acceptance.add_argument("--verdict", required=True)
+    scientific_acceptance.set_defaults(handler=command_check_scientific_acceptance)
+
     writing = sub.add_parser("check-writing-gate")
     writing.add_argument("--plan-dir", required=True)
     writing.add_argument("--tier", required=True, choices=["arxiv", "conference", "journal-q1"])
@@ -4650,12 +5000,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     failure = sub.add_parser("record-failure")
     failure.add_argument("--plan-dir", required=True)
-    failure.add_argument("--class", dest="failure_class", required=True, choices=sorted(FAILURE_CLASSES))
+    failure.add_argument(
+        "--class", dest="failure_class", required=True,
+        choices=sorted(FAILURE_CLASSES - INTEGRITY_FAILURE_CLASSES),
+    )
     failure.add_argument("--fingerprint")
     failure.add_argument("--direction")
     failure.add_argument("--verdict")
     failure.add_argument("--source", required=True)
     failure.set_defaults(handler=command_record_failure)
+
+    integrity = sub.add_parser("check-research-integrity")
+    integrity.add_argument("--plan-dir", required=True)
+    integrity.set_defaults(handler=command_check_research_integrity)
 
     pivot = sub.add_parser("pivot-eligibility")
     pivot.add_argument("--plan-dir", required=True)

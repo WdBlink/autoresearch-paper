@@ -127,6 +127,8 @@ python3 references/scripts/harness-runtime.py run-evaluator \
 python3 references/scripts/harness-runtime.py record-evaluator-verdict \
   --plan-dir PLAN --execution-receipt CANDIDATE_RECEIPT \
   --candidate-id candidate-1
+python3 references/scripts/harness-runtime.py check-scientific-acceptance \
+  --plan-dir PLAN --verdict STORED_VERDICT
 python3 references/scripts/harness-runtime.py check-writing-gate \
   --plan-dir PLAN --tier conference --verdict STORED_VERDICT
 ```
@@ -135,8 +137,10 @@ The declarative evaluator reads a finite metric only from the candidate
 artifact. Plan-global evidence remains frozen context and cannot substitute a
 candidate-independent value into a candidate verdict.
 
-The controller executes the evaluator and derives metric, measured value, and
-PASS/FAIL from immutable execution receipts. The frozen contract binds the
+The controller snapshots evaluator materials outside worker-owned namespaces,
+executes the evaluator, and derives metric, measured value, and PASS/FAIL from
+immutable execution receipts. Scientific acceptance replays that chain and
+requires current unattended admission before writing. The frozen contract binds the
 calibration execution and the exact CP-02-audited, closed `metric_contract`;
 callers cannot independently supply metric, operator, or threshold.
 Changed evaluator, evidence,
@@ -190,15 +194,20 @@ python3 references/scripts/harness-runtime.py schedule-patrol \
   --plan-dir PLAN --interval-seconds 300
 python3 references/scripts/harness-runtime.py run-patrol \
   --plan-dir PLAN --stale-seconds 7200
+python3 references/scripts/harness-runtime.py check-research-integrity \
+  --plan-dir PLAN
 ```
 
 Failure classes are `runtime_stall`, `implementation_failure`,
 `scientific_no_improvement`, `duplicate_direction`, and
-`verifier_rejection`. Duplicate `(class,fingerprint)` pairs are idempotent.
+`verifier_rejection`, plus controller-detected `goal_drift` and
+`evaluator_integrity`. Duplicate `(class,fingerprint)` pairs are idempotent.
 The controller normalizes scientific direction descriptors, computes their
 hashes, and binds them to live candidates and canonical FAIL verdicts. Only
 distinct validated direction hashes enable CP-03. Patrol is
 file-backed and deterministic; stale workers increment only `runtime_stall`.
+Production advance/application boundaries automatically record detected
+goal/evaluator integrity drift with isolated routes and counters.
 
 ## Durable Production Loop
 

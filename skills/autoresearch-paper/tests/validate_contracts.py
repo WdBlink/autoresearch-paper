@@ -54,6 +54,7 @@ def main() -> int:
         "tests/test_durable_loop_runtime.py",
         "tests/test_evaluator_admission.py",
         "tests/test_production_transport.py",
+        "tests/test_scientific_truth_and_failure_routing.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -78,6 +79,7 @@ def main() -> int:
             "guardian-validate-lifecycle", "admit-evaluator",
             "check-autonomy-eligibility", "create-durable-frontier-request",
             "commit-durable-frontier-result", "commit-durable-worker-result",
+            "check-scientific-acceptance", "check-research-integrity",
             "context-capsule", "applied", "advisory",
         ),
         "Claude runtime reference must document the complete target controller",
@@ -191,8 +193,14 @@ def main() -> int:
         "test_codex_frontier_is_capsule_derived_advisory_and_exact_once",
     ):
         require(f"def {test_name}" in production_tests, f"missing T007 regression {test_name}", errors)
-    require('version: "0.10.0"' in read("SKILL.md"), "SKILL.md version must be 0.10.0", errors)
-    require("Current version:** v0.10.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.10.0", errors)
+    m3_tests = read("tests/test_scientific_truth_and_failure_routing.py")
+    for test_name in (
+        "test_scientific_acceptance_replays_machine_truth_and_current_admission",
+        "test_integrity_drift_has_isolated_controller_owned_routes",
+    ):
+        require(f"def {test_name}" in m3_tests, f"missing M3 regression {test_name}", errors)
+    require('version: "0.11.0"' in read("SKILL.md"), "SKILL.md version must be 0.11.0", errors)
+    require("Current version:** v0.11.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.11.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -211,6 +219,8 @@ def main() -> int:
             "claim_tick_locked", "commit_durable_revision", "validate_context_capsule",
             "command_create_durable_request", "command_commit_durable_worker_result",
             "command_commit_durable_frontier_result", "validate_request_durable_context",
+            "command_check_scientific_acceptance", "command_check_research_integrity",
+            "goal_drift", "evaluator_integrity", "freeze_controller_material",
         )),
         "harness runtime is missing run-4 safety and reconciliation contracts",
         errors,

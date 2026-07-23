@@ -27,6 +27,22 @@ frozen comparison.
 Validated immutable verdicts live in `state/evaluator_verdicts/` and are named
 in the fsynced evaluator audit.
 
+`freeze-evaluator` snapshots evaluator, evidence, and metric-contract bytes
+into the controller-owned, read-only `state/evaluator_materials/` namespace.
+Candidate runs are rebound to those canonical bytes. A production acceptance
+decision then replays the full authority chain:
+
+```bash
+python3 references/scripts/harness-runtime.py check-scientific-acceptance \
+  --plan-dir PLAN --verdict state/evaluator_verdicts/CANDIDATE.json
+```
+
+The immutable receipt binds the evaluator execution, frozen contract,
+candidate, evidence, metric, operator, threshold, and derived PASS/FAIL. For
+unattended conference/journal plans it also requires the current evaluator
+admission. A normal writing gate consumes this receipt; a stored PASS field
+alone is not sufficient.
+
 Bare text such as `research_acceptance.md: PASS`, `WAIVED_BY_HUMAN`, or
 `WAIVED_NEGATIVE_RESULT` is compatibility evidence only and never authority.
 The executable gate requires `--verdict`, or an immutable applied
@@ -52,6 +68,8 @@ python3 references/scripts/research-state-guard.py check-writing-gate \
 - `scientific_no_improvement`
 - `duplicate_direction`
 - `verifier_rejection`
+- `goal_drift`
+- `evaluator_integrity`
 
 Non-scientific failures use unique `(class,fingerprint)` keys. Scientific
 failures require a complete normalized direction descriptor and canonical
@@ -67,6 +85,14 @@ Only distinct validated direction hashes count toward pivot eligibility. Once
 eligible, `research-state-guard.py validate-pivot` consumes the applied CP-03
 receipt and rejects a direction already present in the failed registry.
 Runtime stalls remain runtime stalls regardless of count.
+
+The last two classes are controller-detected only. Run
+`check-research-integrity` to compare the canonical durable goal, constraints,
+evaluator, frozen contract, and required admission against current bytes.
+Goal drift routes to pause/rebaseline; evaluator-integrity drift routes to
+autonomy revocation and re-admission. Neither increments runtime-stall or
+scientific-non-improvement, and workers cannot inject these labels through
+`record-failure`.
 
 ## Sparse frontier gates
 

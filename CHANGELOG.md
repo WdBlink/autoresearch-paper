@@ -12,6 +12,25 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.11.0] - 2026-07-23
+
+### Added
+
+- Immutable controller-owned evaluator, evidence, and metric-contract
+  snapshots that remove production admission from worker-owned namespaces.
+- Replayed scientific-acceptance receipts binding canonical execution,
+  candidate, evidence, frozen comparison, derived verdict, and current
+  unattended evaluator admission.
+- Deterministic `goal_drift` and `evaluator_integrity` detection, exact-once
+  counters, and isolated pause/rebaseline or revoke/re-admit routes.
+
+### Changed
+
+- Candidate evaluation transparently rebinds hash-matching CP-02 inputs to the
+  canonical controller snapshot.
+- Normal writing authorization consumes a scientific-acceptance receipt rather
+  than trusting a stored PASS field alone.
+
 ## [0.10.0] - 2026-07-23
 
 ### Added

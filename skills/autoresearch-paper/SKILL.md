@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.10.0"
+  version: "0.11.0"
 ---
 
 # Autoresearch Paper
@@ -87,6 +87,8 @@ adapter provides:
 - executable evaluator admission and drift-triggered autonomy revocation for
   unattended conference/journal plans;
 - typed runtime/scientific failure counters and CP-03 eligibility;
+- controller-replayed scientific-acceptance receipts plus isolated goal-drift
+  and evaluator-integrity detection/routes;
 - complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
 - launchd-backed external registration, generation-bound tick leases,
   canonical state/event/evidence revisions, rebuildable projections, and fresh
@@ -368,6 +370,10 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.11.0 (2026-07-23)** — Scientific-truth and failure-routing closure:
+  controller-owned evaluator material snapshots, replayed scientific
+  acceptance with current admission, and isolated deterministic goal-drift /
+  evaluator-integrity detection and routing.
 - **v0.10.0 (2026-07-23)** — Production transport cutover: canonical context
   capsules now bind MiniMax task contracts and inputs, derive Codex checkpoint
   manifests, and admit only controller promotion/transition receipts into the
