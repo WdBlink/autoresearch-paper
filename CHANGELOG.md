@@ -12,6 +12,44 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.9.0] - 2026-07-23
+
+### Added
+
+- A launchd-backed, session-independent production trigger with durable
+  registration/unregistration receipts, generation-bound tick leases,
+  duplicate suppression, missed-tick reconciliation, and crash recovery.
+- Immutable canonical plan revisions, append-only transition/evidence chains,
+  rebuildable objective/phase/evidence/blocker/approval/next-action
+  projections, general dependency-driven work selection, and fresh hash-bound
+  context capsules.
+- Metadata-only Guardian observations with closed schemas, deterministic
+  controller recovery policies, and validation of pre-authorized lifecycle
+  receipts.
+- Executable evaluator admission for unattended conference/journal plans,
+  binding evaluator class and authority, immutable inputs, validation
+  identity, identical replay, passing regression, allowed search space,
+  complexity policy, and exact durable-plan evaluator identity.
+
+### Changed
+
+- A file-backed schedule no longer counts as a production trigger; external
+  scheduler acceptance is required before a registration receipt is written.
+- Unattended conference/journal registration, tick execution, graph advance,
+  and work-unit result application now fail closed without current evaluator
+  admission and revalidate the complete admission chain on every boundary.
+- The closed M1 conformance workflow remains unchanged and distinct from the
+  production state-driven loop. Fault injection and multi-session soak remain
+  cutover acceptance work.
+
+### Fixed
+
+- External scheduler bootstrap and applied-tick crash windows now recover
+  without duplicate registration, state transition, or tick effect.
+- Derived state deletion rebuilds from canonical revisions and chained events;
+  evaluator, goal, task, input, state-revision, or admission drift blocks
+  result application.
+
 ## [0.8.0] - 2026-07-18
 
 ### Added

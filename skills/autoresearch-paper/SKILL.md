@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.8.0"
+  version: "0.9.0"
 ---
 
 # Autoresearch Paper
@@ -27,6 +27,9 @@ file-backed state.
 - Never start writing from a bare PASS string. Require a validated evaluator
   verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
   also requires APPLIED CP-04 `prewriting_final_evidence`.
+- Never register or advance unattended conference/journal execution without a
+  current controller-applied evaluator admission whose replay, regression,
+  authority, inputs, search space, and complexity policy all revalidate.
 - Never create one permanent team member per retry, direction, section, or
   iteration. Stable roles are enough; temporary workers must be marked
   `ephemeral=true` in `resource_manifest.json`.
@@ -56,6 +59,7 @@ route routine bounded tasks through harness-runtime.py dispatch-worker
 at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent transition
 write watchdog-system-prompt.md from references/watchdog-prompt-template.md
 schedule and run deterministic file-backed patrol through harness-runtime.py
+initialize the canonical durable task graph and register its external trigger
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
     observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
@@ -77,14 +81,22 @@ adapter provides:
 - pre-dispatch frontier budget reservation;
 - authenticated, expiring, replay-protected human actions;
 - hash-bound evaluator verdict and final-writing gates;
+- executable evaluator admission and drift-triggered autonomy revocation for
+  unattended conference/journal plans;
 - typed runtime/scientific failure counters and CP-03 eligibility;
 - complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
+- launchd-backed external registration, generation-bound tick leases,
+  canonical state/event/evidence revisions, rebuildable projections, and fresh
+  task context capsules;
+- metadata-only Guardian observations and controller validation of
+  pre-authorized lifecycle actions;
 - durable Codex transport, response validation, exact-once dependent
   transitions, timeout, and restart inspection.
 - the packaged `references/canonical-conformance-workflow.json`
   `claude-research-conformance-v1` fixture, which rejects incomplete M1
   conformance runs and verifies terminal artifacts. It is not the production
-  topic-to-paper trigger; that state-driven cutover remains an M5 gate.
+  topic-to-paper trigger; production state advancement is handled by the
+  durable loop, while fault/soak cutover remains an M5 gate.
 
 MAVIS bootstrap/watchdog scripts are compatibility fixtures. They never define
 target Harness semantics and run only through explicit legacy entry points.
@@ -179,6 +191,13 @@ contract, and scope; pending signed records are not authority. Negative-result
 waivers remain arxiv-only. Every writing tier requires CP-04 final-evidence
 approval and emits a writing-gate audit.
 
+Unattended `conference` and `journal-q1` execution additionally requires
+`admit-evaluator` followed by `check-autonomy-eligibility`. A finite metric
+alone is insufficient: admission binds independent authority, immutable
+inputs, validation identity, identical replay, passing regression, allowed
+search space, and complexity policy. Admission drift blocks trigger, advance,
+and result application.
+
 Before T7 writing, run:
 
 ```bash
@@ -201,19 +220,26 @@ python3 references/scripts/research-state-guard.py \
 Target commands:
 
 ```bash
-python3 references/scripts/harness-runtime.py schedule-patrol --plan-dir PLAN --interval-seconds 300
+python3 references/scripts/harness-runtime.py init-durable-plan --plan-dir PLAN --graph PLAN/durable-plan.json
+python3 references/scripts/harness-runtime.py register-durable-trigger \
+  --plan-dir PLAN --interval-seconds 300 --jitter-seconds 30 \
+  --session-budget-seconds 1800 --human-escalation-after-seconds 900
+python3 references/scripts/harness-runtime.py run-durable-tick --plan-dir PLAN
 python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale-seconds 7200
 ```
 
-The target patrol is file-backed, session-independent, and records only typed
-runtime failures. `bootstrap-watchdog.sh` remains an explicit legacy fixture.
+The production wake-up is externally registered and survives the initiating
+Claude Code session. Tick state, leases, canonical revisions, and context
+capsules are file-backed; a file-only schedule is not treated as a trigger.
+Patrol records only typed runtime failures. `bootstrap-watchdog.sh` remains an
+explicit legacy fixture.
 
 Heartbeat layers:
 
 | Layer | Mechanism | Purpose |
 |---|---|---|
 | L0 | `plan-l0-guard.py` via launchd/manual patrol | session-independent stale detection, repair, cleanup requests |
-| L1 | target file-backed patrol schedule | emits deterministic runtime findings |
+| L1 | launchd-backed durable trigger and lease | wakes and reconciles the deterministic controller |
 | L2 | `last_seen.jsonl` hook | per-task activity heartbeat |
 
 The UI remains useful for status and control, but it is not the L0
@@ -337,6 +363,11 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.9.0 (2026-07-23)** — Durable production loop and evaluator admission:
+  launchd registration, generation-bound tick claims, canonical revisions and
+  projections, fresh context capsules, metadata-only Guardian recovery, and
+  replay/regression/authority-bound eligibility for unattended
+  conference/journal plans.
 - **v0.8.0 (2026-07-18)** — Claude Code target cutover: authenticated human
   actions, evidence-bearing evaluator/writing gates, typed failures, complete
   target runtime operations, hash-bound CP-01–CP-04 transitions, and a

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capsule_id",
+    "plan_id",
+    "task_id",
+    "state_revision",
+    "objective_sha256",
+    "constraints_sha256",
+    "evaluator_sha256",
+    "task_contract",
+    "input_manifest",
+    "input_manifest_sha256",
+    "prior_direction_refs",
+    "evidence_refs",
+    "created_at",
+    "capsule_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "capsule_id": {"type": "string", "pattern": "^capsule_[a-f0-9]{64}$"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "state_revision": {"type": "integer", "minimum": 0},
+    "objective_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "constraints_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evaluator_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "task_contract": {"$ref": "#/$defs/artifact"},
+    "input_manifest": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "input_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "prior_direction_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "created_at": {"type": "string"},
+    "capsule_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

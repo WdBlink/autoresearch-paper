@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "observed_at",
+    "schedule",
+    "workers",
+    "controller"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string"},
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schedule_id", "last_tick_at", "next_due_at"],
+      "properties": {
+        "schedule_id": {"type": "string"},
+        "last_tick_at": {"type": ["string", "null"]},
+        "next_due_at": {"type": "string"}
+      }
+    },
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "status", "updated_at"],
+        "properties": {
+          "run_id": {"type": "string"},
+          "status": {
+            "enum": ["RUNNING", "COMPLETED", "FAILED", "PAUSED", "CANCELLED"]
+          },
+          "updated_at": {"type": "string"}
+        }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "state_revision"],
+      "properties": {
+        "status": {"enum": ["RUNNING", "PAUSED", "STOPPED", "BLOCKED"]},
+        "state_revision": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

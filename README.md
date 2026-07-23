@@ -20,16 +20,19 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.8.0
+- **Current version:** v0.9.0
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
-  owned cleanup, and the durable CP-01–CP-04 Codex bridge are implemented.
+  owned cleanup, the launchd-backed durable state loop, evaluator admission,
+  and the CP-01–CP-04 Codex bridge are implemented.
   The packaged `claude-research-conformance-v1` workflow is a closed M1
   conformance fixture: it journals operation IDs and verifies terminal
   evidence, but does not claim to be the production topic-to-paper trigger.
-  The state-driven full trigger remains an integrated-cutover milestone.
+  The production loop now has external registration, tick leases, canonical
+  revisions, fresh context capsules, and evaluator-eligibility blocking;
+  fault/soak evidence remains an integrated-cutover milestone.
   MAVIS is available only as explicit legacy compatibility. See
   [`skills/autoresearch-paper/references/claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md), the design notes in
   [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
@@ -78,6 +81,11 @@ heartbeat watchdogs, and manifest-driven cleanup.
   self-claims.
 - Dispatches schema-bounded MiniMax M3 workers through Claude Code and reserves
   a frozen budget before sparse Codex checkpoint audits.
+- Registers a session-independent launchd trigger with exactly-one tick claims,
+  rebuildable canonical state, and fresh hash-bound task capsules.
+- Blocks unattended conference/journal autonomy until evaluator authority,
+  replay, regression, immutable inputs, search space, and complexity policy
+  pass executable admission; any identity drift revokes eligibility.
 
 ## Quick Start
 
@@ -117,6 +125,11 @@ and frontier dispatch now enter through the Claude Code controller.
 threshold, candidate, and measured verdict hashes. Bare PASS text is rejected.
 Conference and journal writing additionally require an applied CP-04 final
 evidence audit; waivers are signed human records.
+
+**Unattended autonomy gate:** Conference and journal-q1 durable triggers cannot
+register or advance without a current evaluator-admission receipt. The
+controller revalidates authority, replay, regression, inputs, search space,
+complexity policy, and exact evaluator identity on every autonomy boundary.
 
 **Resource manifest:** Every target-owned removable resource is recorded in
 `resource_manifest.json` with an exact path, ownership nonce, and scope.
@@ -261,9 +274,9 @@ autoresearch-paper/
 
 **Q: Can I run it on Codex CLI or Claude Code without Mavis?**
 A: Yes. Policy, bounded MiniMax M3 workers, CP-01–CP-04 Codex gates,
-authenticated lifecycle actions, file-backed patrol, evaluator verdicts, and
-owned cleanup all run without MAVIS. Pass `--legacy-mavis` only for an old
-compatibility fixture.
+authenticated lifecycle actions, the durable trigger/state loop, evaluator
+admission/verdicts, patrol, and owned cleanup all run without MAVIS. Pass
+`--legacy-mavis` only for an old compatibility fixture.
 
 **Q: The research gate rejected my run. Can I waive it?**
 A: Yes, with an expiring HMAC-signed `waive_acceptance` record. A Markdown
@@ -315,6 +328,9 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.9.0** — launchd-backed durable trigger, generation-bound tick leases,
+  canonical plan revisions, fresh context capsules, metadata-only Guardian,
+  and executable evaluator admission for unattended conference/journal plans.
 - **v0.8.0** — Claude Code target cutover with authenticated human actions,
   hash-bound evaluator and CP-01–CP-04 gates, typed failures, target patrol and
   owned cleanup, plus no-MAVIS end-to-end conformance.

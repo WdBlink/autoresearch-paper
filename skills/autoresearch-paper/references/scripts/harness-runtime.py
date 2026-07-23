@@ -16,6 +16,7 @@ import hmac
 import json
 import math
 import os
+import plistlib
 import re
 import secrets
 import subprocess
@@ -69,6 +70,10 @@ HUMAN_ACTION_SCHEMA = SCRIPT_DIR.parent / "human-action.schema.json"
 EVALUATOR_VERDICT_SCHEMA = SCRIPT_DIR.parent / "evaluator-verdict.schema.json"
 METRIC_CONTRACT_SCHEMA = SCRIPT_DIR.parent / "metric-contract.schema.json"
 DECLARATIVE_EVALUATOR_SCHEMA = SCRIPT_DIR.parent / "declarative-evaluator.schema.json"
+DURABLE_PLAN_SCHEMA = SCRIPT_DIR.parent / "durable-plan.schema.json"
+CONTEXT_CAPSULE_SCHEMA = SCRIPT_DIR.parent / "context-capsule.schema.json"
+GUARDIAN_OBSERVATION_SCHEMA = SCRIPT_DIR.parent / "guardian-observation.schema.json"
+EVALUATOR_ADMISSION_SCHEMA = SCRIPT_DIR.parent / "evaluator-admission.schema.json"
 CHECKPOINT_EVIDENCE_PROFILES = {
     ("CP-01", None): {
         "normalized_brief", "execution_plan", "risk_budget",
@@ -93,6 +98,10 @@ DIRECTION_FIELDS = {
     "baseline_framing", "lineage", "candidate_sha256",
 }
 SCIENTIFIC_DIRECTION_FIELDS = DIRECTION_FIELDS - {"candidate_sha256"}
+DURABLE_SCHEDULE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+DURABLE_TICK_ID_RE = re.compile(r"^tick_[a-f0-9]{64}$")
+DURABLE_CLAIM_ID_RE = re.compile(r"^claim_[a-f0-9]{64}$")
+DURABLE_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class ContractError(RuntimeError):
@@ -158,6 +167,23 @@ def atomic_write_json(path: Path, value: dict[str, Any], *, immutable: bool = Fa
     temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     with temporary.open("w") as handle:
         handle.write(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    if immutable:
+        path.chmod(0o444)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def atomic_write_bytes(path: Path, value: bytes, *, immutable: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    with temporary.open("wb") as handle:
+        handle.write(value)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
@@ -255,15 +281,19 @@ def validate_schema(instance: Any, schema: dict[str, Any], path: str = "$") -> N
     if "enum" in schema and instance not in schema["enum"]:
         raise ContractError(f"{path} is not in the allowed enum")
     expected_type = schema.get("type")
-    type_ok = {
-        "object": isinstance(instance, dict),
-        "array": isinstance(instance, list),
-        "string": isinstance(instance, str),
-        "integer": isinstance(instance, int) and not isinstance(instance, bool),
-        "number": isinstance(instance, (int, float)) and not isinstance(instance, bool),
-        "boolean": isinstance(instance, bool),
-        "null": instance is None,
-    }.get(expected_type, True)
+    type_checks = {
+        "object": lambda: isinstance(instance, dict),
+        "array": lambda: isinstance(instance, list),
+        "string": lambda: isinstance(instance, str),
+        "integer": lambda: isinstance(instance, int) and not isinstance(instance, bool),
+        "number": lambda: isinstance(instance, (int, float)) and not isinstance(instance, bool),
+        "boolean": lambda: isinstance(instance, bool),
+        "null": lambda: instance is None,
+    }
+    expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
+    type_ok = expected_type is None or any(
+        type_checks.get(item, lambda: True)() for item in expected_types
+    )
     if not type_ok:
         raise ContractError(f"{path} must have type {expected_type}")
     if isinstance(instance, dict):
@@ -2002,6 +2032,1450 @@ def command_run_patrol(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, **report}
 
 
+def durable_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "durable_loop"
+
+
+@contextmanager
+def durable_loop_lock(plan_dir: Path) -> Iterator[None]:
+    lock_path = durable_root(plan_dir) / ".controller.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def durable_artifact(plan_dir: Path, raw: Any, name: str) -> dict[str, str]:
+    if not isinstance(raw, dict) or set(raw) != {"path", "sha256"}:
+        raise ContractError(f"{name} must contain exactly path and sha256")
+    if not isinstance(raw.get("path"), str) or not isinstance(raw.get("sha256"), str):
+        raise ContractError(f"{name} path and sha256 must be strings")
+    unresolved = Path(raw["path"])
+    if not unresolved.is_absolute():
+        unresolved = plan_dir / unresolved
+    if unresolved.is_symlink():
+        raise ContractError(f"{name} must not be a symlink")
+    path = normalize_owned_path(plan_dir, str(unresolved))
+    if not path.is_file():
+        raise ContractError(f"{name} does not exist: {path}")
+    digest = sha256_file(path)
+    if digest != raw["sha256"]:
+        raise ContractError(f"{name} hash mismatch")
+    return {"path": str(path), "sha256": digest}
+
+
+def validate_durable_graph(plan_dir: Path, raw: dict[str, Any]) -> dict[str, Any]:
+    validate_schema(raw, read_json(DURABLE_PLAN_SCHEMA))
+    if raw.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("durable plan graph belongs to another plan")
+    normalized = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": raw["plan_id"],
+        "target_tier": raw["target_tier"],
+        "execution_mode": raw["execution_mode"],
+        "objective": durable_artifact(plan_dir, raw["objective"], "objective"),
+        "constraints": durable_artifact(plan_dir, raw["constraints"], "constraints"),
+        "evaluator": durable_artifact(plan_dir, raw["evaluator"], "evaluator"),
+        "tasks": [],
+    }
+    task_ids: list[str] = []
+    for index, task in enumerate(raw.get("tasks", [])):
+        if not isinstance(task, dict) or set(task) != {
+            "task_id", "phase", "depends_on", "task_contract", "inputs",
+        }:
+            raise ContractError(f"tasks[{index}] has an invalid closed shape")
+        task_id = task.get("task_id")
+        if not isinstance(task_id, str) or not DURABLE_TASK_ID_RE.fullmatch(task_id):
+            raise ContractError(f"tasks[{index}].task_id is invalid")
+        if task_id in task_ids:
+            raise ContractError("durable task IDs must be unique")
+        task_ids.append(task_id)
+        phase = task.get("phase")
+        dependencies = task.get("depends_on")
+        inputs = task.get("inputs")
+        if not isinstance(phase, str) or not phase:
+            raise ContractError(f"tasks[{index}].phase must be non-empty")
+        if (
+            not isinstance(dependencies, list)
+            or any(not isinstance(item, str) for item in dependencies)
+            or len(dependencies) != len(set(dependencies))
+        ):
+            raise ContractError(f"tasks[{index}].depends_on must contain unique strings")
+        if not isinstance(inputs, list):
+            raise ContractError(f"tasks[{index}].inputs must be an array")
+        normalized["tasks"].append({
+            "task_id": task_id,
+            "phase": phase,
+            "depends_on": dependencies,
+            "task_contract": durable_artifact(
+                plan_dir, task["task_contract"], f"tasks[{index}].task_contract",
+            ),
+            "inputs": [
+                durable_artifact(plan_dir, item, f"tasks[{index}].inputs[{input_index}]")
+                for input_index, item in enumerate(inputs)
+            ],
+        })
+    known = set(task_ids)
+    for task in normalized["tasks"]:
+        if task["task_id"] in task["depends_on"] or any(
+            dependency not in known for dependency in task["depends_on"]
+        ):
+            raise ContractError("durable task dependency is missing or self-referential")
+    visited: set[str] = set()
+    visiting: set[str] = set()
+    by_id = {item["task_id"]: item for item in normalized["tasks"]}
+
+    def visit(task_id: str) -> None:
+        if task_id in visiting:
+            raise ContractError("durable task graph contains a dependency cycle")
+        if task_id in visited:
+            return
+        visiting.add(task_id)
+        for dependency in by_id[task_id]["depends_on"]:
+            visit(dependency)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for task_id in task_ids:
+        visit(task_id)
+    return normalized
+
+
+def durable_graph_path(plan_dir: Path) -> Path:
+    return durable_root(plan_dir) / "canonical" / "graph.json"
+
+
+def durable_revision_path(plan_dir: Path, revision: int) -> Path:
+    return durable_root(plan_dir) / "canonical" / "revisions" / f"{revision:08d}.json"
+
+
+def read_durable_state(plan_dir: Path) -> dict[str, Any]:
+    head = read_json(durable_root(plan_dir) / "canonical" / "head.json")
+    revision = require_non_negative_int(head.get("state_revision"), "state_revision")
+    path = durable_revision_path(plan_dir, revision)
+    state = read_json(path)
+    if state.get("state_revision") != revision:
+        raise ContractError("durable head revision mismatch")
+    if head.get("state_sha256") != sha256_file(path):
+        raise ContractError("durable canonical state hash mismatch")
+    if state.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("durable canonical state belongs to another plan")
+    return state
+
+
+def last_durable_event(plan_dir: Path) -> dict[str, Any]:
+    path = durable_root(plan_dir) / "events.jsonl"
+    if not path.exists():
+        raise ContractError("durable event log is absent")
+    events = [strict_json_loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not events:
+        raise ContractError("durable event log is empty")
+    prior: str | None = None
+    for event in events:
+        body = {key: value for key, value in event.items() if key != "event_id"}
+        if event.get("event_id") != f"event_{sha256_json(body)}":
+            raise ContractError("durable event identity mismatch")
+        if event.get("previous_event_id") != prior:
+            raise ContractError("durable event chain is broken")
+        prior = event["event_id"]
+    return events[-1]
+
+
+def append_durable_event(plan_dir: Path, value: dict[str, Any]) -> dict[str, Any]:
+    path = durable_root(plan_dir) / "events.jsonl"
+    previous = last_durable_event(plan_dir)["event_id"] if path.exists() else None
+    body = {**value, "previous_event_id": previous}
+    event = {**body, "event_id": f"event_{sha256_json(body)}"}
+    append_jsonl_once(path, "event_id", event["event_id"], event)
+    return event
+
+
+def eligible_durable_task(graph: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+    for task in graph["tasks"]:
+        if state["task_states"][task["task_id"]] != "PENDING":
+            continue
+        if all(state["task_states"][dependency] == "COMPLETED" for dependency in task["depends_on"]):
+            return task
+    return None
+
+
+def durable_projection(
+    graph: dict[str, Any], state: dict[str, Any], event_id: str,
+) -> dict[str, Any]:
+    active_id = state.get("active_task_id")
+    active = next((item for item in graph["tasks"] if item["task_id"] == active_id), None)
+    eligible = eligible_durable_task(graph, state)
+    complete = all(value == "COMPLETED" for value in state["task_states"].values())
+    if complete:
+        phase = "complete"
+        next_action = {"kind": "complete", "task_id": None, "from_state_revision": state["state_revision"]}
+    elif active is not None:
+        phase = active["phase"]
+        next_action = {
+            "kind": "dispatch_task",
+            "task_id": active["task_id"],
+            "from_state_revision": state["state_revision"],
+        }
+    elif eligible is not None:
+        phase = eligible["phase"]
+        next_action = {
+            "kind": "dispatch_task",
+            "task_id": eligible["task_id"],
+            "from_state_revision": state["state_revision"],
+        }
+    else:
+        phase = "blocked"
+        next_action = {
+            "kind": "await_human",
+            "task_id": None,
+            "from_state_revision": state["state_revision"],
+        }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": state["plan_id"],
+        "state_revision": state["state_revision"],
+        "objective": {
+            "text_sha256": graph["objective"]["sha256"],
+            "constraints_sha256": graph["constraints"]["sha256"],
+        },
+        "phase": phase,
+        "evidence_refs": state["evidence_refs"],
+        "blocker_refs": state["blocker_refs"],
+        "approval_refs": state["approval_refs"],
+        "next_action": next_action,
+        "rebuilt_through_event_id": event_id,
+    }
+
+
+def write_durable_projection(plan_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    graph_path = durable_graph_path(plan_dir)
+    graph = read_json(graph_path)
+    if sha256_file(graph_path) != state.get("graph_sha256"):
+        raise ContractError("durable graph hash mismatch")
+    event = last_durable_event(plan_dir)
+    if event.get("state_revision") != state["state_revision"]:
+        raise ContractError("durable event/state revision mismatch")
+    head = read_json(durable_root(plan_dir) / "canonical" / "head.json")
+    if head.get("event_id") != event.get("event_id"):
+        raise ContractError("durable head/event identity mismatch")
+    projection = durable_projection(graph, state, event["event_id"])
+    atomic_write_json(durable_root(plan_dir) / "projection.json", projection)
+    return projection
+
+
+def commit_durable_revision(
+    plan_dir: Path,
+    state: dict[str, Any],
+    *,
+    event_kind: str,
+    event_details: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    revision = require_non_negative_int(state.get("state_revision"), "state_revision")
+    target = durable_revision_path(plan_dir, revision)
+    if target.exists():
+        if read_json(target) != state:
+            raise ContractError("durable state revision identity collision")
+    else:
+        atomic_write_json(target, state, immutable=True)
+    event = append_durable_event(plan_dir, {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": state["plan_id"],
+        "state_revision": revision,
+        "kind": event_kind,
+        "details": event_details,
+        "recorded_at": state["updated_at"],
+    })
+    atomic_write_json(durable_root(plan_dir) / "canonical" / "head.json", {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": state["plan_id"],
+        "state_revision": revision,
+        "state_path": str(target),
+        "state_sha256": sha256_file(target),
+        "event_id": event["event_id"],
+        "updated_at": state["updated_at"],
+    })
+    return state, write_durable_projection(plan_dir, state)
+
+
+def command_init_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    load_policy(plan_dir)
+    approval = check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
+    graph_source = Path(args.graph).resolve()
+    graph = validate_durable_graph(plan_dir, read_json(graph_source))
+    root = durable_root(plan_dir)
+    target = durable_graph_path(plan_dir)
+    with durable_loop_lock(plan_dir):
+        if target.exists():
+            current = read_json(target)
+            if current == graph:
+                head_path = durable_root(plan_dir) / "canonical" / "head.json"
+                if head_path.exists():
+                    state = read_durable_state(plan_dir)
+                else:
+                    state = read_json(durable_revision_path(plan_dir, 0))
+                    commit_durable_revision(
+                        plan_dir, state, event_kind="plan_initialized",
+                        event_details={
+                            "graph_sha256": state["graph_sha256"],
+                            "approval_request_id": approval["request_id"],
+                        },
+                    )
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "state_revision": state["state_revision"],
+                    "projection": write_durable_projection(plan_dir, state),
+                }
+            raise ContractError("durable plan is already initialized with another graph")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(target, graph, immutable=True)
+        now = utc_now()
+        approval_path = transition_receipt_path(
+            plan_dir, "approve_execution", approval["request_id"],
+        )
+        state = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": graph["plan_id"],
+            "state_revision": 0,
+            "graph_sha256": sha256_file(target),
+            "target_tier": graph["target_tier"],
+            "execution_mode": graph["execution_mode"],
+            "objective_sha256": graph["objective"]["sha256"],
+            "constraints_sha256": graph["constraints"]["sha256"],
+            "evaluator_sha256": graph["evaluator"]["sha256"],
+            "task_states": {item["task_id"]: "PENDING" for item in graph["tasks"]},
+            "active_task_id": None,
+            "active_capsule_id": None,
+            "evidence_refs": [],
+            "blocker_refs": [],
+            "approval_refs": [f"{approval_path}:{sha256_file(approval_path)}"],
+            "prior_direction_refs": [],
+            "updated_at": now,
+        }
+        _, projection = commit_durable_revision(
+            plan_dir, state, event_kind="plan_initialized",
+            event_details={
+                "graph_sha256": state["graph_sha256"],
+                "approval_request_id": approval["request_id"],
+            },
+        )
+    return {
+        "ok": True,
+        "graph_path": str(target),
+        "graph_sha256": sha256_file(target),
+        "state_revision": 0,
+        "projection": projection,
+    }
+
+
+def validate_live_durable_artifacts(
+    plan_dir: Path, graph: dict[str, Any], task: dict[str, Any] | None = None,
+) -> None:
+    for name in ("objective", "constraints", "evaluator"):
+        durable_artifact(plan_dir, graph[name], name)
+    if task is not None:
+        durable_artifact(plan_dir, task["task_contract"], "task_contract")
+        for index, item in enumerate(task["inputs"]):
+            durable_artifact(plan_dir, item, f"task input {index}")
+
+
+def evaluator_admission_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "evaluator_admission"
+
+
+def admission_material_paths(args: argparse.Namespace) -> dict[str, str | None]:
+    return {
+        "evaluator": str(Path(args.evaluator).resolve()),
+        "authority_identity": str(Path(args.authority_identity).resolve()),
+        "input_manifest": str(Path(args.input_manifest).resolve()),
+        "validation_identity": str(Path(args.validation_identity).resolve()),
+        "replay_identity": str(Path(args.replay_identity).resolve()),
+        "regression_suite": str(Path(args.regression_suite).resolve()),
+        "allowed_search_space": str(Path(args.allowed_search_space).resolve()),
+        "complexity_identity": (
+            str(Path(args.complexity_identity).resolve())
+            if args.complexity_identity else None
+        ),
+    }
+
+
+def validate_admission_materials(
+    plan_dir: Path,
+    contract: dict[str, Any],
+    paths: dict[str, str | None],
+) -> dict[str, Any]:
+    validate_schema(contract, read_json(EVALUATOR_ADMISSION_SCHEMA))
+    if contract.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("evaluator admission belongs to another plan")
+    expected_validation = {
+        "hard_metric": "metric",
+        "test_suite": "test_suite",
+        "held_out": "held_out_split",
+        "human_review": "human_record",
+    }[contract["evaluator_class"]]
+    if contract["validation_identity"]["kind"] != expected_validation:
+        raise ContractError("evaluator class and validation identity are incompatible")
+    if (
+        contract["evaluator_class"] == "human_review"
+        and contract["autonomy_tiers"]
+    ):
+        raise ContractError("human review cannot admit unattended autonomy")
+    evaluator = Path(str(paths["evaluator"]))
+    authority = Path(str(paths["authority_identity"]))
+    input_manifest_path = Path(str(paths["input_manifest"]))
+    validation = Path(str(paths["validation_identity"]))
+    replay_path = Path(str(paths["replay_identity"]))
+    regression_path = Path(str(paths["regression_suite"]))
+    search_space = Path(str(paths["allowed_search_space"]))
+    worker_owned_roots = (
+        (plan_dir / "artifacts" / "intermediate").resolve(),
+        (plan_dir / "state" / "worker_runs").resolve(),
+    )
+    for name, path, expected in (
+        ("evaluator", evaluator, contract["evaluator_sha256"]),
+        ("authority identity", authority, contract["authority"]["identity_sha256"]),
+        ("input manifest", input_manifest_path, contract["input_manifest_sha256"]),
+        ("validation identity", validation, contract["validation_identity"]["sha256"]),
+        ("replay identity", replay_path, contract["replay_identity_sha256"]),
+        ("regression suite", regression_path, contract["regression_suite_sha256"]),
+        ("allowed search space", search_space, contract["allowed_search_space_sha256"]),
+    ):
+        unresolved = path
+        if unresolved.is_symlink() or not unresolved.is_file():
+            raise ContractError(f"{name} must be an existing regular non-symlink file")
+        resolved = normalize_owned_path(plan_dir, str(unresolved))
+        if any(
+            resolved == worker_root or worker_root in resolved.parents
+            for worker_root in worker_owned_roots
+        ):
+            raise ContractError(f"{name} is inside a worker-owned namespace")
+        if sha256_file(unresolved) != expected:
+            raise ContractError(f"{name} hash mismatch")
+    authority_kind = contract["authority"]["kind"]
+    if authority_kind == "controller_owned":
+        canonical = (plan_dir / "state" / "evaluator_contract.json").resolve()
+        if authority.resolve() != canonical:
+            raise ContractError("controller-owned admission requires the canonical evaluator contract")
+        frozen = read_json(canonical)
+        if (
+            frozen.get("evaluator_sha256") != contract["evaluator_sha256"]
+            or Path(frozen.get("evaluator_path", "")).resolve() != evaluator.resolve()
+        ):
+            raise ContractError("controller-owned evaluator identity mismatch")
+    elif authority_kind == "external_readonly":
+        if authority.resolve() == evaluator.resolve():
+            raise ContractError("external evaluator authority identity must be independent")
+        if authority.stat().st_mode & 0o222 or evaluator.stat().st_mode & 0o222:
+            raise ContractError("external evaluator authority must be filesystem read-only")
+    elif contract["autonomy_tiers"]:
+        raise ContractError("human-signed authority is not executable unattended admission")
+    manifest = read_json(input_manifest_path)
+    if set(manifest) != {"schema_version", "artifacts"} or manifest.get("schema_version") != 1:
+        raise ContractError("admission input manifest has an invalid closed shape")
+    inputs = verify_manifest_items(manifest.get("artifacts"), base_dir=plan_dir)
+    replay = read_json(replay_path)
+    if set(replay) != {
+        "schema_version", "evaluator_sha256", "input_manifest_sha256",
+        "first_verdict_sha256", "second_verdict_sha256", "status",
+    }:
+        raise ContractError("evaluator replay receipt has an invalid closed shape")
+    if (
+        replay.get("schema_version") != 1
+        or replay.get("evaluator_sha256") != contract["evaluator_sha256"]
+        or replay.get("input_manifest_sha256") != contract["input_manifest_sha256"]
+        or replay.get("first_verdict_sha256") != replay.get("second_verdict_sha256")
+        or replay.get("status") != "PASS"
+    ):
+        raise ContractError("evaluator replay evidence did not reproduce an identical verdict")
+    regression = read_json(regression_path)
+    if set(regression) != {
+        "schema_version", "evaluator_sha256", "status", "failed_tests", "total_tests",
+    }:
+        raise ContractError("evaluator regression receipt has an invalid closed shape")
+    if (
+        regression.get("schema_version") != 1
+        or regression.get("evaluator_sha256") != contract["evaluator_sha256"]
+        or regression.get("status") != "PASS"
+        or regression.get("failed_tests") != 0
+        or isinstance(regression.get("total_tests"), bool)
+        or not isinstance(regression.get("total_tests"), int)
+        or regression["total_tests"] < 1
+    ):
+        raise ContractError("evaluator regression suite did not pass")
+    complexity = contract["complexity_policy"]
+    complexity_path = paths.get("complexity_identity")
+    if complexity["kind"] == "not_applicable":
+        if complexity["identity_sha256"] is not None or complexity_path is not None:
+            raise ContractError("not_applicable complexity policy cannot carry an identity")
+        if not isinstance(complexity.get("rationale"), str) or not complexity["rationale"].strip():
+            raise ContractError("not_applicable complexity policy requires a rationale")
+    else:
+        if not complexity_path or not isinstance(complexity["identity_sha256"], str):
+            raise ContractError("complexity penalty/budget requires an identity artifact")
+        path = Path(complexity_path)
+        if path.is_symlink() or not path.is_file():
+            raise ContractError("complexity identity must be a regular non-symlink file")
+        normalize_owned_path(plan_dir, str(path))
+        if sha256_file(path) != complexity["identity_sha256"]:
+            raise ContractError("complexity identity hash mismatch")
+    return {
+        "evaluator": {"path": str(evaluator), "sha256": sha256_file(evaluator)},
+        "authority_identity": {"path": str(authority), "sha256": sha256_file(authority)},
+        "input_manifest": {"path": str(input_manifest_path), "sha256": sha256_file(input_manifest_path)},
+        "validation_identity": {"path": str(validation), "sha256": sha256_file(validation)},
+        "replay_identity": {"path": str(replay_path), "sha256": sha256_file(replay_path)},
+        "regression_suite": {"path": str(regression_path), "sha256": sha256_file(regression_path)},
+        "allowed_search_space": {"path": str(search_space), "sha256": sha256_file(search_space)},
+        "complexity_identity": (
+            {"path": str(complexity_path), "sha256": sha256_file(Path(complexity_path))}
+            if complexity_path else None
+        ),
+        "verified_inputs": inputs,
+    }
+
+
+def command_admit_evaluator(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    source = read_json(Path(args.contract).resolve())
+    source["admitted_by"] = "controller"
+    source["admitted_at"] = utc_now()
+    paths = admission_material_paths(args)
+    materials = validate_admission_materials(plan_dir, source, paths)
+    identity_body = {key: value for key, value in source.items() if key != "admitted_at"}
+    canonical_contract_hash = sha256_json(identity_body)
+    admission_id = f"admission_{canonical_contract_hash}"
+    root = evaluator_admission_root(plan_dir)
+    contract_path = root / "contracts" / f"{admission_id}.json"
+    receipt_path = root / "receipts" / f"{admission_id}.json"
+    with durable_loop_lock(plan_dir):
+        if contract_path.exists():
+            stored = read_json(contract_path)
+            stored_identity = {key: value for key, value in stored.items() if key != "admitted_at"}
+            if stored_identity != identity_body:
+                raise ContractError("evaluator admission identity collision")
+            source = stored
+        else:
+            atomic_write_json(contract_path, source, immutable=True)
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": source["plan_id"],
+            "admission_id": admission_id,
+            "contract_path": str(contract_path),
+            "contract_sha256": sha256_file(contract_path),
+            "contract_canonical_sha256": sha256_json(source),
+            "materials": materials,
+            "autonomy_tiers": source["autonomy_tiers"],
+            "admitted_at": source["admitted_at"],
+            "status": "ADMITTED",
+        }
+        if receipt_path.exists():
+            prior = read_json(receipt_path)
+            return {"ok": True, "idempotent": True, "receipt_path": str(receipt_path), **prior}
+        atomic_write_json(receipt_path, receipt, immutable=True)
+        atomic_write_json(root / "current.json", {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": source["plan_id"],
+            "admission_id": admission_id,
+            "receipt_path": str(receipt_path),
+            "receipt_sha256": sha256_file(receipt_path),
+            "status": "ADMITTED",
+            "updated_at": source["admitted_at"],
+        })
+        append_jsonl(root / "audit.jsonl", {
+            "schema_version": SCHEMA_VERSION,
+            "event": "evaluator_admitted",
+            "admission_id": admission_id,
+            "receipt_sha256": sha256_file(receipt_path),
+            "recorded_at": source["admitted_at"],
+        })
+    return {"ok": True, "receipt_path": str(receipt_path), **receipt}
+
+
+def validate_current_evaluator_admission(
+    plan_dir: Path, graph: dict[str, Any], autonomy_tier: str,
+) -> dict[str, Any]:
+    root = evaluator_admission_root(plan_dir)
+    try:
+        current = read_json(root / "current.json")
+        receipt_path = Path(current["receipt_path"])
+        receipt = read_json(receipt_path)
+        if (
+            current.get("status") != "ADMITTED"
+            or receipt.get("status") != "ADMITTED"
+            or current.get("receipt_sha256") != sha256_file(receipt_path)
+            or receipt.get("admission_id") != current.get("admission_id")
+        ):
+            raise ContractError("evaluator admission receipt correlation mismatch")
+        contract_path = Path(receipt["contract_path"])
+        contract = read_json(contract_path)
+        if (
+            receipt.get("contract_sha256") != sha256_file(contract_path)
+            or receipt.get("contract_canonical_sha256") != sha256_json(contract)
+            or autonomy_tier not in contract.get("autonomy_tiers", [])
+            or contract.get("evaluator_sha256") != graph["evaluator"]["sha256"]
+        ):
+            raise ContractError("evaluator admission does not authorize this durable plan")
+        paths = {
+            role: value["path"] if value else None
+            for role, value in receipt["materials"].items()
+            if role != "verified_inputs"
+        }
+        validate_admission_materials(plan_dir, contract, paths)
+        return receipt
+    except (ContractError, KeyError, TypeError) as exc:
+        reason = str(exc)
+        fingerprint = hashlib.sha256(reason.encode()).hexdigest()
+        append_jsonl_once(root / "audit.jsonl", "fingerprint", fingerprint, {
+            "schema_version": SCHEMA_VERSION,
+            "event": "evaluator_admission_invalidated",
+            "fingerprint": fingerprint,
+            "reason": reason,
+            "recorded_at": utc_now(),
+        })
+        raise ContractError(f"unattended autonomy is blocked: {reason}") from None
+
+
+def require_durable_autonomy_eligibility(plan_dir: Path) -> dict[str, Any] | None:
+    graph = read_json(durable_graph_path(plan_dir))
+    if graph.get("execution_mode") != "unattended":
+        return None
+    tier = graph.get("target_tier")
+    autonomy_tier = {
+        "conference": "conference_unattended",
+        "journal-q1": "journal_q1_unattended",
+    }.get(tier)
+    if autonomy_tier is None:
+        return None
+    return validate_current_evaluator_admission(plan_dir, graph, autonomy_tier)
+
+
+def command_check_autonomy_eligibility(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    receipt = require_durable_autonomy_eligibility(plan_dir)
+    return {
+        "ok": True,
+        "eligible": True,
+        "admission_id": receipt.get("admission_id") if receipt else None,
+    }
+
+
+def context_capsule_path(plan_dir: Path, capsule_id: str) -> Path:
+    if not re.fullmatch(r"capsule_[a-f0-9]{64}", capsule_id):
+        raise ContractError("invalid context capsule identity")
+    return durable_root(plan_dir) / "capsules" / f"{capsule_id}.json"
+
+
+def make_context_capsule(
+    plan_dir: Path,
+    graph: dict[str, Any],
+    state: dict[str, Any],
+    task: dict[str, Any],
+) -> dict[str, Any]:
+    manifest = task["inputs"]
+    identity = {
+        "plan_id": state["plan_id"],
+        "task_id": task["task_id"],
+        "state_revision": state["state_revision"] + 1,
+        "graph_sha256": state["graph_sha256"],
+        "task_contract_sha256": task["task_contract"]["sha256"],
+        "input_manifest_sha256": sha256_json(manifest),
+    }
+    capsule_id = f"capsule_{sha256_json(identity)}"
+    target = context_capsule_path(plan_dir, capsule_id)
+    if target.exists():
+        capsule = read_json(target)
+        body = {key: value for key, value in capsule.items() if key != "capsule_sha256"}
+        if capsule.get("capsule_sha256") != sha256_json(body):
+            raise ContractError("stored context capsule hash mismatch")
+        return capsule
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "capsule_id": capsule_id,
+        "plan_id": state["plan_id"],
+        "task_id": task["task_id"],
+        "state_revision": state["state_revision"] + 1,
+        "objective_sha256": graph["objective"]["sha256"],
+        "constraints_sha256": graph["constraints"]["sha256"],
+        "evaluator_sha256": graph["evaluator"]["sha256"],
+        "task_contract": task["task_contract"],
+        "input_manifest": manifest,
+        "input_manifest_sha256": sha256_json(manifest),
+        "prior_direction_refs": state["prior_direction_refs"],
+        "evidence_refs": state["evidence_refs"],
+        "created_at": utc_now(),
+    }
+    capsule = {**body, "capsule_sha256": sha256_json(body)}
+    validate_schema(capsule, read_json(CONTEXT_CAPSULE_SCHEMA))
+    atomic_write_json(target, capsule, immutable=True)
+    return capsule
+
+
+def command_advance_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    require_durable_autonomy_eligibility(plan_dir)
+    with durable_loop_lock(plan_dir):
+        graph = read_json(durable_graph_path(plan_dir))
+        state = read_durable_state(plan_dir)
+        if state.get("active_task_id"):
+            capsule = read_json(context_capsule_path(plan_dir, state["active_capsule_id"]))
+            return {
+                "ok": True,
+                "idempotent": True,
+                "capsule_path": str(context_capsule_path(plan_dir, capsule["capsule_id"])),
+                "capsule": capsule,
+                "projection": write_durable_projection(plan_dir, state),
+            }
+        task = eligible_durable_task(graph, state)
+        if task is None:
+            projection = write_durable_projection(plan_dir, state)
+            return {"ok": True, "complete": projection["next_action"]["kind"] == "complete", "projection": projection}
+        validate_live_durable_artifacts(plan_dir, graph, task)
+        capsule = make_context_capsule(plan_dir, graph, state, task)
+        next_state = {
+            **state,
+            "state_revision": state["state_revision"] + 1,
+            "task_states": {**state["task_states"], task["task_id"]: "READY"},
+            "active_task_id": task["task_id"],
+            "active_capsule_id": capsule["capsule_id"],
+            "updated_at": capsule["created_at"],
+        }
+        _, projection = commit_durable_revision(
+            plan_dir, next_state, event_kind="context_capsule_prepared",
+            event_details={
+                "task_id": task["task_id"],
+                "capsule_id": capsule["capsule_id"],
+                "capsule_sha256": capsule["capsule_sha256"],
+            },
+        )
+    return {
+        "ok": True,
+        "capsule_path": str(context_capsule_path(plan_dir, capsule["capsule_id"])),
+        "capsule": capsule,
+        "projection": projection,
+    }
+
+
+def validate_context_capsule(
+    plan_dir: Path, capsule_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    expected_root = (durable_root(plan_dir) / "capsules").resolve()
+    try:
+        capsule_path.resolve().relative_to(expected_root)
+    except ValueError as exc:
+        raise ContractError("context capsule is outside canonical durable state") from exc
+    capsule = read_json(capsule_path)
+    validate_schema(capsule, read_json(CONTEXT_CAPSULE_SCHEMA))
+    if capsule_path.resolve() != context_capsule_path(plan_dir, capsule["capsule_id"]).resolve():
+        raise ContractError("context capsule path/identity mismatch")
+    body = {key: value for key, value in capsule.items() if key != "capsule_sha256"}
+    if capsule["capsule_sha256"] != sha256_json(body):
+        raise ContractError("context capsule hash mismatch")
+    graph = read_json(durable_graph_path(plan_dir))
+    state = read_durable_state(plan_dir)
+    if capsule["plan_id"] != state["plan_id"] or capsule["state_revision"] != state["state_revision"]:
+        raise ContractError("context capsule state revision drift")
+    if state.get("active_capsule_id") != capsule["capsule_id"] or state.get("active_task_id") != capsule["task_id"]:
+        raise ContractError("context capsule is not the current claimed work unit")
+    task = next((item for item in graph["tasks"] if item["task_id"] == capsule["task_id"]), None)
+    if task is None or state["task_states"].get(capsule["task_id"]) != "READY":
+        raise ContractError("context capsule task is not ready")
+    validate_live_durable_artifacts(plan_dir, graph, task)
+    checks = {
+        "objective_sha256": graph["objective"]["sha256"],
+        "constraints_sha256": graph["constraints"]["sha256"],
+        "evaluator_sha256": graph["evaluator"]["sha256"],
+        "input_manifest_sha256": sha256_json(task["inputs"]),
+    }
+    if any(capsule.get(field) != expected for field, expected in checks.items()):
+        raise ContractError("context capsule goal, evaluator, or input drift")
+    if capsule.get("task_contract") != task["task_contract"] or capsule.get("input_manifest") != task["inputs"]:
+        raise ContractError("context capsule task contract drift")
+    return capsule, graph, state, task
+
+
+def command_apply_work_unit_result(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    require_durable_autonomy_eligibility(plan_dir)
+    with durable_loop_lock(plan_dir):
+        capsule, graph, state, task = validate_context_capsule(
+            plan_dir, Path(args.capsule).resolve(),
+        )
+        unresolved_result = Path(args.result)
+        if not unresolved_result.is_absolute():
+            unresolved_result = plan_dir / unresolved_result
+        if unresolved_result.is_symlink():
+            raise ContractError("work-unit result must not be a symlink")
+        result_path = normalize_owned_path(plan_dir, str(unresolved_result))
+        result = read_json(result_path)
+        if not isinstance(result, dict) or set(result) != {
+            "schema_version", "capsule_id", "task_id", "evidence",
+        }:
+            raise ContractError("work-unit result has an invalid closed shape")
+        if (
+            result.get("schema_version") != SCHEMA_VERSION
+            or result.get("capsule_id") != capsule["capsule_id"]
+            or result.get("task_id") != task["task_id"]
+            or not isinstance(result.get("evidence"), list)
+        ):
+            raise ContractError("work-unit result correlation mismatch")
+        evidence_manifest = [
+            durable_artifact(plan_dir, item, f"result evidence {index}")
+            for index, item in enumerate(result["evidence"])
+        ]
+        evidence_identity = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": state["plan_id"],
+            "task_id": task["task_id"],
+            "capsule_id": capsule["capsule_id"],
+            "capsule_sha256": capsule["capsule_sha256"],
+            "result_path": str(result_path),
+            "result_sha256": sha256_file(result_path),
+            "evidence_manifest": evidence_manifest,
+        }
+        evidence_id = f"evidence_{sha256_json(evidence_identity)}"
+        evidence_path = durable_root(plan_dir) / "evidence" / f"{evidence_id}.json"
+        if evidence_path.exists():
+            evidence_record = read_json(evidence_path)
+            if any(evidence_record.get(key) != value for key, value in evidence_identity.items()):
+                raise ContractError("durable evidence identity collision")
+        else:
+            evidence_record = {
+                **evidence_identity,
+                "recorded_at": utc_now(),
+                "evidence_id": evidence_id,
+            }
+            atomic_write_json(evidence_path, evidence_record, immutable=True)
+        next_state = {
+            **state,
+            "state_revision": state["state_revision"] + 1,
+            "task_states": {**state["task_states"], task["task_id"]: "COMPLETED"},
+            "active_task_id": None,
+            "active_capsule_id": None,
+            "evidence_refs": [*state["evidence_refs"], evidence_id],
+            "updated_at": evidence_record["recorded_at"],
+        }
+        _, projection = commit_durable_revision(
+            plan_dir, next_state, event_kind="work_unit_applied",
+            event_details={
+                "task_id": task["task_id"],
+                "capsule_id": capsule["capsule_id"],
+                "evidence_id": evidence_id,
+            },
+        )
+    return {
+        "ok": True,
+        "evidence_record": str(evidence_path),
+        "evidence_id": evidence_id,
+        "projection": projection,
+    }
+
+
+def command_rebuild_durable_projection(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    with durable_loop_lock(plan_dir):
+        state = read_durable_state(plan_dir)
+        event = last_durable_event(plan_dir)
+        if event.get("state_revision") != state["state_revision"]:
+            raise ContractError("durable event log does not reach canonical head")
+        projection = write_durable_projection(plan_dir, state)
+    return {"ok": True, "projection": projection}
+
+
+def durable_schedule_root(plan_dir: Path, schedule_id: str) -> Path:
+    if not DURABLE_SCHEDULE_ID_RE.fullmatch(schedule_id):
+        raise ContractError("invalid durable schedule_id")
+    return durable_root(plan_dir) / "schedules" / schedule_id
+
+
+def scheduler_service_target(label: str) -> str:
+    return f"gui/{os.getuid()}/{label}"
+
+
+def scheduler_is_loaded(binary: str, label: str) -> bool:
+    proc = subprocess.run(
+        [binary, "print", scheduler_service_target(label)],
+        capture_output=True, text=True,
+    )
+    return proc.returncode == 0
+
+
+def command_register_durable_trigger(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    load_policy(plan_dir)
+    approval = check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
+    require_durable_autonomy_eligibility(plan_dir)
+    if not 60 <= args.interval_seconds <= 86400:
+        raise ContractError("interval_seconds must be between 60 and 86400")
+    if not 0 <= args.jitter_seconds < args.interval_seconds:
+        raise ContractError("jitter_seconds must be non-negative and below interval_seconds")
+    for name in ("session_budget_seconds", "human_escalation_after_seconds", "lease_seconds"):
+        value = getattr(args, name)
+        if not 1 <= value <= 86400:
+            raise ContractError(f"{name} must be between 1 and 86400")
+    schedule_root = durable_schedule_root(plan_dir, args.schedule_id)
+    current_path = schedule_root / "current.json"
+    with durable_loop_lock(plan_dir):
+        current = read_json(current_path) if current_path.exists() else None
+        if current and current.get("active") is True and not args.first_due_at:
+            prior_contract = read_json(Path(current["schedule_contract_path"]))
+            first_due = parse_utc(prior_contract["next_due_at"])
+        else:
+            first_due = parse_utc(args.first_due_at) if args.first_due_at else datetime.now(timezone.utc)
+        generation = int(current.get("registration_generation", 0)) + 1 if current else 1
+        runtime_script = Path(__file__).resolve()
+        program = [
+            sys.executable, str(runtime_script), "run-durable-tick",
+            "--plan-dir", str(plan_dir), "--schedule-id", args.schedule_id,
+        ]
+        contract = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_identity(plan_dir),
+            "schedule_id": args.schedule_id,
+            "interval_seconds": args.interval_seconds,
+            "jitter_seconds": args.jitter_seconds,
+            "session_budget_seconds": args.session_budget_seconds,
+            "human_escalation_after_seconds": args.human_escalation_after_seconds,
+            "lease_seconds": args.lease_seconds,
+            "next_due_at": first_due.isoformat().replace("+00:00", "Z"),
+            "registration_generation": generation,
+            "controller_command_sha256": sha256_json(program),
+        }
+        if current and current.get("active") is True:
+            prior = read_json(Path(current["schedule_contract_path"]))
+            comparable = {key: value for key, value in contract.items() if key not in {"registration_generation"}}
+            prior_comparable = {key: value for key, value in prior.items() if key not in {"registration_generation"}}
+            if comparable != prior_comparable:
+                raise ContractError("active durable trigger must be unregistered before replacement")
+            receipt = read_json(Path(current["registration_receipt_path"]))
+            if not scheduler_is_loaded(args.launchctl_bin, receipt["scheduler_label"]):
+                proc = subprocess.run(
+                    [
+                        args.launchctl_bin, "bootstrap", f"gui/{os.getuid()}",
+                        receipt["scheduler_plist_path"],
+                    ],
+                    capture_output=True, text=True,
+                )
+                if proc.returncode != 0:
+                    raise ContractError(
+                        f"external scheduler recovery failed: {proc.stderr.strip()}"
+                    )
+                append_jsonl(schedule_root / "registration-events.jsonl", {
+                    "schema_version": SCHEMA_VERSION,
+                    "event": "external_registration_recovered",
+                    "registration_id": receipt["registration_id"],
+                    "registration_generation": receipt["registration_generation"],
+                    "recovered_at": utc_now(),
+                })
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "external_registration_recovered": True,
+                    **receipt,
+                }
+            return {"ok": True, "idempotent": True, **receipt}
+        generation_root = schedule_root / "generations" / str(generation)
+        contract_path = generation_root / "schedule-contract.json"
+        if contract_path.exists():
+            existing_contract = read_json(contract_path)
+            requested = dict(contract)
+            if not args.first_due_at:
+                requested["next_due_at"] = existing_contract.get("next_due_at")
+            if requested != existing_contract:
+                raise ContractError("durable trigger schedule contract recovery mismatch")
+            contract = existing_contract
+        else:
+            atomic_write_json(contract_path, contract, immutable=True)
+        label = f"com.autoresearch-paper.{hashlib.sha256((contract['plan_id'] + ':' + args.schedule_id).encode()).hexdigest()[:24]}"
+        plist_path = generation_root / f"{label}.plist"
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist = {
+            "Label": label,
+            "ProgramArguments": program,
+            "RunAtLoad": True,
+            "StartInterval": args.interval_seconds,
+            "ProcessType": "Background",
+        }
+        plist_bytes = plistlib.dumps(plist, fmt=plistlib.FMT_XML)
+        if plist_path.exists():
+            if plist_path.read_bytes() != plist_bytes:
+                raise ContractError("durable scheduler plist recovery mismatch")
+        else:
+            atomic_write_bytes(plist_path, plist_bytes, immutable=True)
+        journal_path = generation_root / "registration-journal.json"
+        journal = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": contract["plan_id"],
+            "schedule_id": args.schedule_id,
+            "registration_generation": generation,
+            "phase": "PREPARED",
+            "schedule_contract_path": str(contract_path),
+            "schedule_contract_sha256": sha256_file(contract_path),
+            "scheduler_label": label,
+            "scheduler_plist_path": str(plist_path),
+            "scheduler_plist_sha256": sha256_file(plist_path),
+            "approval_request_id": approval["request_id"],
+            "prepared_at": utc_now(),
+        }
+        if journal_path.exists():
+            prior = read_json(journal_path)
+            if any(
+                prior.get(field) != journal.get(field)
+                for field in (
+                    "plan_id", "schedule_id", "registration_generation",
+                    "schedule_contract_sha256", "scheduler_label", "scheduler_plist_sha256",
+                )
+            ):
+                raise ContractError("durable trigger registration journal collision")
+            journal = prior
+        else:
+            atomic_write_json(journal_path, journal)
+        loaded = scheduler_is_loaded(args.launchctl_bin, label)
+        if not loaded:
+            proc = subprocess.run(
+                [args.launchctl_bin, "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+                capture_output=True, text=True,
+            )
+            if proc.returncode != 0:
+                raise ContractError(f"external scheduler registration failed: {proc.stderr.strip()}")
+        if getattr(args, "simulate_crash_after_bootstrap", False):
+            raise ContractError("simulated crash after external scheduler bootstrap")
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": contract["plan_id"],
+            "schedule_id": args.schedule_id,
+            "registration_id": f"registration_{sha256_json(journal)}",
+            "registration_generation": generation,
+            "schedule_contract_path": str(contract_path),
+            "schedule_contract_sha256": sha256_file(contract_path),
+            "scheduler_backend": "launchd",
+            "scheduler_label": label,
+            "scheduler_plist_path": str(plist_path),
+            "scheduler_plist_sha256": sha256_file(plist_path),
+            "registered_at": utc_now(),
+        }
+        receipt_path = generation_root / "registration-receipt.json"
+        atomic_write_json(receipt_path, receipt, immutable=True)
+        journal.update({
+            "phase": "COMMITTED",
+            "registration_receipt_path": str(receipt_path),
+            "registration_receipt_sha256": sha256_file(receipt_path),
+            "committed_at": receipt["registered_at"],
+        })
+        atomic_write_json(journal_path, journal)
+        atomic_write_json(current_path, {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": contract["plan_id"],
+            "schedule_id": args.schedule_id,
+            "registration_generation": generation,
+            "active": True,
+            "schedule_contract_path": str(contract_path),
+            "schedule_contract_sha256": sha256_file(contract_path),
+            "registration_receipt_path": str(receipt_path),
+            "registration_receipt_sha256": sha256_file(receipt_path),
+            "updated_at": receipt["registered_at"],
+        })
+        atomic_write_json(schedule_root / "runtime.json", {
+            "schema_version": SCHEMA_VERSION,
+            "schedule_id": args.schedule_id,
+            "last_tick_at": None,
+            "next_due_at": contract["next_due_at"],
+            "updated_at": receipt["registered_at"],
+        })
+    return {"ok": True, "registration_receipt": str(receipt_path), **receipt}
+
+
+def command_unregister_durable_trigger(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, Path(args.authorization).resolve(), "stop",
+    )
+    schedule_root = durable_schedule_root(plan_dir, args.schedule_id)
+    current_path = schedule_root / "current.json"
+    with durable_loop_lock(plan_dir):
+        current = read_json(current_path)
+        receipt = read_json(Path(current["registration_receipt_path"]))
+        removal_path = (
+            schedule_root / "generations" / str(current["registration_generation"])
+            / "unregistration-receipt.json"
+        )
+        if current.get("active") is not True:
+            return {"ok": True, "idempotent": True, **read_json(removal_path)}
+        if scheduler_is_loaded(args.launchctl_bin, receipt["scheduler_label"]):
+            proc = subprocess.run(
+                [args.launchctl_bin, "bootout", scheduler_service_target(receipt["scheduler_label"])],
+                capture_output=True, text=True,
+            )
+            if proc.returncode != 0:
+                raise ContractError(f"external scheduler removal failed: {proc.stderr.strip()}")
+        removal = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": current["plan_id"],
+            "schedule_id": args.schedule_id,
+            "registration_id": receipt["registration_id"],
+            "registration_generation": current["registration_generation"],
+            "scheduler_label": receipt["scheduler_label"],
+            "stop_record_id": authorization["record_id"],
+            "unregistered_at": utc_now(),
+        }
+        atomic_write_json(removal_path, removal, immutable=True)
+        current.update({
+            "active": False,
+            "unregistration_receipt_path": str(removal_path),
+            "unregistration_receipt_sha256": sha256_file(removal_path),
+            "updated_at": removal["unregistered_at"],
+        })
+        atomic_write_json(current_path, current)
+    return {"ok": True, "unregistration_receipt": str(removal_path), **removal}
+
+
+def durable_tick_root(plan_dir: Path, schedule_id: str, tick_id: str) -> Path:
+    if not DURABLE_TICK_ID_RE.fullmatch(tick_id):
+        raise ContractError("invalid durable tick_id")
+    return durable_schedule_root(plan_dir, schedule_id) / "ticks" / tick_id
+
+
+def claim_tick_locked(
+    plan_dir: Path,
+    schedule_id: str,
+    tick_id: str,
+    observed_at: datetime,
+    lease_seconds: int,
+) -> dict[str, Any]:
+    tick_root = durable_tick_root(plan_dir, schedule_id, tick_id)
+    current_path = tick_root / "current.json"
+    current = read_json(current_path) if current_path.exists() else None
+    if current and current.get("status") == "APPLIED":
+        return {"ok": True, "already_applied": True, "claim": current}
+    if current and current.get("status") == "CLAIMED":
+        expiry = parse_utc(current["lease_expires_at"])
+        if observed_at < expiry:
+            return {"ok": True, "already_claimed": True, "claim": current}
+        generation = current["generation"] + 1
+    else:
+        generation = 1
+    contract_pointer = read_json(durable_schedule_root(plan_dir, schedule_id) / "current.json")
+    if contract_pointer.get("active") is not True:
+        raise ContractError("durable schedule is not active")
+    claim_basis = {
+        "plan_id": plan_identity(plan_dir),
+        "schedule_id": schedule_id,
+        "tick_id": tick_id,
+        "generation": generation,
+        "claimed_at": observed_at.isoformat().replace("+00:00", "Z"),
+    }
+    claim_id = f"claim_{sha256_json(claim_basis)}"
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        **claim_basis,
+        "claim_id": claim_id,
+        "lease_expires_at": (
+            observed_at + timedelta(seconds=lease_seconds)
+        ).isoformat().replace("+00:00", "Z"),
+        "schedule_contract_sha256": contract_pointer["schedule_contract_sha256"],
+        "status": "CLAIMED",
+    }
+    receipt_path = tick_root / "claims" / f"{claim_id}.json"
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    atomic_write_json(current_path, {**receipt, "claim_receipt_path": str(receipt_path)})
+    append_jsonl(durable_schedule_root(plan_dir, schedule_id) / "tick-events.jsonl", {
+        "schema_version": SCHEMA_VERSION,
+        "event": "tick_claimed",
+        **receipt,
+    })
+    return {"ok": True, "claim_receipt": str(receipt_path), "claim": receipt}
+
+
+def command_claim_durable_tick(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    observed_at = parse_utc(args.observed_at) if args.observed_at else datetime.now(timezone.utc)
+    if not 1 <= args.lease_seconds <= 86400:
+        raise ContractError("lease_seconds must be between 1 and 86400")
+    with durable_loop_lock(plan_dir):
+        return claim_tick_locked(
+            plan_dir, args.schedule_id, args.tick_id, observed_at, args.lease_seconds,
+        )
+
+
+def command_reconcile_durable_tick(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    observed_at = parse_utc(args.observed_at) if args.observed_at else datetime.now(timezone.utc)
+    tick_root = durable_tick_root(plan_dir, args.schedule_id, args.tick_id)
+    with durable_loop_lock(plan_dir):
+        current = read_json(tick_root / "current.json")
+        if current.get("status") == "APPLIED":
+            outcome = "superseded"
+            resulting = current["generation"]
+            applied_claim_id = current["claim_id"]
+        elif observed_at < parse_utc(current["lease_expires_at"]):
+            outcome = "pending"
+            resulting = current["generation"]
+            applied_claim_id = None
+        else:
+            schedule = read_json(Path(
+                read_json(durable_schedule_root(plan_dir, args.schedule_id) / "current.json")[
+                    "schedule_contract_path"
+                ]
+            ))
+            claimed = claim_tick_locked(
+                plan_dir, args.schedule_id, args.tick_id, observed_at, schedule["lease_seconds"],
+            )
+            outcome = "advanced"
+            resulting = claimed["claim"]["generation"]
+            applied_claim_id = None
+            current = claimed["claim"]
+        body = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_identity(plan_dir),
+            "schedule_id": args.schedule_id,
+            "tick_id": args.tick_id,
+            "observed_generation": max(1, resulting - 1) if outcome == "advanced" else resulting,
+            "outcome": outcome,
+            "resulting_generation": resulting,
+            "applied_claim_id": applied_claim_id,
+            "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+        }
+        result = {**body, "evidence_sha256": sha256_json({"claim": current, **body})}
+        target = tick_root / "reconciliations" / f"{sha256_json(result)}.json"
+        atomic_write_json(target, result, immutable=True)
+    return {"ok": True, "reconciliation_result": str(target), **result}
+
+
+def mark_tick_applied(
+    plan_dir: Path,
+    schedule_id: str,
+    tick_id: str,
+    claim_id: str,
+    result: dict[str, Any],
+    applied_at: datetime,
+) -> dict[str, Any]:
+    tick_root = durable_tick_root(plan_dir, schedule_id, tick_id)
+    current_path = tick_root / "current.json"
+    current = read_json(current_path)
+    if current.get("status") == "APPLIED":
+        if current.get("claim_id") != claim_id:
+            raise ContractError("durable tick was applied by another claim")
+        return current
+    if current.get("claim_id") != claim_id or current.get("status") != "CLAIMED":
+        raise ContractError("durable tick claim is no longer current")
+    applied = {
+        **current,
+        "status": "APPLIED",
+        "applied_at": applied_at.isoformat().replace("+00:00", "Z"),
+        "result_sha256": sha256_json(result),
+    }
+    atomic_write_json(current_path, applied)
+    append_jsonl(durable_schedule_root(plan_dir, schedule_id) / "tick-events.jsonl", {
+        "schema_version": SCHEMA_VERSION,
+        "event": "tick_applied",
+        **applied,
+    })
+    return applied
+
+
+def command_run_durable_tick(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    require_durable_autonomy_eligibility(plan_dir)
+    observed_at = parse_utc(args.observed_at) if args.observed_at else datetime.now(timezone.utc)
+    schedule_root = durable_schedule_root(plan_dir, args.schedule_id)
+    with durable_loop_lock(plan_dir):
+        pointer = read_json(schedule_root / "current.json")
+        if pointer.get("active") is not True:
+            raise ContractError("durable schedule is inactive")
+        contract = read_json(Path(pointer["schedule_contract_path"]))
+        runtime = read_json(schedule_root / "runtime.json")
+        due_at = parse_utc(runtime["next_due_at"])
+        if observed_at < due_at:
+            return {"ok": True, "due": False, "next_due_at": runtime["next_due_at"]}
+        tick_id = f"tick_{sha256_json({'schedule_id': args.schedule_id, 'due_at': runtime['next_due_at']})}"
+        claim_result = claim_tick_locked(
+            plan_dir, args.schedule_id, tick_id, observed_at, contract["lease_seconds"],
+        )
+        if claim_result.get("already_claimed"):
+            return {"ok": True, "due": True, **claim_result}
+        if claim_result.get("already_applied"):
+            jitter = 0
+            if contract["jitter_seconds"]:
+                jitter = int(hashlib.sha256(tick_id.encode()).hexdigest(), 16) % (
+                    contract["jitter_seconds"] + 1
+                )
+            next_due = due_at + timedelta(seconds=contract["interval_seconds"] + jitter)
+            runtime.update({
+                "last_tick_at": claim_result["claim"]["applied_at"],
+                "last_tick_id": tick_id,
+                "next_due_at": next_due.isoformat().replace("+00:00", "Z"),
+                "updated_at": observed_at.isoformat().replace("+00:00", "Z"),
+            })
+            atomic_write_json(schedule_root / "runtime.json", runtime)
+            return {
+                "ok": True,
+                "due": True,
+                "reconciled_applied_tick": True,
+                "next_due_at": runtime["next_due_at"],
+                **claim_result,
+            }
+        claim = claim_result["claim"]
+    advanced = command_advance_durable_plan(argparse.Namespace(plan_dir=str(plan_dir)))
+    with durable_loop_lock(plan_dir):
+        mark_tick_applied(
+            plan_dir, args.schedule_id, tick_id, claim["claim_id"], advanced, observed_at,
+        )
+        if getattr(args, "simulate_crash_after_tick_apply", False):
+            raise ContractError("simulated crash after durable tick apply")
+        jitter = 0
+        if contract["jitter_seconds"]:
+            jitter = int(hashlib.sha256(tick_id.encode()).hexdigest(), 16) % (
+                contract["jitter_seconds"] + 1
+            )
+        next_due = due_at + timedelta(seconds=contract["interval_seconds"] + jitter)
+        runtime.update({
+            "last_tick_at": observed_at.isoformat().replace("+00:00", "Z"),
+            "last_tick_id": tick_id,
+            "next_due_at": next_due.isoformat().replace("+00:00", "Z"),
+            "updated_at": observed_at.isoformat().replace("+00:00", "Z"),
+        })
+        atomic_write_json(schedule_root / "runtime.json", runtime)
+    return {
+        "ok": True,
+        "due": True,
+        "tick_id": tick_id,
+        "claim_id": claim["claim_id"],
+        "next_due_at": runtime["next_due_at"],
+        "advance": advanced,
+    }
+
+
+def command_guardian_observe(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    if not 1 <= args.stale_seconds <= 86400:
+        raise ContractError("stale_seconds must be between 1 and 86400")
+    observation_path = Path(args.observation).resolve()
+    observation = read_json(observation_path)
+    validate_schema(observation, read_json(GUARDIAN_OBSERVATION_SCHEMA))
+    if observation.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("guardian observation belongs to another plan")
+    observed_at = parse_utc(observation["observed_at"])
+    proposals: list[dict[str, Any]] = []
+    if observed_at > parse_utc(observation["schedule"]["next_due_at"]):
+        proposals.append({
+            "action": "reconcile_tick",
+            "schedule_id": observation["schedule"]["schedule_id"],
+            "authority": "controller_validation_required",
+        })
+    for worker in observation["workers"]:
+        if worker["status"] != "RUNNING":
+            continue
+        if (observed_at - parse_utc(worker["updated_at"])).total_seconds() > args.stale_seconds:
+            proposals.append({
+                "action": "record_runtime_stall",
+                "worker_run_id": worker["run_id"],
+                "authority": "deterministic_controller_policy",
+            })
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": observation["plan_id"],
+        "observation_sha256": sha256_file(observation_path),
+        "observed_at": observation["observed_at"],
+        "proposals": proposals,
+        "research_content_access": False,
+        "lifecycle_authority": False,
+        "policy": {"stale_seconds": args.stale_seconds},
+    }
+    proposal_id = f"guardian_{sha256_json(body)}"
+    record = {**body, "proposal_id": proposal_id}
+    target = durable_root(plan_dir) / "guardian" / "proposals" / f"{proposal_id}.json"
+    atomic_write_json(target, record, immutable=True)
+    return {"ok": True, "proposal_path": str(target), **record}
+
+
+def command_apply_guardian_proposal(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    proposal_path = Path(args.proposal).resolve()
+    root = (durable_root(plan_dir) / "guardian" / "proposals").resolve()
+    try:
+        proposal_path.relative_to(root)
+    except ValueError as exc:
+        raise ContractError("guardian proposal is outside canonical state") from exc
+    proposal = read_json(proposal_path)
+    body = {key: value for key, value in proposal.items() if key != "proposal_id"}
+    if proposal.get("proposal_id") != f"guardian_{sha256_json(body)}":
+        raise ContractError("guardian proposal identity mismatch")
+    if proposal_path != root / f"{proposal['proposal_id']}.json":
+        raise ContractError("guardian proposal path mismatch")
+    if not 0 <= args.action_index < len(proposal.get("proposals", [])):
+        raise ContractError("guardian proposal action index is out of range")
+    action = proposal["proposals"][args.action_index]
+    application_path = (
+        durable_root(plan_dir) / "guardian" / "applied"
+        / f"{proposal['proposal_id']}.{args.action_index}.json"
+    )
+    if application_path.exists():
+        return {"ok": True, "idempotent": True, **read_json(application_path)}
+    if action.get("action") == "record_runtime_stall":
+        run_id = action.get("worker_run_id")
+        status = read_json(worker_status_path(plan_dir, run_id))
+        observed_at = parse_utc(proposal["observed_at"])
+        updated_at = parse_utc(status.get("updated_at") or status.get("started_at"))
+        if (
+            status.get("status") != "RUNNING"
+            or (observed_at - updated_at).total_seconds() <= proposal["policy"]["stale_seconds"]
+        ):
+            raise ContractError("guardian runtime-stall proposal is no longer valid")
+        result = command_record_failure(argparse.Namespace(
+            plan_dir=str(plan_dir),
+            failure_class="runtime_stall",
+            fingerprint=f"guardian:{proposal['proposal_id']}:{run_id}",
+            source="guardian-controller-policy",
+        ))
+    elif action.get("action") == "reconcile_tick":
+        result = command_run_durable_tick(argparse.Namespace(
+            plan_dir=str(plan_dir),
+            schedule_id=action.get("schedule_id"),
+            observed_at=proposal["observed_at"],
+            simulate_crash_after_tick_apply=False,
+        ))
+    else:
+        raise ContractError("guardian proposal action is not registered")
+    application = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "proposal_id": proposal["proposal_id"],
+        "action_index": args.action_index,
+        "action": action["action"],
+        "result": result,
+        "controller_policy": "guardian-recovery-v1",
+        "applied_at": utc_now(),
+    }
+    atomic_write_json(application_path, application, immutable=True)
+    return {"ok": True, "application_receipt": str(application_path), **application}
+
+
+def command_guardian_validate_lifecycle(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    if args.action not in {"pause", "resume", "stop"}:
+        raise ContractError("guardian lifecycle action is not allowed")
+    receipt = validate_applied_action_receipt(
+        plan_dir, Path(args.authorization).resolve(), args.action,
+    )
+    event = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "action": args.action,
+        "record_id": receipt["record_id"],
+        "record_sha256": receipt["record_sha256"],
+        "guardian_authority": "validated_pre_authorized_only",
+        "validated_at": utc_now(),
+    }
+    append_jsonl_once(
+        durable_root(plan_dir) / "guardian" / "lifecycle-audit.jsonl",
+        "record_id", receipt["record_id"], event,
+    )
+    return {"ok": True, "applied_by": "controller", "event": event}
+
+
 def normalize_owned_path(plan_dir: Path, raw_path: str) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
@@ -2777,6 +4251,106 @@ def build_parser() -> argparse.ArgumentParser:
     patrol.add_argument("--plan-dir", required=True)
     patrol.add_argument("--stale-seconds", type=int, required=True)
     patrol.set_defaults(handler=command_run_patrol)
+
+    evaluator_admit = sub.add_parser("admit-evaluator")
+    evaluator_admit.add_argument("--plan-dir", required=True)
+    evaluator_admit.add_argument("--contract", required=True)
+    evaluator_admit.add_argument("--evaluator", required=True)
+    evaluator_admit.add_argument("--authority-identity", required=True)
+    evaluator_admit.add_argument("--input-manifest", required=True)
+    evaluator_admit.add_argument("--validation-identity", required=True)
+    evaluator_admit.add_argument("--replay-identity", required=True)
+    evaluator_admit.add_argument("--regression-suite", required=True)
+    evaluator_admit.add_argument("--allowed-search-space", required=True)
+    evaluator_admit.add_argument("--complexity-identity")
+    evaluator_admit.set_defaults(handler=command_admit_evaluator)
+
+    evaluator_eligibility = sub.add_parser("check-autonomy-eligibility")
+    evaluator_eligibility.add_argument("--plan-dir", required=True)
+    evaluator_eligibility.set_defaults(handler=command_check_autonomy_eligibility)
+
+    durable_init = sub.add_parser("init-durable-plan")
+    durable_init.add_argument("--plan-dir", required=True)
+    durable_init.add_argument("--graph", required=True)
+    durable_init.set_defaults(handler=command_init_durable_plan)
+
+    durable_advance = sub.add_parser("advance-durable-plan")
+    durable_advance.add_argument("--plan-dir", required=True)
+    durable_advance.set_defaults(handler=command_advance_durable_plan)
+
+    durable_apply = sub.add_parser("apply-work-unit-result")
+    durable_apply.add_argument("--plan-dir", required=True)
+    durable_apply.add_argument("--capsule", required=True)
+    durable_apply.add_argument("--result", required=True)
+    durable_apply.set_defaults(handler=command_apply_work_unit_result)
+
+    durable_rebuild = sub.add_parser("rebuild-durable-projection")
+    durable_rebuild.add_argument("--plan-dir", required=True)
+    durable_rebuild.set_defaults(handler=command_rebuild_durable_projection)
+
+    trigger_register = sub.add_parser("register-durable-trigger")
+    trigger_register.add_argument("--plan-dir", required=True)
+    trigger_register.add_argument("--schedule-id", default="research_loop")
+    trigger_register.add_argument("--interval-seconds", type=int, required=True)
+    trigger_register.add_argument("--jitter-seconds", type=int, default=0)
+    trigger_register.add_argument("--session-budget-seconds", type=int, required=True)
+    trigger_register.add_argument("--human-escalation-after-seconds", type=int, required=True)
+    trigger_register.add_argument("--lease-seconds", type=int, default=300)
+    trigger_register.add_argument("--first-due-at")
+    trigger_register.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    trigger_register.add_argument("--simulate-crash-after-bootstrap", action="store_true")
+    trigger_register.set_defaults(handler=command_register_durable_trigger)
+
+    trigger_unregister = sub.add_parser("unregister-durable-trigger")
+    trigger_unregister.add_argument("--plan-dir", required=True)
+    trigger_unregister.add_argument("--schedule-id", default="research_loop")
+    trigger_unregister.add_argument("--authorization", required=True)
+    trigger_unregister.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    trigger_unregister.set_defaults(handler=command_unregister_durable_trigger)
+
+    tick_claim = sub.add_parser("claim-durable-tick")
+    tick_claim.add_argument("--plan-dir", required=True)
+    tick_claim.add_argument("--schedule-id", default="research_loop")
+    tick_claim.add_argument("--tick-id", required=True)
+    tick_claim.add_argument("--observed-at")
+    tick_claim.add_argument("--lease-seconds", type=int, default=300)
+    tick_claim.set_defaults(handler=command_claim_durable_tick)
+
+    tick_reconcile = sub.add_parser("reconcile-durable-tick")
+    tick_reconcile.add_argument("--plan-dir", required=True)
+    tick_reconcile.add_argument("--schedule-id", default="research_loop")
+    tick_reconcile.add_argument("--tick-id", required=True)
+    tick_reconcile.add_argument("--observed-at")
+    tick_reconcile.set_defaults(handler=command_reconcile_durable_tick)
+
+    tick_run = sub.add_parser("run-durable-tick")
+    tick_run.add_argument("--plan-dir", required=True)
+    tick_run.add_argument("--schedule-id", default="research_loop")
+    tick_run.add_argument("--observed-at")
+    tick_run.add_argument("--simulate-crash-after-tick-apply", action="store_true")
+    tick_run.set_defaults(handler=command_run_durable_tick)
+
+    guardian = sub.add_parser("guardian-observe")
+    guardian.add_argument("--plan-dir", required=True)
+    guardian.add_argument("--observation", required=True)
+    guardian.add_argument("--stale-seconds", type=int, required=True)
+    guardian.set_defaults(handler=command_guardian_observe)
+
+    guardian_apply = sub.add_parser("apply-guardian-proposal")
+    guardian_apply.add_argument("--plan-dir", required=True)
+    guardian_apply.add_argument("--proposal", required=True)
+    guardian_apply.add_argument("--action-index", type=int, required=True)
+    guardian_apply.set_defaults(handler=command_apply_guardian_proposal)
+
+    guardian_lifecycle = sub.add_parser("guardian-validate-lifecycle")
+    guardian_lifecycle.add_argument("--plan-dir", required=True)
+    guardian_lifecycle.add_argument("--action", required=True, choices=["pause", "resume", "stop"])
+    guardian_lifecycle.add_argument("--authorization", required=True)
+    guardian_lifecycle.set_defaults(handler=command_guardian_validate_lifecycle)
 
     remove = sub.add_parser("remove-resource")
     remove.add_argument("--plan-dir", required=True)

@@ -138,6 +138,38 @@ candidate, evaluator contract, and scope; pending records are rejected.
 Negative-result waivers are arxiv-only. Every tier requires the applied CP-04
 `prewriting_final_evidence` transition and writes a gate audit.
 
+### Evaluator admission for unattended autonomy
+
+Conference and journal-q1 plans with `execution_mode: unattended` remain
+blocked until the deterministic controller writes a current evaluator
+admission receipt:
+
+```bash
+python3 references/scripts/harness-runtime.py admit-evaluator \
+  --plan-dir PLAN --contract evaluator-admission.json \
+  --evaluator EVALUATOR --authority-identity AUTHORITY \
+  --input-manifest INPUTS --validation-identity VALIDATION \
+  --replay-identity REPLAY --regression-suite REGRESSION \
+  --allowed-search-space SEARCH_SPACE
+python3 references/scripts/harness-runtime.py check-autonomy-eligibility \
+  --plan-dir PLAN
+```
+
+The contract follows `evaluator-admission.schema.json`. Admission verifies the
+evaluator class, authority identity, immutable input manifest, validation or
+held-out identity, identical replay verdicts, a passing regression suite,
+allowed search space, and an applicable complexity identity or explicit
+not-applicable rationale. A human-review class cannot admit unattended
+autonomy. `external_readonly` authority requires both the evaluator and
+authority artifact to be filesystem read-only; `controller_owned` authority
+must bind the canonical frozen evaluator contract.
+
+The durable trigger, task-graph advance, work-unit application, and tick runner
+all revalidate the current admission. Any evaluator, authority, input,
+validation, replay, regression, search-space, complexity, graph, or receipt
+drift appends an invalidation audit and blocks before another result is
+applied. A finite candidate value or LLM review by itself creates no admission.
+
 ## Typed Failures and Patrol
 
 ```bash
@@ -158,6 +190,62 @@ The controller normalizes scientific direction descriptors, computes their
 hashes, and binds them to live candidates and canonical FAIL verdicts. Only
 distinct validated direction hashes enable CP-03. Patrol is
 file-backed and deterministic; stale workers increment only `runtime_stall`.
+
+## Durable Production Loop
+
+The M2 durable loop is separate from the closed M1 conformance fixture. It
+registers a launchd-backed external wake-up, claims each tick under a durable
+generation/lease, advances an immutable-revision task graph, and journals one
+fresh context capsule before a worker result can be applied.
+
+```bash
+python3 references/scripts/harness-runtime.py init-durable-plan \
+  --plan-dir PLAN --graph PLAN/durable-plan.json
+python3 references/scripts/harness-runtime.py register-durable-trigger \
+  --plan-dir PLAN --schedule-id research_loop --interval-seconds 300 \
+  --jitter-seconds 30 --session-budget-seconds 1800 \
+  --human-escalation-after-seconds 900 --lease-seconds 300
+python3 references/scripts/harness-runtime.py run-durable-tick \
+  --plan-dir PLAN --schedule-id research_loop
+python3 references/scripts/harness-runtime.py advance-durable-plan \
+  --plan-dir PLAN
+python3 references/scripts/harness-runtime.py apply-work-unit-result \
+  --plan-dir PLAN --capsule CAPSULE --result CONTROLLER_RESULT
+python3 references/scripts/harness-runtime.py rebuild-durable-projection \
+  --plan-dir PLAN
+```
+
+`durable-plan.json` freezes plan identity, target tier, attended/unattended
+mode, objective, constraints, evaluator, task contracts, dependencies, and
+input hashes. Canonical state lives as immutable numbered revisions with an
+append-only event/evidence chain.
+`projection.json` is disposable and rebuildable; it exposes objective, phase,
+evidence, blockers, approvals, and next action but never becomes authority.
+
+The scheduler adapter writes a hash-bound launchd plist and registration
+receipt under `state/durable_loop/schedules/`. A schedule file alone is not a
+registration. Registration succeeds only after the external scheduler accepts
+the service; removal requires an applied authenticated `stop` receipt.
+Concurrent deliveries of one tick produce one current claim. An expired claim
+advances to one new generation; an active claim remains pending.
+
+Each capsule binds one task and canonical state revision to the live objective,
+constraints, evaluator, task contract, inputs, prior directions, and evidence.
+Goal, evaluator, task, input, or revision drift blocks application. Worker
+output remains evidence and is applied only through the controller-owned
+`apply-work-unit-result` command.
+
+Guardian observations use `guardian-observation.schema.json`, which contains
+only schedule, worker, and controller liveness metadata. Extra
+research-content fields fail closed. Guardian lifecycle requests are valid
+only when `guardian-validate-lifecycle` revalidates an already-applied
+authenticated pause/resume/stop receipt; Guardian never receives lifecycle
+authority. Liveness proposals have no effect until
+`apply-guardian-proposal` revalidates live metadata and applies one registered
+`guardian-recovery-v1` deterministic controller policy.
+
+Tests use a local fake `launchctl`; they do not register a live service. Actual
+fault injection and multi-session soak remain T008 acceptance work.
 
 ## Sparse Codex Checkpoints
 
@@ -251,7 +339,8 @@ dedicated ambiguity reconciliation; local commands re-enter only with the
 identical request and converge through idempotency or their command-owned
 recovery journal if the runner dies before recording COMMITTED.
 Arbitrary or incomplete conformance lists and missing terminal artifact
-classes are rejected.
+classes are rejected. The durable production loop above does not reinterpret
+this fixture or its M1 authority evidence.
 
 ## Errors and Recovery
 

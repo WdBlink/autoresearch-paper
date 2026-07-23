@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "target_tier",
+    "execution_mode",
+    "objective",
+    "constraints",
+    "evaluator",
+    "tasks"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "target_tier": {"enum": ["arxiv", "conference", "journal-q1"]},
+    "execution_mode": {"enum": ["attended", "unattended"]},
+    "objective": {"$ref": "#/$defs/artifact"},
+    "constraints": {"$ref": "#/$defs/artifact"},
+    "evaluator": {"$ref": "#/$defs/artifact"},
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "phase", "depends_on", "task_contract", "inputs"],
+        "properties": {
+          "task_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+          "phase": {"type": "string", "minLength": 1},
+          "depends_on": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          },
+          "task_contract": {"$ref": "#/$defs/artifact"},
+          "inputs": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/artifact"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

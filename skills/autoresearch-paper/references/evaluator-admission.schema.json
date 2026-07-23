@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "evaluator_class",
+    "evaluator_sha256",
+    "authority",
+    "input_manifest_sha256",
+    "validation_identity",
+    "replay_identity_sha256",
+    "regression_suite_sha256",
+    "allowed_search_space_sha256",
+    "complexity_policy",
+    "autonomy_tiers",
+    "admitted_by",
+    "admitted_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "evaluator_class": {
+      "enum": ["hard_metric", "test_suite", "held_out", "human_review"]
+    },
+    "evaluator_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity_sha256"],
+      "properties": {
+        "kind": {
+          "enum": ["controller_owned", "external_readonly", "human_signed"]
+        },
+        "identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "input_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "validation_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sha256"],
+      "properties": {
+        "kind": {
+          "enum": ["metric", "test_suite", "held_out_split", "human_record"]
+        },
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "replay_identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "regression_suite_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "allowed_search_space_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "complexity_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity_sha256", "rationale"],
+      "properties": {
+        "kind": {"enum": ["penalty", "budget", "not_applicable"]},
+        "identity_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rationale": {"type": ["string", "null"]}
+      }
+    },
+    "autonomy_tiers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["conference_unattended", "journal_q1_unattended"]
+      }
+    },
+    "admitted_by": {"const": "controller"},
+    "admitted_at": {"type": "string"}
+  }
+}

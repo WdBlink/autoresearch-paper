@@ -43,10 +43,16 @@ def main() -> int:
         "references/evaluator-verdict.schema.json",
         "references/metric-contract.schema.json",
         "references/declarative-evaluator.schema.json",
+        "references/durable-plan.schema.json",
+        "references/context-capsule.schema.json",
+        "references/guardian-observation.schema.json",
+        "references/evaluator-admission.schema.json",
         "references/canonical-conformance-workflow.json",
         "tests/test_runtime_contracts.py",
         "tests/test_claude_cutover_e2e.py",
         "tests/test_runtime_v2_security.py",
+        "tests/test_durable_loop_runtime.py",
+        "tests/test_evaluator_admission.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -66,7 +72,10 @@ def main() -> int:
             "freeze-evaluator", "record-failure", "dispatch-worker", "inspect-worker",
             "schedule-patrol", "remove-resource", "create-frontier-request",
             "assert-transition", "reconcile-frontier-request", "promote-worker-artifacts",
-            "run-evaluator", "applied", "advisory",
+            "run-evaluator", "register-durable-trigger", "init-durable-plan",
+            "apply-work-unit-result", "apply-guardian-proposal",
+            "guardian-validate-lifecycle", "admit-evaluator",
+            "check-autonomy-eligibility", "applied", "advisory",
         ),
         "Claude runtime reference must document the complete target controller",
         errors,
@@ -173,8 +182,8 @@ def main() -> int:
         "test_typed_failures_runtime_operations_and_owned_cleanup",
     ):
         require(f"def {test_name}" in runtime_tests, f"missing restored runtime regression {test_name}", errors)
-    require('version: "0.8.0"' in read("SKILL.md"), "SKILL.md version must be 0.8.0", errors)
-    require("Current version:** v0.8.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.8.0", errors)
+    require('version: "0.9.0"' in read("SKILL.md"), "SKILL.md version must be 0.9.0", errors)
+    require("Current version:** v0.9.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.9.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -190,8 +199,29 @@ def main() -> int:
             "declarative-evaluator-v1", "read_finite_number", "require_finite_number",
             "pivot_epoch", "consumed_event_ids", "writing_gate_receipt",
             "operation_effect_path", "reconcile_ambiguous_prepared_operation",
+            "claim_tick_locked", "commit_durable_revision", "validate_context_capsule",
         )),
         "harness runtime is missing run-4 safety and reconciliation contracts",
+        errors,
+    )
+    durable_tests = read("tests/test_durable_loop_runtime.py")
+    require(
+        all(name in durable_tests for name in (
+            "test_external_registration_concurrent_claim_and_reconciliation",
+            "test_state_capsule_rebuild_and_integrity_drift",
+            "test_guardian_rejects_content_and_requires_applied_lifecycle_authority",
+            "test_registration_and_applied_tick_crash_recover_without_duplicate",
+        )),
+        "T006 durable-loop tests are incomplete",
+        errors,
+    )
+    admission_tests = read("tests/test_evaluator_admission.py")
+    require(
+        all(name in admission_tests for name in (
+            "test_unattended_conference_is_blocked_then_admitted_and_drift_revokes",
+            "test_replay_human_review_and_writable_authority_fail_closed",
+        )),
+        "T002-A evaluator-admission tests are incomplete",
         errors,
     )
     e2e_tests = read("tests/test_claude_cutover_e2e.py")
