@@ -121,6 +121,128 @@ class ClaudeCutoverE2E(unittest.TestCase):
         }))
         paths["final_candidate"].write_text('{"score":0.9}')
 
+        figure_dir = plan / "out" / "figures"
+        figure_dir.mkdir(parents=True)
+        method_spec = plan / "method-figure-spec.md"
+        render_script = figure_dir / "render-method.py"
+        method_spec.write_text("# Frozen method\ninput -> evaluator -> decision\n")
+        render_script.write_text("print('deterministic fixture renderer')\n")
+        expected_figure_ids = [f"fig-method-{index}" for index in range(1, 5)]
+        figure_records: list[dict[str, str]] = []
+        for figure_id in expected_figure_ids:
+            vector = figure_dir / f"{figure_id}.pdf"
+            preview = figure_dir / f"{figure_id}.png"
+            review = figure_dir / f"{figure_id}.review.json"
+            figure_manifest = figure_dir / f"{figure_id}.manifest.json"
+            vector.write_bytes(
+                f"%PDF-1.4\n% {figure_id} fixture\n%%EOF\n".encode()
+            )
+            preview.write_bytes(b"\x89PNG\r\n\x1a\n" + figure_id.encode())
+            review.write_text(json.dumps({
+                "schema_version": 1,
+                "figure_id": figure_id,
+                "reviewed_at": "2026-07-24T16:10:00+08:00",
+                "reviewer_kind": "human",
+                "reviewer_identity": "human-e2e-fixture",
+                "independent_of_renderer": True,
+                "decision": "PASS",
+                "reviewed_outputs": [
+                    {
+                        "path": f"out/figures/{figure_id}.pdf",
+                        "sha256": hashlib.sha256(vector.read_bytes()).hexdigest(),
+                    },
+                    {
+                        "path": f"out/figures/{figure_id}.png",
+                        "sha256": hashlib.sha256(preview.read_bytes()).hexdigest(),
+                    },
+                ],
+            }, indent=2) + "\n")
+            figure_manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "figure_id": figure_id,
+                "figure_kind": "method_schematic",
+                "generation": {
+                    "mode": "deterministic",
+                    "capability": "deterministic-local-renderer",
+                    "capability_revision": "fixture-renderer-v1",
+                },
+                "inputs": [
+                    {
+                        "path": "method-figure-spec.md",
+                        "sha256": hashlib.sha256(method_spec.read_bytes()).hexdigest(),
+                        "role": "render_spec",
+                        "purpose": "Frozen method structure.",
+                    },
+                    {
+                        "path": "out/figures/render-method.py",
+                        "sha256": hashlib.sha256(render_script.read_bytes()).hexdigest(),
+                        "role": "render_script",
+                        "purpose": "Deterministic local renderer.",
+                    },
+                ],
+                "transformations": [],
+                "renderer": {
+                    "identity": "fixture-local-renderer",
+                    "version": "1",
+                    "source_revision": "fixture-renderer-v1",
+                    "command": ["python3", "out/figures/render-method.py"],
+                    "random_seed": 0,
+                },
+                "outputs": [
+                    {
+                        "path": f"out/figures/{figure_id}.pdf",
+                        "sha256": hashlib.sha256(vector.read_bytes()).hexdigest(),
+                        "role": "manuscript",
+                        "media_type": "application/pdf",
+                    },
+                    {
+                        "path": f"out/figures/{figure_id}.png",
+                        "sha256": hashlib.sha256(preview.read_bytes()).hexdigest(),
+                        "role": "preview",
+                        "media_type": "image/png",
+                    },
+                ],
+                "provenance": {
+                    "plan_id": "plan_e2e",
+                    "created_at": "2026-07-24T16:00:00+08:00",
+                    "research_authority": {
+                        "kind": "method_spec",
+                        "path": "method-figure-spec.md",
+                        "sha256": hashlib.sha256(method_spec.read_bytes()).hexdigest(),
+                    },
+                    "claim_ids": [],
+                },
+                "independent_review": {
+                    "receipt": {
+                        "path": f"out/figures/{figure_id}.review.json",
+                        "sha256": hashlib.sha256(review.read_bytes()).hexdigest(),
+                    },
+                    "reviewer_kind": "human",
+                    "reviewer_identity": "human-e2e-fixture",
+                    "independent_of_renderer": True,
+                    "decision": "PASS",
+                    "ai_quality_score_used_as_authority": False,
+                },
+            }, indent=2) + "\n")
+            figure_records.append({
+                "figure_id": figure_id,
+                "manifest": str(figure_manifest.relative_to(plan)),
+                "sha256": hashlib.sha256(figure_manifest.read_bytes()).hexdigest(),
+            })
+        figure_requirements = plan / "state" / "figure-requirements.json"
+        figure_requirements.write_text(json.dumps({
+            "schema_version": 1,
+            "plan_id": "plan_e2e",
+            "tier": "conference",
+            "expected_figure_ids": expected_figure_ids,
+        }, indent=2) + "\n")
+        figure_inventory = plan / "state" / "figure-inventory.json"
+        figure_inventory.write_text(json.dumps({
+            "schema_version": 1,
+            "plan_id": "plan_e2e",
+            "required_figures": figure_records,
+        }, indent=2) + "\n")
+
         key = root / "human.key"
         key.write_bytes(b"k" * 32)
         key.chmod(0o600)
@@ -138,6 +260,8 @@ class ClaudeCutoverE2E(unittest.TestCase):
             "plan_id":"plan_e2e","codex_bin":str(codex),"claude_bin":str(claude),"task_contract":str(task),
             "evaluator":str(evaluator),"evidence_manifest":str(evidence),
             **{name:str(path) for name,path in paths.items()},
+            "figure_requirements": str(figure_requirements),
+            "figure_inventory": str(figure_inventory),
             "writer_task_contract":str(writer_task),
         }
         inputs_path = plan / "canonical-inputs.json"
@@ -191,10 +315,10 @@ class ClaudeCutoverE2E(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             result = json.loads(proc.stdout)
             self.assertEqual(result["workflow_kind"], "claude-research-conformance-v1")
-            self.assertEqual(len(result["completed_steps"]), 40)
+            self.assertEqual(len(result["completed_steps"]), 41)
             self.assertEqual({item["type"] for item in result["terminal_artifacts"]}, {
                 "workflow_journal","evaluator_contract","evaluator_verdict","structural_pivot",
-                "writing_gate_audit","paper_deliverable","cleanup_receipt",
+                "figure_gate","writing_gate_audit","paper_deliverable","cleanup_receipt",
             })
             self.assertEqual(claude_counter.read_text(), "2")
             self.assertEqual(codex_counter.read_text(), "5")
@@ -708,6 +832,44 @@ class ClaudeCutoverE2E(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertFalse((plan / "ephemeral.tmp").exists())
 
+    def test_canonical_writer_is_blocked_by_missing_empty_incomplete_or_stale_figure_inventory(self) -> None:
+        for mode in ("missing", "empty", "incomplete", "stale-output"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                plan, inputs_path, _, _ = self.prepare(root)
+                inputs = json.loads(inputs_path.read_text())
+                inventory = Path(inputs["figure_inventory"])
+                if mode == "missing":
+                    inventory.unlink()
+                elif mode == "empty":
+                    body = json.loads(inventory.read_text())
+                    body["required_figures"] = []
+                    inventory.write_text(json.dumps(body))
+                elif mode == "incomplete":
+                    body = json.loads(inventory.read_text())
+                    body["required_figures"].pop()
+                    inventory.write_text(json.dumps(body))
+                else:
+                    (plan / "out" / "figures" / "fig-method-1.pdf").write_bytes(
+                        b"%PDF-1.4\n% changed after review\n%%EOF\n"
+                    )
+                proc = subprocess.run([
+                    sys.executable,
+                    str(RUNNER),
+                    "--plan-dir",
+                    str(plan),
+                    "--workflow",
+                    str(WORKFLOW),
+                    "--inputs",
+                    str(inputs_path),
+                ], cwd=ROOT, text=True, capture_output=True)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn("figure", proc.stderr.lower())
+                self.assertFalse(
+                    (plan / "artifacts" / "paper" / "paper.md").exists(),
+                    "writer artifact must not exist before the complete figure gate",
+                )
+
     def test_waiver_requires_cp04_for_exact_candidate_contract_and_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); plan, inputs_path, _, _ = self.prepare(root)
@@ -721,6 +883,13 @@ class ClaudeCutoverE2E(unittest.TestCase):
             contract = plan / "state" / "evaluator_contract.json"
             candidate_a = Path(inputs["final_candidate"])
             candidate_b = plan / "other-candidate.json"; candidate_b.write_text('{"score":0.9}')
+            figure_gate = self.runtime(
+                "check-figure-gate",
+                "--plan-dir", str(plan),
+                "--inventory", inputs["figure_inventory"],
+                "--requirements", inputs["figure_requirements"],
+            )
+            figure_gate_path = Path(figure_gate["gate_receipt"])
 
             def cp04(request_id: str, candidate: Path) -> None:
                 roles = {
@@ -729,6 +898,7 @@ class ClaudeCutoverE2E(unittest.TestCase):
                     "raw_result_manifest": Path(inputs["raw_result_manifest"]),
                     "baselines": Path(inputs["baselines"]),
                     "uncertainty_robustness": Path(inputs["uncertainty_robustness"]),
+                    "figure_gate": figure_gate_path,
                 }
                 argv = [
                     "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_e2e",
@@ -758,12 +928,14 @@ class ClaudeCutoverE2E(unittest.TestCase):
             blocked = subprocess.run([
                 sys.executable, str(RUNTIME), "check-writing-gate", "--plan-dir", str(plan),
                 "--tier", "conference", "--waiver", applied["waiver_path"],
+                "--figure-gate-receipt", str(figure_gate_path),
             ], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(blocked.returncode, 20)
             cp04("far_exact_candidate", candidate_a)
             accepted = self.runtime(
                 "check-writing-gate", "--plan-dir", str(plan), "--tier", "conference",
                 "--waiver", applied["waiver_path"],
+                "--figure-gate-receipt", str(figure_gate_path),
             )
             self.assertEqual(accepted["transition_request_id"], "far_exact_candidate")
 

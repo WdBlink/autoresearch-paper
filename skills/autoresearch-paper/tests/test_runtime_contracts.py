@@ -146,9 +146,19 @@ class RuntimeContracts(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
-    def evidence_profile(self, plan: Path, checkpoint: str, subtype: str | None = None) -> dict[str, Path]:
+    def evidence_profile(
+        self,
+        plan: Path,
+        checkpoint: str,
+        subtype: str | None = None,
+        *,
+        plan_id: str | None = None,
+    ) -> dict[str, Path]:
         profiles = {
-            ("CP-01", None): ("normalized_brief", "execution_plan", "risk_budget"),
+            ("CP-01", None): (
+                "normalized_brief", "execution_plan", "risk_budget",
+                "figure_requirements",
+            ),
             ("CP-04", "acceptance_dispute"): (
                 "evaluator_contract", "evaluator_verdict", "dispute_record", "candidate",
             ),
@@ -156,7 +166,15 @@ class RuntimeContracts(unittest.TestCase):
         result: dict[str, Path] = {}
         for role in profiles[(checkpoint, subtype)]:
             path = plan / f"{checkpoint.lower()}-{role}.json"
-            path.write_text("{}")
+            if role == "figure_requirements":
+                path.write_text(json.dumps({
+                    "schema_version": 1,
+                    "plan_id": plan_id or plan.name,
+                    "tier": "arxiv",
+                    "expected_figure_ids": ["fig-required"],
+                }))
+            else:
+                path.write_text("{}")
             result[role] = path
         return result
 
@@ -166,7 +184,9 @@ class RuntimeContracts(unittest.TestCase):
             "--checkpoint", "CP-01", "--objective", "audit", "--decision-required", "approve_execution",
             "--max-input-tokens", "1000", "--max-output-tokens", "500", "--request-id", request_id,
         ]
-        for role, path in self.evidence_profile(plan, "CP-01").items():
+        for role, path in self.evidence_profile(
+            plan, "CP-01", plan_id=plan_id
+        ).items():
             args += ["--artifact", f"{path}::{role}"]
         return args
 
@@ -273,14 +293,16 @@ class RuntimeContracts(unittest.TestCase):
             tmp = Path(td)
             plan = self.make_plan(tmp / "plan")
             self.init_model_policy(plan)
-            profile = self.evidence_profile(plan, "CP-01")
+            profile = self.evidence_profile(
+                plan, "CP-01", plan_id="plan_bridge"
+            )
             artifact = profile["normalized_brief"]
             artifact.write_text("objective and frozen constraints\n")
             create_args = [
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_bridge",
                 "--checkpoint", "CP-01", "--objective", "Audit the initial research plan.",
                 "--decision-required", "initial_plan_approval", "--constraint", "do not mutate lifecycle state",
-                "--max-input-tokens", "500", "--max-output-tokens", "250", "--request-id", "far_test_request",
+                "--max-input-tokens", "1000", "--max-output-tokens", "250", "--request-id", "far_test_request",
             ]
             for role, path in profile.items():
                 create_args += ["--artifact", f"{path}::{role}"]
@@ -413,7 +435,9 @@ class RuntimeContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             plan = self.make_plan(Path(td) / "plan")
             self.init_model_policy(plan)
-            profile = self.evidence_profile(plan, "CP-01")
+            profile = self.evidence_profile(
+                plan, "CP-01", plan_id="plan_large_context"
+            )
             profile["normalized_brief"].write_text("x" * 3000)
             args = [
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_large_context",
@@ -560,8 +584,8 @@ class RuntimeContracts(unittest.TestCase):
                 "--tier",
                 "arxiv",
             ], check=False)
-            self.assertEqual(proc.returncode, 20)
-            self.assertIn("requires exactly one", proc.stderr)
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("--figure-gate-receipt", proc.stderr)
 
             # Positive evaluator/writing coverage now executes through the
             # packaged canonical workflow; this legacy entry remains a

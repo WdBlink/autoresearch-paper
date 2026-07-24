@@ -12,6 +12,34 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.0] - 2026-07-24
+
+### Added
+
+- A host-neutral scientific figure artifact schema binding source inputs,
+  transformations, render commands, renderer identity, outputs, hashes, and
+  human review bound to every current output.
+- An offline, standard-library figure validator with path-confinement,
+  symlink-escape, inventory, hash, provenance, format, preview, output-bound
+  human-review, and authority checks.
+- A post-research-decision figure-build stage and pre-writing/package gates
+  across arxiv, conference, and journal plans.
+- Focused Scientific Visualization integration at the audited upstream
+  revision, with Scientific Schematics retained as optional proposal-only
+  assistance.
+
+### Security
+
+- AI-generated schematics and AI quality scores cannot approve scientific
+  accuracy or figure promotion.
+- Unsafe paths, undeclared or mismatched artifacts, and unreviewed proposals
+  fail closed without weakening the writing gate.
+- CP-04 and writing authority are bound to an immutable non-empty figure gate;
+  stale PDFs, empty inventories, alias capability names, and placeholder
+  review receipts fail closed.
+- CP-01 freezes the exact expected figure IDs (minimum 1 arxiv, 4 conference,
+  6 journal-q1); omitted or unexpected inventory entries cannot pass.
+
 ## [0.13.0] - 2026-07-23
 
 ### Added

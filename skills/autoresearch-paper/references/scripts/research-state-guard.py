@@ -32,7 +32,17 @@ def read_json(path: Path, default: Any) -> Any:
 def check_writing_gate(args: argparse.Namespace) -> int:
     plan_dir = Path(args.plan_dir).expanduser().resolve()
     runtime = Path(__file__).with_name("harness-runtime.py")
-    command = [sys.executable, str(runtime), "check-writing-gate", "--plan-dir", str(plan_dir), "--tier", args.tier]
+    command = [
+        sys.executable,
+        str(runtime),
+        "check-writing-gate",
+        "--plan-dir",
+        str(plan_dir),
+        "--tier",
+        args.tier,
+        "--figure-gate-receipt",
+        args.figure_gate_receipt,
+    ]
     for flag, value in (("--verdict", args.verdict), ("--waiver", args.waiver)):
         if value:
             command.extend([flag, value])
@@ -73,6 +83,7 @@ def main() -> int:
     gate.add_argument("--tier", required=True, choices=["arxiv", "conference", "journal-q1"])
     gate.add_argument("--verdict")
     gate.add_argument("--waiver")
+    gate.add_argument("--figure-gate-receipt", required=True)
     gate.set_defaults(func=check_writing_gate)
 
     pivot = sub.add_parser("validate-pivot")

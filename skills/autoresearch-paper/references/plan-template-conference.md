@@ -1,6 +1,6 @@
 ---
 name: plan-template-conference
-description: Full 8-task plan.yaml template for the conference tier — literature → gap → method → impl → experiment → write-iter1 → write-iter2 → package. Optional rebuttal-preview task for IROS/ICRA/CVPR/NeurIPS-grade submissions.
+description: Full conference plan.yaml template — research gate → figures → two writing passes → package, with optional rebuttal preview.
 ---
 
 # Plan Template — `conference` Tier
@@ -15,7 +15,7 @@ hash-bound verdict and APPLIED CP-04 final-evidence receipt.
 render_conference_plan(brief, materials, plan_dir) -> plan_yaml
 
 create T0 evaluator-freeze before method work
-create literature, gap, method, implementation, experiment, evaluation, decision, pivot, writing, package tasks
+create literature, gap, method, implementation, experiment, evaluation, decision, pivot, figure, writing, package tasks
 load prompt bodies from ../assets/task-prompt-snippets.md
 route scientific FAIL through typed failure accounting and T6.3 until a
 validated PASS, authenticated human waiver, or signed human stop
@@ -43,6 +43,9 @@ T0 evaluator-freeze ─▶ T1 lit-review ─▶ T2 gap-analysis ─▶ T3 method
                                                     │       T6.3 pivot-or-retry
                                                     │              │
                                                     ▼              └──▶ T3/T4/T5/T6
+                                           T6.4 figure-build
+                                                    │
+                                                    ▼
                                            T7 write-iter1
                                                     │
                                                     ▼
@@ -74,9 +77,12 @@ Total wall-clock target: 1–2 weeks.
   - `<plan-dir>/state/success_criteria.md`
   - `<plan-dir>/state/baseline_contract.md`
   - `<plan-dir>/state/allowed_search_space.md`
+  - `<plan-dir>/state/figure-requirements.json` — controller-owned exact
+    figure ID set, with at least 4 conference figures.
   - initialized `progress.json`, `directions_tried.json`,
     `candidate_registry.jsonl`, `scoreboard.tsv`, and `failure_state.json`.
-- **gate**: CP-02 audits `metric_contract.json` as the sole primary metric,
+- **gate**: CP-01 binds `figure-requirements.json` before workers run; CP-02
+  audits `metric_contract.json` as the sole primary metric,
   operator, and threshold source before T3 can propose a method. Later changes require a
   human override in `control/override_requested.json`.
 
@@ -198,9 +204,26 @@ Same as `arxiv` tier, but stricter:
   (algorithm family, data representation, objective, evaluator, or
   baseline framing), not a hyperparameter tweak.
 
+### T6.4 — figure-build
+
+- **depends_on**: [T6.2 when the validated verdict is PASS or an applicable waiver is applied]
+- **agent**: figure-agent
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.4-figure-build`
+- **inputs**: T3 method figure specification, T6 raw/results/significance,
+  and the validated research-decision authority
+- **outputs**:
+  - `<plan-dir>/out/figures/` — source-bound manuscript figures and previews.
+  - one `<figure-id>.manifest.json` and human output-bound review receipt per
+    figure.
+  - `<plan-dir>/out/figures/required-figures.json` — non-empty hash-bound
+    plan inventory.
+- **gate**: the inventory and every manifest pass
+  `validate-figure-artifacts.py`; AI-generated schematics remain proposals
+  and cannot satisfy the gate from an AI score.
+
 ### T7 — write-iter1
 
-- **depends_on**: [T6.2]
+- **depends_on**: [T6.4]
 - **agent**: writer-agent
 - **prompt_snippet**: see `../assets/task-prompt-snippets.md#T7-write-iter1`
 - **inputs**: all prior outputs
@@ -211,7 +234,9 @@ Same as `arxiv` tier, but stricter:
 - **gate**: each section (intro / related / method / expt / conclusion)
   has at least one paragraph. No `[TODO]` placeholders in the body.
   Hard fail unless `check-writing-gate` accepts a stored PASS verdict or
-  authenticated waiver and `assert-transition start_writing` accepts CP-04.
+  authenticated waiver, `assert-transition start_writing` accepts CP-04, and
+  the non-empty required-figure inventory and every bound manifest pass the
+  immutable figure gate.
 
 ### T8 — write-iter2
 

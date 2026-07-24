@@ -84,9 +84,10 @@ DURABLE_PLAN_SCHEMA = SCRIPT_DIR.parent / "durable-plan.schema.json"
 CONTEXT_CAPSULE_SCHEMA = SCRIPT_DIR.parent / "context-capsule.schema.json"
 GUARDIAN_OBSERVATION_SCHEMA = SCRIPT_DIR.parent / "guardian-observation.schema.json"
 EVALUATOR_ADMISSION_SCHEMA = SCRIPT_DIR.parent / "evaluator-admission.schema.json"
+FIGURE_VALIDATOR = SCRIPT_DIR / "validate-figure-artifacts.py"
 CHECKPOINT_EVIDENCE_PROFILES = {
     ("CP-01", None): {
-        "normalized_brief", "execution_plan", "risk_budget",
+        "normalized_brief", "execution_plan", "risk_budget", "figure_requirements",
     },
     ("CP-02", None): {
         "evaluator", "evidence_manifest", "metric_contract", "baselines",
@@ -100,7 +101,7 @@ CHECKPOINT_EVIDENCE_PROFILES = {
     },
     ("CP-04", "prewriting_final_evidence"): {
         "candidate", "claim_evidence_map", "evaluator_contract", "evaluator_verdict",
-        "raw_result_manifest", "baselines", "uncertainty_robustness",
+        "raw_result_manifest", "baselines", "uncertainty_robustness", "figure_gate",
     },
 }
 DIRECTION_FIELDS = {
@@ -1224,6 +1225,40 @@ def transition_receipt_candidates(plan_dir: Path, transition_name: str) -> list[
     return sorted(root.glob("far_*.json"), key=lambda path: path.stat().st_mtime_ns, reverse=True)
 
 
+def validate_frozen_figure_requirements(
+    plan_dir: Path,
+    requirements_path: Path,
+    expected_plan_id: str,
+) -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(FIGURE_VALIDATOR),
+            "--plan-dir",
+            str(plan_dir),
+            "--requirements-only",
+            str(requirements_path),
+        ],
+        cwd=plan_dir,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise ContractError(f"frozen figure requirements validation failed: {detail}")
+    result = strict_json_loads(proc.stdout)
+    if (
+        not isinstance(result, dict)
+        or result.get("status") != "PASS"
+        or result.get("eligible") is not True
+        or result.get("plan_id") != expected_plan_id
+        or not isinstance(result.get("expected_figure_ids"), list)
+        or not result["expected_figure_ids"]
+    ):
+        raise ContractError("frozen figure requirements validator returned an invalid PASS result")
+    return result
+
+
 def check_transition_receipt(
     plan_dir: Path, plan_id: str, name: str, request_id: str | None = None,
     *, verify_live_manifest: bool = True,
@@ -1253,8 +1288,155 @@ def check_transition_receipt(
     return receipt
 
 
+def command_check_figure_gate(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    inventory_arg = Path(args.inventory)
+    inventory_path = (
+        inventory_arg if inventory_arg.is_absolute() else plan_dir / inventory_arg
+    ).resolve()
+    requirements_arg = Path(args.requirements)
+    requirements_path = (
+        requirements_arg
+        if requirements_arg.is_absolute()
+        else plan_dir / requirements_arg
+    ).resolve()
+    cp01_receipt = require_transition_evidence(
+        plan_dir,
+        "approve_execution",
+        {"figure_requirements": requirements_path},
+    )
+    cp01_receipt_path = transition_receipt_path(
+        plan_dir,
+        "approve_execution",
+        cp01_receipt["request_id"],
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(FIGURE_VALIDATOR),
+            "--plan-dir",
+            str(plan_dir),
+            "--inventory",
+            str(inventory_path),
+            "--requirements",
+            str(requirements_path),
+        ],
+        cwd=plan_dir,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise ContractError(f"figure inventory validation failed: {detail}")
+    result = strict_json_loads(proc.stdout)
+    if (
+        not isinstance(result, dict)
+        or result.get("status") != "PASS"
+        or result.get("eligible") is not True
+        or result.get("plan_id") != plan_identity(plan_dir)
+        or not isinstance(result.get("figures"), list)
+        or not result["figures"]
+    ):
+        raise ContractError("figure inventory validator returned an invalid PASS result")
+    identity = {
+        "schema_version": 1,
+        "plan_id": plan_identity(plan_dir),
+        "inventory_path": str(inventory_path),
+        "inventory_sha256": sha256_file(inventory_path),
+        "requirements_path": str(requirements_path),
+        "requirements_sha256": sha256_file(requirements_path),
+        "requirements_tier": result["tier"],
+        "expected_figure_ids": result["expected_figure_ids"],
+        "approve_execution_request_id": cp01_receipt["request_id"],
+        "approve_execution_receipt_sha256": sha256_file(cp01_receipt_path),
+        "required_figure_count": result["required_figure_count"],
+        "figures": [
+            {
+                "figure_id": item["figure_id"],
+                "manifest": item["manifest"],
+                "manifest_sha256": item["manifest_sha256"],
+            }
+            for item in result["figures"]
+        ],
+        "authority": "deterministic_controller",
+    }
+    decision_sha256 = sha256_json(identity)
+    audit = {
+        **identity,
+        "decision_sha256": decision_sha256,
+        "checked_at": utc_now(),
+    }
+    audit_path = plan_dir / "state" / "figure_gate_audit.jsonl"
+    append_jsonl_once(audit_path, "decision_sha256", decision_sha256, audit)
+    gate_path = plan_dir / "state" / "figure_gates" / f"{decision_sha256}.json"
+    if not gate_path.exists():
+        atomic_write_json(gate_path, audit, immutable=True)
+    return {
+        "ok": True,
+        "status": "PASS",
+        "gate_receipt": str(gate_path),
+        "decision_sha256": decision_sha256,
+        "required_figure_count": result["required_figure_count"],
+    }
+
+
+def validate_figure_gate_receipt(plan_dir: Path, raw_path: str) -> dict[str, Any]:
+    raw = Path(raw_path)
+    path = (raw if raw.is_absolute() else plan_dir / raw).resolve()
+    root = (plan_dir / "state" / "figure_gates").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ContractError("figure gate receipt is outside canonical state") from exc
+    gate = read_json(path)
+    if path.name != f"{gate.get('decision_sha256')}.json":
+        raise ContractError("figure gate receipt identity mismatch")
+    identity = {
+        key: value for key, value in gate.items()
+        if key not in {"checked_at", "decision_sha256"}
+    }
+    if gate.get("decision_sha256") != sha256_json(identity):
+        raise ContractError("figure gate decision identity mismatch")
+    if gate.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("figure gate belongs to another plan")
+    inventory_path = Path(gate["inventory_path"])
+    if sha256_file(inventory_path) != gate["inventory_sha256"]:
+        raise ContractError("figure inventory hash changed")
+    requirements_path = Path(gate["requirements_path"])
+    if sha256_file(requirements_path) != gate["requirements_sha256"]:
+        raise ContractError("frozen figure requirements hash changed")
+    cp01_receipt_path = transition_receipt_path(
+        plan_dir,
+        "approve_execution",
+        gate["approve_execution_request_id"],
+    )
+    if sha256_file(cp01_receipt_path) != gate["approve_execution_receipt_sha256"]:
+        raise ContractError("figure requirements approval receipt changed")
+    audit_path = plan_dir / "state" / "figure_gate_audit.jsonl"
+    entries = [
+        strict_json_loads(line) for line in audit_path.read_text().splitlines() if line.strip()
+    ] if audit_path.exists() else []
+    if gate not in entries:
+        raise ContractError("figure gate is absent from the canonical audit")
+    revalidated = command_check_figure_gate(argparse.Namespace(
+        plan_dir=str(plan_dir),
+        inventory=str(inventory_path),
+        requirements=str(requirements_path),
+    ))
+    if Path(revalidated["gate_receipt"]).resolve() != path:
+        raise ContractError("figure gate no longer matches its inventory and manifests")
+    return gate
+
+
 def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    figure_gate_arg = Path(args.figure_gate_receipt)
+    figure_gate_path = (
+        figure_gate_arg
+        if figure_gate_arg.is_absolute()
+        else plan_dir / figure_gate_arg
+    ).resolve()
+    figure_gate = validate_figure_gate_receipt(plan_dir, str(figure_gate_path))
     if bool(args.verdict) == bool(args.waiver):
         raise ContractError("writing gate requires exactly one of --verdict or --waiver")
     source: str
@@ -1296,6 +1478,7 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
             "candidate": candidate_path,
             "evaluator_verdict": verdict_path,
             "evaluator_contract": contract_path,
+            "figure_gate": figure_gate_path,
         })
         acceptance = command_check_scientific_acceptance(argparse.Namespace(
             plan_dir=str(plan_dir), verdict=str(verdict_path),
@@ -1322,6 +1505,7 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
             "candidate": candidate_path,
             "evaluator_contract": contract_path,
             "evaluator_verdict": verdict_path,
+            "figure_gate": figure_gate_path,
         })
         negative = details.get("scope") == "negative_result"
         if negative and args.tier != "arxiv":
@@ -1337,6 +1521,9 @@ def command_check_writing_gate(args: argparse.Namespace) -> dict[str, Any]:
         "evaluator_contract_sha256": sha256_file(contract_path),
         "evaluator_verdict_path": str(verdict_path.resolve()),
         "evaluator_verdict_sha256": sha256_file(verdict_path),
+        "figure_gate_path": str(figure_gate_path),
+        "figure_gate_sha256": sha256_file(figure_gate_path),
+        "required_figure_count": figure_gate["required_figure_count"],
         "start_writing_request_id": transition_receipt["request_id"],
         "start_writing_receipt_sha256": sha256_file(
             transition_receipt_path(plan_dir, "start_writing", transition_receipt["request_id"])
@@ -2681,6 +2868,12 @@ def validate_writing_gate_receipt(plan_dir: Path, raw_path: str) -> dict[str, An
         artifact = Path(gate[f"{role}_path"])
         if sha256_file(artifact) != gate[f"{role}_sha256"]:
             raise ContractError(f"writing gate {role} hash changed")
+    figure_gate_path = Path(gate["figure_gate_path"])
+    if sha256_file(figure_gate_path) != gate["figure_gate_sha256"]:
+        raise ContractError("writing gate figure gate hash changed")
+    figure_gate = validate_figure_gate_receipt(plan_dir, str(figure_gate_path))
+    if figure_gate["required_figure_count"] != gate["required_figure_count"]:
+        raise ContractError("writing gate figure count changed")
     receipt_path = transition_receipt_path(
         plan_dir, "start_writing", gate["start_writing_request_id"]
     )
@@ -2700,7 +2893,11 @@ def validate_writing_gate_receipt(plan_dir: Path, raw_path: str) -> dict[str, An
     else:
         raise ContractError("writing gate has an unknown authority source")
     revalidated = command_check_writing_gate(argparse.Namespace(
-        plan_dir=str(plan_dir), tier=gate.get("tier"), verdict=verdict, waiver=waiver,
+        plan_dir=str(plan_dir),
+        tier=gate.get("tier"),
+        verdict=verdict,
+        waiver=waiver,
+        figure_gate_receipt=str(figure_gate_path),
     ))
     if Path(revalidated["gate_receipt"]).resolve() != path:
         raise ContractError("writing gate no longer matches its complete authority chain")
@@ -4992,6 +5189,16 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             f"frontier checkpoint evidence profile mismatch; missing={sorted(required_roles - set(roles))}, "
             f"extra={sorted(set(roles) - required_roles)}"
         )
+    if args.checkpoint == "CP-01":
+        requirements_item = next(
+            item for item in manifest
+            if item["purpose"] == "figure_requirements"
+        )
+        validate_frozen_figure_requirements(
+            plan_dir,
+            Path(requirements_item["path"]),
+            args.plan_id,
+        )
     if args.checkpoint == "CP-02":
         promotion_item = next(item for item in manifest if item["purpose"] == "promotion_receipt")
         promotion_path = Path(promotion_item["path"])
@@ -5738,11 +5945,18 @@ def build_parser() -> argparse.ArgumentParser:
     scientific_acceptance.add_argument("--verdict", required=True)
     scientific_acceptance.set_defaults(handler=command_check_scientific_acceptance)
 
+    figure_gate = sub.add_parser("check-figure-gate")
+    figure_gate.add_argument("--plan-dir", required=True)
+    figure_gate.add_argument("--inventory", required=True)
+    figure_gate.add_argument("--requirements", required=True)
+    figure_gate.set_defaults(handler=command_check_figure_gate)
+
     writing = sub.add_parser("check-writing-gate")
     writing.add_argument("--plan-dir", required=True)
     writing.add_argument("--tier", required=True, choices=["arxiv", "conference", "journal-q1"])
     writing.add_argument("--verdict")
     writing.add_argument("--waiver")
+    writing.add_argument("--figure-gate-receipt", required=True)
     writing.set_defaults(handler=command_check_writing_gate)
 
     failure = sub.add_parser("record-failure")

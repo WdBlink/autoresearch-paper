@@ -33,8 +33,23 @@ class RuntimeV2Security(unittest.TestCase):
 
     def cp01(self, plan: Path) -> dict[str, Path]:
         values = {}
-        for role in ("normalized_brief","execution_plan","risk_budget"):
-            path=plan/f"{role}.json"; path.write_text("{}"); values[role]=path
+        for role in (
+            "normalized_brief",
+            "execution_plan",
+            "risk_budget",
+            "figure_requirements",
+        ):
+            path=plan/f"{role}.json"
+            if role == "figure_requirements":
+                path.write_text(json.dumps({
+                    "schema_version": 1,
+                    "plan_id": plan.name,
+                    "tier": "arxiv",
+                    "expected_figure_ids": ["fig-required"],
+                }))
+            else:
+                path.write_text("{}")
+            values[role]=path
         return values
 
     def fake_codex(self, root: Path, *, status: str = "completed", blockers: bool = False,
@@ -74,6 +89,37 @@ class RuntimeV2Security(unittest.TestCase):
             ],text=True,capture_output=True)
             self.assertEqual(proc.returncode,2)
             self.assertIn("canonical workflow requires exactly",proc.stderr)
+
+    def test_cp01_rejects_invalid_or_under_minimum_figure_requirements(self) -> None:
+        for body in (
+            {},
+            {
+                "schema_version": 1,
+                "plan_id": "plan_v2",
+                "tier": "conference",
+                "expected_figure_ids": ["fig-only"],
+            },
+        ):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as td:
+                plan = self.plan(Path(td))
+                profile = self.cp01(plan)
+                profile["figure_requirements"].write_text(json.dumps(body))
+                args = [
+                    "create-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--plan-id", plan.name,
+                    "--checkpoint", "CP-01",
+                    "--objective", "audit",
+                    "--decision-required", "approve_execution",
+                    "--max-input-tokens", "5000",
+                    "--max-output-tokens", "500",
+                    "--request-id", "far_invalid_figure_requirements",
+                ]
+                for role, path in profile.items():
+                    args.extend(["--artifact", f"{path}::{role}"])
+                proc = self.call(*args, check=False)
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("figure requirements validation failed", proc.stderr)
 
     def test_frontier_semantic_failures_and_malformed_raw_pause(self) -> None:
         with tempfile.TemporaryDirectory() as td:

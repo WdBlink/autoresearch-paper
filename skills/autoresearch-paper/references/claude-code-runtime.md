@@ -140,8 +140,12 @@ python3 references/scripts/harness-runtime.py record-evaluator-verdict \
   --candidate-id candidate-1
 python3 references/scripts/harness-runtime.py check-scientific-acceptance \
   --plan-dir PLAN --verdict STORED_VERDICT
+python3 references/scripts/harness-runtime.py check-figure-gate \
+  --plan-dir PLAN --inventory out/figures/required-figures.json \
+  --requirements state/figure-requirements.json
 python3 references/scripts/harness-runtime.py check-writing-gate \
-  --plan-dir PLAN --tier conference --verdict STORED_VERDICT
+  --plan-dir PLAN --tier conference --verdict STORED_VERDICT \
+  --figure-gate-receipt state/figure_gates/DECISION.json
 ```
 
 The declarative evaluator reads a finite metric only from the candidate
@@ -160,7 +164,10 @@ candidate, threshold, or contract blocks writing. Bare
 applied `waive_acceptance` receipt is accepted only when it binds the tier,
 candidate, evaluator contract, and scope; pending records are rejected.
 Negative-result waivers are arxiv-only. Every tier requires the applied CP-04
-`prewriting_final_evidence` transition and writes a gate audit.
+`prewriting_final_evidence` transition and writes a gate audit. The CP-04
+request must bind the current figure-gate receipt; the writing gate revalidates
+its non-empty inventory, manifests, human output-bound reviews, and current
+artifact hashes.
 
 ### Evaluator admission for unattended autonomy
 

@@ -47,6 +47,9 @@ def main() -> int:
         "references/context-capsule.schema.json",
         "references/guardian-observation.schema.json",
         "references/evaluator-admission.schema.json",
+        "references/figure-artifact.schema.json",
+        "references/scientific-figure-pipeline.md",
+        "references/scripts/validate-figure-artifacts.py",
         "references/learning-promotion-contract.md",
         "references/fault-soak-acceptance-contract.md",
         "references/canonical-conformance-workflow.json",
@@ -59,6 +62,7 @@ def main() -> int:
         "tests/test_scientific_truth_and_failure_routing.py",
         "tests/test_gated_learning_promotion.py",
         "tests/test_fault_soak_acceptance.py",
+        "tests/test_scientific_figure_pipeline.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -99,27 +103,48 @@ def main() -> int:
         errors,
     )
     require(
-        contains("references/plan-template-conference.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry", "record-evaluator-verdict", "pivot-eligibility"),
+        contains(
+            "SKILL.md", "Scientific Figure Gate", "scientific-visualization",
+            "scientific-schematics", "validate-figure-artifacts.py",
+            "check-figure-gate", "--figure-gate-receipt", "required-figures.json",
+            "❌-16", "FM-26",
+        ),
+        "SKILL.md must expose the executable figure/writing gate and proposal-only AI boundary",
+        errors,
+    )
+    require(
+        contains(
+            "scripts/setup.sh",
+            "70a0d595e54b8d92ca54f216d4315e0ab8c7d967",
+            "has_pinned_skill_for_agent",
+            "claude-code",
+            "codex",
+        ),
+        "setup must require the audited scientific-visualization pin for both hosts",
+        errors,
+    )
+    require(
+        contains("references/plan-template-conference.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry", "T6.4", "record-evaluator-verdict", "pivot-eligibility"),
         "conference template must include research-first gate",
         errors,
     )
     require(
-        contains("references/plan-template-journal-q1.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry"),
+        contains("references/plan-template-journal-q1.md", "T0 evaluator-freeze", "T6.1 evaluate-candidate", "T6.2 research-decision", "T6.3 pivot-or-retry", "T6.4"),
         "journal-q1 template must include research-first gate",
         errors,
     )
     require(
-        contains("references/plan-template-arxiv.md", "T2.5", "authenticated", "check-writing-gate"),
+        contains("references/plan-template-arxiv.md", "T2.5", "T2.6", "authenticated", "check-writing-gate"),
         "arxiv template must explicitly handle negative-result waiver",
         errors,
     )
     require(
-        contains("references/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "directions_tried.json", "research-state-guard.py"),
+        contains("references/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "T6.4-figure-build", "directions_tried.json", "research-state-guard.py"),
         "task snippet index must expose research loop snippets",
         errors,
     )
     require(
-        contains("assets/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "record-evaluator-verdict", "pivot-eligibility", "research-state-guard.py"),
+        contains("assets/task-prompt-snippets.md", "T0-evaluator-freeze", "T6.1-evaluate-candidate", "T6.2-research-decision", "T6.3-pivot-or-retry", "T6.4-figure-build", "validate-figure-artifacts.py", "check-figure-gate", "--figure-gate-receipt", "record-evaluator-verdict", "pivot-eligibility", "research-state-guard.py"),
         "task snippet asset must propagate research loop state to generated plans",
         errors,
     )
@@ -169,7 +194,23 @@ def main() -> int:
     )
     workflow = json.loads(read("references/canonical-conformance-workflow.json"))
     require(workflow.get("workflow_kind") == "claude-research-conformance-v1", "conformance workflow kind mismatch", errors)
-    require(len(workflow.get("steps", [])) == 40, "canonical workflow must retain the complete 40-step sequence", errors)
+    require(len(workflow.get("steps", [])) == 41, "canonical workflow must retain the complete 41-step sequence", errors)
+    require(
+        {"figure_requirements", "figure_inventory"}.issubset(
+            set(workflow.get("required_inputs", []))
+        ),
+        "canonical workflow must require the frozen figure set and completed inventory",
+        errors,
+    )
+    require(
+        contains(
+            "references/canonical-conformance-workflow.json",
+            "${input.figure_requirements}::figure_requirements",
+            "\"requirements\":\"${input.figure_requirements}\"",
+        ),
+        "CP-01 and the figure gate must bind the same frozen requirements",
+        errors,
+    )
     require("stop_record" not in workflow.get("required_inputs", []), "stop authority must not be a startup input", errors)
     require("cleanup_record" not in workflow.get("required_inputs", []), "cleanup authority must not be a startup input", errors)
     require(any(step.get("id") == "writer_dispatch" for step in workflow.get("steps", [])), "canonical workflow must dispatch a post-gate writer", errors)
@@ -177,7 +218,7 @@ def main() -> int:
     require(
         {item.get("type") for item in workflow.get("terminal_artifacts", [])} == {
             "workflow_journal", "evaluator_contract", "evaluator_verdict", "structural_pivot",
-            "writing_gate_audit", "paper_deliverable", "cleanup_receipt",
+            "figure_gate", "writing_gate_audit", "paper_deliverable", "cleanup_receipt",
         },
         "canonical workflow terminal artifacts are incomplete", errors,
     )
@@ -223,8 +264,8 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.13.0"' in read("SKILL.md"), "SKILL.md version must be 0.13.0", errors)
-    require("Current version:** v0.13.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.13.0", errors)
+    require('version: "0.14.0"' in read("SKILL.md"), "SKILL.md version must be 0.14.0", errors)
+    require("Current version:** v0.14.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.14.0", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",

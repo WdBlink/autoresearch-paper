@@ -49,6 +49,7 @@ Full text: `assets/task-prompt-snippets.md`.
 | T6.1 independent evaluation | `T6.1-evaluate-candidate` |
 | T6.2 research decision | `T6.2-research-decision` |
 | T6.3 pivot or retry | `T6.3-pivot-or-retry` |
+| T6.4 figure build | `T6.4-figure-build` |
 | T7 write iter1 | `T7-write-iter1` |
 | T8 write iter2 | `T8-write-iter2` |
 | T9 ablation | `T9-ablation` |

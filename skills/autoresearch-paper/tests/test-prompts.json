@@ -17,7 +17,7 @@
     "id": 3,
     "name": "target_path_no_mavis",
     "prompt": "[测试环境] PATH 不含 mavis,使用 fake claude/codex 运行完整 target flow",
-    "expected": "init policy → signed activation → MiniMax M3 worker → CP-01..CP-04 → evaluator verdict → writing gate → patrol → signed stop/owned cleanup 全部成功; 不调用网络或 MAVIS",
+    "expected": "init policy → signed activation → Codex native bounded worker(可选 minimax_m3,必须 fresh non-M3 verify) → CP-01..CP-04 → evaluator verdict → T6.4 非空 inventory/manifests/human output-bound review gate → writing gate → patrol → signed stop/owned cleanup 全部成功; 不调用网络、MAVIS 或外部 Agent harness",
     "covers": ["dim3 失败模式编码", "dim7 target 架构", "dim9 no-MAVIS 反例"]
   },
   {

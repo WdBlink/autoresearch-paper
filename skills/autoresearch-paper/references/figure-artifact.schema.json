@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/figure-artifact.schema.json",
+  "title": "Autoresearch paper figure artifact manifest",
+  "description": "Host-neutral source-bound figure contract. Schema validity records a proposal; the repository validator decides gate eligibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "figure_id", "figure_kind", "generation", "inputs",
+    "transformations", "renderer", "outputs", "provenance", "independent_review"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "figure_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "figure_kind": {
+      "type": "string",
+      "enum": ["result", "statistical", "method_schematic", "other"]
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "capability", "capability_revision"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["deterministic", "ai_schematic_proposal"]},
+        "capability": {
+          "type": "string",
+          "enum": [
+            "scientific-visualization",
+            "deterministic-local-renderer",
+            "scientific-schematics"
+          ]
+        },
+        "capability_revision": {"type": "string", "minLength": 1, "maxLength": 256},
+        "proposal_source": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "inputs": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/inputArtifact"}
+    },
+    "transformations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/transformation"}
+    },
+    "renderer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "version", "source_revision", "command", "random_seed"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1, "maxLength": 256},
+        "version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "source_revision": {"type": "string", "minLength": 1, "maxLength": 256},
+        "command": {
+          "type": "array", "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+        },
+        "random_seed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "outputs": {
+      "type": "array", "minItems": 2,
+      "items": {"$ref": "#/$defs/outputArtifact"}
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "created_at", "research_authority", "claim_ids"],
+      "properties": {
+        "plan_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "created_at": {"type": "string", "format": "date-time"},
+        "research_authority": {"$ref": "#/$defs/authorityArtifact"},
+        "claim_ids": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      }
+    },
+    "independent_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt", "reviewer_kind", "reviewer_identity", "independent_of_renderer",
+        "decision", "ai_quality_score_used_as_authority"
+      ],
+      "properties": {
+        "receipt": {"$ref": "#/$defs/hashedArtifact"},
+        "reviewer_kind": {
+          "type": "string", "const": "human"
+        },
+        "reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+        "independent_of_renderer": {"type": "boolean"},
+        "decision": {"type": "string", "enum": ["PASS", "FAIL", "PENDING"]},
+        "ai_quality_score_used_as_authority": {"type": "boolean"},
+        "ai_quality_score": {"type": "number"}
+      }
+    }
+  },
+  "$defs": {
+    "hashedArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "inputArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "role", "purpose"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "role": {
+          "type": "string",
+          "enum": ["source_data", "render_script", "render_spec", "style", "other"]
+        },
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 1024}
+      }
+    },
+    "outputArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "role", "media_type"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "role": {"type": "string", "enum": ["manuscript", "preview", "auxiliary"]},
+        "media_type": {
+          "type": "string",
+          "enum": ["application/pdf", "image/svg+xml", "image/png", "image/jpeg"]
+        }
+      }
+    },
+    "authorityArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "path", "sha256"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["keep_receipt", "arxiv_negative_result_waiver", "method_spec"]
+        },
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "transformation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["order", "operation", "description", "parameters"],
+      "properties": {
+        "order": {"type": "integer", "minimum": 0},
+        "operation": {"type": "string", "minLength": 1, "maxLength": 256},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "parameters": {"type": "object"}
+      }
+    }
+  }
+}

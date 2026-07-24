@@ -1,6 +1,6 @@
 ---
 name: plan-template-journal-q1
-description: 8-task plan.yaml template (deeper experiments, longer wall-clock, stricter gates) for SCI Q1 / Nature 子刊 / T-PAMI / T-RO / IJRR / JFR submissions.
+description: Extended plan.yaml template with deeper experiments, figure gates, longer wall-clock, and stricter acceptance for journal submissions.
 ---
 
 # Plan Template — `journal-q1` Tier
@@ -38,7 +38,10 @@ T0 evaluator-freeze ─▶ T1 lit ─▶ T2 gap ─▶ T3 method ─▶ T4 impl 
                                                                   T6.2 research-decision
                                                                     │ PASS/WAIVE      │ FAIL
                                                                     ▼                 ▼
-                                                                T7 write-1      T6.3 pivot-or-retry
+                                                              T6.4 figures      T6.3 pivot-or-retry
+                                                                    │                 │
+                                                                    ▼                 │
+                                                                T7 write-1            │
                                                                     │                 │
                                                                     ▼                 └──▶ T3/T4/T5/T6
                                                                 T8 write-2 ◀──── T9 ablation (required)
@@ -53,6 +56,9 @@ T0 evaluator-freeze ─▶ T1 lit ─▶ T2 gap ─▶ T3 method ─▶ T4 impl 
 Total wall-clock target: 3–7 days.
 
 ## Differences from `conference` tier
+
+The inherited T0 figure requirement is raised to at least 6 exact figure IDs
+before CP-01 approval. T6.4 inventory must match that frozen set exactly.
 
 ### Stricter experiment gates
 
@@ -100,7 +106,8 @@ research-decision` records a hash-bound evaluator verdict.
 - Waiver: only an authenticated human `waive_acceptance` record is accepted.
 
 `T7 write-iter1` must hard fail unless `check-writing-gate` validates the
-verdict/waiver and the CP-04 final-evidence transition receipt.
+verdict/waiver, the CP-04 final-evidence transition receipt, and the immutable
+non-empty T6.4 figure gate.
 
 ### T7 write-iter1 has a longer format
 
@@ -108,6 +115,8 @@ Journal papers typically allow 12–14 pages + references vs 8 pages for
 conferences. T7 must produce:
 
 - ≥ 6 figures (vs 4 in conference).
+- one passing source-bound manifest and human output-bound review receipt per
+  figure, all listed in the non-empty required-figure inventory.
 - ≥ 3 tables (vs 2).
 - An extended related-work section (≥ 1.5 pages) since journal review
   takes months and reviewers expect comprehensive positioning.

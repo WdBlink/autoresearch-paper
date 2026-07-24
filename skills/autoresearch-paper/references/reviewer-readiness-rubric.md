@@ -103,12 +103,16 @@ Do the figures carry their weight?
 |---|---|
 | 0 | No figures, or figures are unreadable. |
 | 2 | Figures present but decorative; do not support claims. |
-| 5 | Figures present, readable, and tied to claims in text. |
-| 7 | Each figure has a 1-paragraph caption that states the take-home; color-blind safe palette. |
-| 9 | Figures follow a coherent visual language (one style across all). |
+| 5 | Figures are readable, tied to claims, and each source-bound manifest passes the deterministic figure validator. |
+| 7 | Each figure has a 1-paragraph take-home caption, color-redundant encoding, and a human review receipt bound to every current output. |
+| 9 | Figures follow one coherent visual language and reproduce from preserved source data, transformations, render commands, and pinned renderer identity. |
 | 10 | Figures are the talk of the conference. |
 
 Tier thresholds: arxiv ≥ 5, conference ≥ 6, journal-q1 ≥ 7.
+
+A manifest or AI quality score is not a visual/scientific certification.
+Inspect the rendered artifact at final manuscript size and verify that the
+caption, evidence, accessibility, and output-bound human review agree.
 
 ## Dimension 6 — Ethical Framing
 

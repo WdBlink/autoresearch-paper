@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.13.0
+- **Current version:** v0.14.0
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -35,7 +35,11 @@ start writing.
   evidence, but does not claim to be the production topic-to-paper trigger.
   The production loop now has external registration, tick leases, canonical
   revisions, fresh context capsules, and evaluator-eligibility blocking;
-  bounded fault/restart evidence is complete. The measured soak in this
+  bounded fault/restart evidence is complete. The scientific-figure path now
+  binds source data, transformations, renderer identity, commands, outputs,
+  hashes, a CP-01-frozen expected figure set, an exact inventory, and
+  output-bound human review before writing.
+  The measured soak in this
   release is intentionally short, so 24h/7×24/full-cutover stability is not
   claimed.
   MAVIS is available only as explicit legacy compatibility. See
@@ -167,6 +171,26 @@ Then verify local runtime dependencies from the installed skill directory:
 scripts/setup.sh
 ```
 
+Install the focused scientific figure capability at the audited upstream
+revision. Do not install the complete collection merely for this workflow:
+
+```bash
+gh skill install K-Dense-AI/scientific-agent-skills \
+  scientific-visualization \
+  --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 \
+  --agent claude-code --scope user
+
+# Repeat only when Codex does not share the Claude/user skill directory.
+gh skill install K-Dense-AI/scientific-agent-skills \
+  scientific-visualization \
+  --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 \
+  --agent codex --scope user
+```
+
+`scientific-schematics` is optional and proposal-only. If installed, it may
+draft method or architecture diagrams, but neither its generated image nor an
+AI quality score passes the repository-owned figure gate.
+
 For a project-level install, omit `-g`:
 
 ```bash
@@ -196,6 +220,8 @@ instructions if anything required is missing.
 | Python 3 | bundled guards, cleanup, tests |
 | Codex CLI | registered sparse frontier-advisor checkpoints |
 | Node.js / npx | GitHub skill installation |
+| Scientific Visualization skill | focused deterministic publication-figure guidance and helpers |
+| Scientific Schematics skill | optional proposal-only method-diagram generation; never acceptance authority |
 | jq | JSON validation during checks |
 | launchctl | macOS launchd L0 rescue mode |
 | pdflatex + bibtex | LaTeX package verification |
@@ -237,6 +263,7 @@ During a run:
 | Frontier audit | reserve budget, send a registered checkpoint to Codex, validate, then record controller consumption |
 | Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
 | Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
+| Figure Gate | CP-01 freezes expected IDs; T6.4 binds exact manifests, outputs, and human reviews |
 | Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
 | Cleanup | stop reports residuals; each deletion consumes a scoped receipt |
 
@@ -264,6 +291,9 @@ autoresearch-paper/
 │       │   ├── lifecycle-contract.md
 │       │   ├── claude-code-runtime.md
 │       │   ├── frontier-response.schema.json
+│       │   ├── figure-artifact.schema.json
+│       │   ├── figure-requirements.schema.json
+│       │   ├── scientific-figure-pipeline.md
 │       │   ├── watchdog-prompt-template.md
 │       │   ├── first-action-last-seen.md
 │       │   ├── reviewer-readiness-rubric.md
@@ -333,6 +363,9 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.14.0** — source-bound scientific figure manifests, offline path/hash
+  validation, post-KEEP pre-writing gates, focused Scientific Visualization
+  integration, and optional proposal-only Scientific Schematics.
 - **v0.13.0** — seven production fault scenarios, multi-session soak evidence,
   and claim gates bounded to the measured interval; no 24h/7×24 claim.
 - **v0.12.0** — audited episode memory, defect-versus-lapse diagnosis,
@@ -380,7 +413,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.13.0}
+  version = {0.14.0}
 }
 ```
 
@@ -392,7 +425,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.13.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.14.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

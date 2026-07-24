@@ -12,7 +12,7 @@
   {
     "id": 3,
     "prompt": "论文图画得太简陋了,v3 用的 matplotlib 临时画,scientific-schematics skill API key 缺失。我要学术风格的 vector PDF。",
-    "expected": "Skill 应该: (a) 触发 autoresearch-paper (在 plan workflow 的 T6/T7 阶段); (b) 引用 fig quality 在 v7 review 是 P0; (c) 建议 huashu-design 或 /huashu-design skill 触发,因为 huashu 是花叔生态的 HTML design; (d) 给具体改进路径:把 4 张 matplotlib 临时图替换为 huashu-design 渲染的学术风格 vector PDF + numbered callouts; (e) 不重复 v3 已经做对的: §3.6 protocol table / §3.0.1 coupling disclosure / L5 dual-format schema,这些是 v3 已落地不要重做。"
+    "expected": "Skill 应该: (a) 触发 autoresearch-paper 的 T6.4 figure-build gate,并让 T7 依赖它; (b) 默认使用 pinned scientific-visualization 生成可复现的 SVG/PDF 与 PNG/JPEG preview; (c) scientific-schematics 缺 API key 时只能保留 proposal-only,不得把 AI judge score 当验收; (d) 每张图生成 hash-bound figure manifest,记录 source/render source/transforms/renderer/version/argv/seed; (e) 生成非空且绑定每个 manifest hash 的 required-figures inventory; (f) 要求 human PASS receipt 精确绑定全部当前 output path/hash; (g) 不重复 v3 已经做对的协议、披露和 schema 工作。"
   },
   {
     "id": 4,

@@ -9,19 +9,21 @@
     "pivot_proposal", "dispute_record", "final_candidate", "normalized_brief",
     "execution_plan", "risk_budget", "baselines", "seeds_splits",
     "leakage_controls", "claim_evidence_map", "raw_result_manifest",
-    "uncertainty_robustness", "writer_task_contract"
+    "uncertainty_robustness", "figure_requirements", "figure_inventory",
+    "writer_task_contract"
   ],
   "terminal_artifacts": [
     {"type": "workflow_journal", "path": "${workflow.journal}"},
     {"type": "evaluator_contract", "path": "state/evaluator_contract.json"},
     {"type": "evaluator_verdict", "path": "${final_verdict.verdict_path}"},
     {"type": "structural_pivot", "path": "${apply_pivot.pivot_receipt}"},
+    {"type": "figure_gate", "path": "${figure_gate.gate_receipt}"},
     {"type": "writing_gate_audit", "path": "state/writing_gate_audit.jsonl"},
     {"type": "paper_deliverable", "path": "${writer_promote.primary_artifact_path}"},
     {"type": "cleanup_receipt", "path": "${await_human.authorization_receipt}"}
   ],
   "steps": [
-    {"stage":"cp01_plan","id":"cp01_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-01","objective":"Audit the initial research plan","decision_required":"approve_execution","artifact":["${input.normalized_brief}::normalized_brief","${input.execution_plan}::execution_plan","${input.risk_budget}::risk_budget"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_cp01"}},
+    {"stage":"cp01_plan","id":"cp01_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-01","objective":"Audit the initial research plan and frozen figure requirements","decision_required":"approve_execution","artifact":["${input.normalized_brief}::normalized_brief","${input.execution_plan}::execution_plan","${input.risk_budget}::risk_budget","${input.figure_requirements}::figure_requirements"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_cp01"}},
     {"stage":"cp01_plan","id":"cp01_send","command":"send-frontier-request","args":{"request_id":"far_canonical_cp01","codex_bin":"${input.codex_bin}"}},
     {"stage":"cp01_plan","id":"cp01_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_cp01"}},
     {"stage":"cp01_plan","id":"cp01_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_cp01","dependent_transition":"approve_execution","controller_note":"initial plan audit accepted"}},
@@ -56,12 +58,13 @@
     {"stage":"cp04_final_evidence_dispute","id":"resolve_dispute","command":"resolve-acceptance-dispute","args":{"resolution":"${input.dispute_record}"}},
     {"stage":"cp04_final_evidence_dispute","id":"final_run","command":"run-evaluator","args":{"evaluator":"${input.evaluator}","evidence":"${input.evidence_manifest}","candidate":"${input.final_candidate}","purpose":"candidate"}},
     {"stage":"cp04_final_evidence_dispute","id":"final_verdict","command":"record-evaluator-verdict","args":{"execution_receipt":"${final_run.execution_receipt}","candidate_id":"canonical_final"}},
-    {"stage":"cp04_final_evidence_dispute","id":"final_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-04","checkpoint_subtype":"prewriting_final_evidence","objective":"Audit final evidence before writing","decision_required":"start_writing","artifact":["${input.final_candidate}::candidate","${input.claim_evidence_map}::claim_evidence_map","state/evaluator_contract.json::evaluator_contract","${final_verdict.verdict_path}::evaluator_verdict","${input.raw_result_manifest}::raw_result_manifest","${input.baselines}::baselines","${input.uncertainty_robustness}::uncertainty_robustness"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_final"}},
+    {"stage":"t6_4_figure_gate","id":"figure_gate","command":"check-figure-gate","args":{"inventory":"${input.figure_inventory}","requirements":"${input.figure_requirements}"}},
+    {"stage":"cp04_final_evidence_dispute","id":"final_create","command":"create-frontier-request","args":{"plan_id":"${input.plan_id}","checkpoint":"CP-04","checkpoint_subtype":"prewriting_final_evidence","objective":"Audit final evidence and figure gate before writing","decision_required":"start_writing","artifact":["${input.final_candidate}::candidate","${input.claim_evidence_map}::claim_evidence_map","state/evaluator_contract.json::evaluator_contract","${final_verdict.verdict_path}::evaluator_verdict","${input.raw_result_manifest}::raw_result_manifest","${input.baselines}::baselines","${input.uncertainty_robustness}::uncertainty_robustness","${figure_gate.gate_receipt}::figure_gate"],"max_input_tokens":5000,"max_output_tokens":500,"request_id":"far_canonical_final"}},
     {"stage":"cp04_final_evidence_dispute","id":"final_send","command":"send-frontier-request","args":{"request_id":"far_canonical_final","codex_bin":"${input.codex_bin}"}},
     {"stage":"cp04_final_evidence_dispute","id":"final_validate","command":"validate-frontier-response","args":{"request_id":"far_canonical_final"}},
     {"stage":"cp04_final_evidence_dispute","id":"final_apply","command":"apply-frontier-response","args":{"request_id":"far_canonical_final","dependent_transition":"start_writing","controller_note":"final evidence accepted"}},
 
-    {"stage":"writing_gate","id":"writing_gate","command":"check-writing-gate","args":{"tier":"conference","verdict":"${final_verdict.verdict_path}"}},
+    {"stage":"writing_gate","id":"writing_gate","command":"check-writing-gate","args":{"tier":"conference","verdict":"${final_verdict.verdict_path}","figure_gate_receipt":"${figure_gate.gate_receipt}"}},
 
     {"stage":"post_gate_writing","id":"writer_dispatch","command":"dispatch-worker","args":{"task_contract":"${input.writer_task_contract}","claude_bin":"${input.claude_bin}","writing_gate_receipt":"${writing_gate.gate_receipt}"}},
     {"stage":"post_gate_writing","id":"writer_promote","command":"promote-worker-artifacts","args":{"worker_run_id":"${writer_dispatch.run_id}"}},

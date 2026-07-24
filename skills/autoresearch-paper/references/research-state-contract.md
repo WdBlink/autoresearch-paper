@@ -53,10 +53,19 @@ arxiv-only. Every tier requires APPLIED CP-04 subtype
 grants only `paper-deliverable` at `artifacts/paper/paper.md`; before it,
 workers can produce only `research-intermediate` artifacts inside their own
 normalized task namespace. Names and prose never imply writing authority.
+CP-04 and the writing gate also bind an immutable figure-gate receipt produced
+from a non-empty plan inventory. The controller revalidates the inventory,
+every manifest, every review receipt, and every current output hash before
+granting writing authority.
 
 ```bash
+python3 references/scripts/harness-runtime.py check-figure-gate \
+  --plan-dir PLAN --inventory out/figures/required-figures.json \
+  --requirements state/figure-requirements.json
 python3 references/scripts/research-state-guard.py check-writing-gate \
-  --plan-dir PLAN --tier conference --verdict state/evaluator_verdicts/CANDIDATE.json
+  --plan-dir PLAN --tier conference \
+  --verdict state/evaluator_verdicts/CANDIDATE.json \
+  --figure-gate-receipt state/figure_gates/DECISION.json
 ```
 
 ## Typed failures

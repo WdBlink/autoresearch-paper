@@ -350,8 +350,10 @@ Outputs:
 - if pivot/escalation is needed: {PLAN_DIR}/control/pivot_requested.json
   or {PLAN_DIR}/control/override_requested.json
 
-Gate: T7 writing cannot start unless `check-writing-gate` validates the stored
-verdict/authenticated waiver and any tier-required CP-04 transition.
+Gate: T7 writing cannot start unless `check-figure-gate` first stores an
+immutable receipt from the non-empty required-figure inventory and
+`check-writing-gate` validates that receipt, the stored
+verdict/authenticated waiver, and the tier-required CP-04 transition.
 ```
 
 ## T6.3-pivot-or-retry — structural pivot
@@ -395,6 +397,59 @@ python3 {SKILL_DIR}/references/scripts/research-state-guard.py \
 If this exits non-zero, your pivot is not structural enough.
 ```
 
+## T6.4-figure-build — source-bound figure build
+
+```
+You are building the paper figures after the research decision.
+
+Inputs:
+- {OUT_DIR}/method-figure-spec.md or the tier-equivalent method sketch
+- {OUT_DIR}/results.md
+- {OUT_DIR}/results-raw/
+- {OUT_DIR}/significance.md when present
+- the validated KEEP verdict, or the applicable authenticated arxiv waiver
+
+Read {SKILL_DIR}/references/scientific-figure-pipeline.md first.
+
+Rules:
+- Build result/statistical plots through the deterministic
+  `scientific-visualization` capability when available.
+- Preserve source data, render scripts, declared transformations, random
+  seeds, renderer/version/source revision, and the exact render command.
+- Prefer PDF or SVG for the manuscript and also emit a preview image.
+- `scientific-schematics` MAY produce a method-diagram proposal only when the
+  capability and credential are explicitly available. Its image and AI review
+  score never pass this gate by themselves.
+- A result figure for a candidate without KEEP is forbidden. An arxiv
+  negative-result figure requires its applied waiver receipt.
+- Read the CP-01-approved `{PLAN_DIR}/state/figure-requirements.json`. Its
+  expected figure IDs are frozen controller input, not a worker-editable
+  checklist. Conference requires at least 4; journal-q1 at least 6.
+
+Outputs (write beneath {OUT_DIR}/figures/):
+- source data or stable references to source data
+- render scripts/specifications
+- one `<figure-id>.manifest.json` per required figure
+- manuscript-ready PDF or SVG and a preview image
+- one human review receipt per figure whose `reviewed_outputs` exactly binds
+  every current output path and SHA-256
+- `required-figures.json`, a non-empty plan inventory binding every required
+  manifest by SHA-256; its figure ID set must exactly match the frozen
+  requirements
+
+Gate: run this command for the complete plan inventory:
+
+```bash
+python3 {SKILL_DIR}/references/scripts/validate-figure-artifacts.py \
+  --plan-dir {PLAN_DIR} \
+  --inventory {OUT_DIR}/figures/required-figures.json \
+  --requirements {PLAN_DIR}/state/figure-requirements.json
+```
+
+Any non-zero result blocks T7. Do not weaken the contract, replace a hash, or
+use an AI score to convert a failure into PASS.
+```
+
 ## T7-write-iter1 — first writing pass
 
 ```
@@ -407,13 +462,17 @@ Inputs: all prior outputs in {OUT_DIR}/.
 Required gate: a stored hash-bound PASS verdict or applied waiver receipt. For
 every tier, CP-04 `prewriting_final_evidence` must also be APPLIED. If
 the deterministic check fails, write a blocking note instead of a draft.
+The non-empty required-figure inventory and every bound manifest from T6.4
+must pass `validate-figure-artifacts.py` and carry a human output-bound review
+receipt.
 
 Executable gate:
 
 ```bash
 python3 {SKILL_DIR}/references/scripts/research-state-guard.py \
   check-writing-gate --plan-dir {PLAN_DIR} --tier {TIER} \
-  {WRITING_AUTHORITY_ARGS}
+  {WRITING_AUTHORITY_ARGS} \
+  --figure-gate-receipt {FIGURE_GATE_RECEIPT}
 ```
 
 If this exits non-zero, do not write paper-iter1.tex.
@@ -432,7 +491,8 @@ Outputs (write to {OUT_DIR}):
 - bibliography.bib — full BibTeX.
 
 Gate: every section has at least one paragraph. No [TODO]
-placeholders in the body.
+placeholders in the body. Every `\includegraphics` target must resolve to an
+output in a passing figure manifest.
 ```
 
 ## T8-write-iter2 — second writing pass
@@ -520,6 +580,10 @@ Wide-table camera-ready check: Before submitting paper.tex, scan for any
 overflow). Convert to `\begin{table*}[t]` / `\end{table*}` to span both
 columns of the IEEE 2-col layout — this gives ~0.5 page of body room
 without changing table content. See SKILL.md Step 7.5.a + FM-15.
+
+Figure package gate: rerun `validate-figure-artifacts.py` for every
+`figures/*.manifest.json`, verify every manuscript figure is referenced from
+paper.tex, and reject any unmanifested or hash-drifted figure.
 ```
 
 ## T11-readiness — reviewer-readiness self-check
@@ -532,6 +596,11 @@ Inputs: paper.tex, all of {OUT_DIR}/.
 Your job: produce a 6-dimension score (0–10 each) and a per-dimension
 justification. The 6 dimensions are listed in
 reviewer-readiness-rubric.md.
+
+For Figure Quality, inspect the rendered files at final manuscript size,
+captions, source/provenance manifests, color redundancy, clipping, fonts, and
+the human output-bound review receipts. Do not award a passing score from a
+manifest or AI review score alone.
 
 Outputs (write to {OUT_DIR}):
 - reviewer-readiness.md — scores + justifications.

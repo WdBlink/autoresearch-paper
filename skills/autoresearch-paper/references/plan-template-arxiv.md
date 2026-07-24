@@ -1,11 +1,11 @@
 ---
 name: plan-template-arxiv
-description: Minimal 4-task plan.yaml template for the arxiv tier — literature → gap → method → write. Used when SKILL.md Step 3 generates a preprint/tech-report plan.
+description: Minimal plan.yaml template for the arxiv tier — literature → method/experiment → decision → figures → write/package.
 ---
 
 # Plan Template — `arxiv` Tier
 
-Minimal 4-task plan. Used when the user wants a working paper, a tech
+Minimal plan. Used when the user wants a working paper, a tech
 report, a preprint, or explicitly opts out of a venue gate. Unlike
 conference/journal tiers, arxiv may proceed with a clean negative result,
 but the waiver must be an authenticated `waive_acceptance` human record.
@@ -15,7 +15,7 @@ but the waiver must be an authenticated `waive_acceptance` human record.
 ```
 render_arxiv_plan(brief, materials, plan_dir) -> plan_yaml
 
-create literature, method+experiment, research-decision, writing/package tasks
+create literature, method+experiment, research-decision, figure, writing/package tasks
 load prompt bodies from ../assets/task-prompt-snippets.md
 freeze the evaluator and initialize typed failure state
 allow writing only after a validated PASS or authenticated arxiv waiver
@@ -24,7 +24,7 @@ allow writing only after a validated PASS or authenticated arxiv waiver
 ## Plan shape
 
 ```
-[literature] ──▶ [method+expt fused] ──▶ [research-decision] ──▶ [write-iter1+pkg fused]
+[literature] ──▶ [method+expt fused] ──▶ [research-decision] ──▶ [figure-build] ──▶ [write-iter1+pkg fused]
                        │
                        └─▶ (optional) ablation
 ```
@@ -32,6 +32,11 @@ allow writing only after a validated PASS or authenticated arxiv waiver
 Total wall-clock target: 1–2 days.
 
 ## Task definitions
+
+Before T1, the deterministic controller writes
+`<plan-dir>/state/figure-requirements.json` with at least one exact expected
+figure ID and includes it in CP-01 approval. Figure workers cannot edit this
+file.
 
 ### T1 — literature-review
 
@@ -77,9 +82,24 @@ Total wall-clock target: 1–2 days.
 - **gate**: record a hash-bound PASS/FAIL machine verdict. An honest negative
   result requires an authenticated arxiv-only waiver; bare strings never pass.
 
+### T2.6 — figure-build
+
+- **depends_on**: [T2.5 when PASS or an authenticated arxiv waiver is applied]
+- **agent**: figure-agent
+- **prompt_snippet**: see `../assets/task-prompt-snippets.md#T6.4-figure-build`
+- **inputs**: T2 method sketch, raw results, and research-decision authority
+- **outputs**:
+  - `<plan-dir>/out/figures/` — source-bound figures and previews.
+  - one manifest and human output-bound review receipt per figure.
+  - `<plan-dir>/out/figures/required-figures.json` — non-empty hash-bound
+    plan inventory.
+- **gate**: the inventory and every manifest pass
+  `validate-figure-artifacts.py`; an AI score never substitutes for the
+  repository-owned gate.
+
 ### T3 — write-and-package
 
-- **depends_on**: [T2.5]
+- **depends_on**: [T2.6]
 - **agent**: writer-agent
 - **prompt_snippet**: see `../assets/task-prompt-snippets.md#T7-write-iter1`
   and `../assets/task-prompt-snippets.md#T10-pkg`
@@ -92,7 +112,7 @@ Total wall-clock target: 1–2 days.
     scoring, 6 dimensions, each 0–10. Tier `arxiv` accepts ≥ 5 per
     dimension; nothing lower.
 - **gate**: `check-writing-gate` must accept the validated verdict or signed
-  arxiv negative-result waiver.
+  arxiv negative-result waiver and every required figure manifest must pass.
 
 ### T4 — readiness-self-check
 

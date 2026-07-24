@@ -24,6 +24,41 @@ need_cmd() {
   fi
 }
 
+has_skill() {
+  local skill_name="$1"
+  local candidate
+  for candidate in \
+    "${HOME}/.agents/skills/${skill_name}/SKILL.md" \
+    "${HOME}/.claude/skills/${skill_name}/SKILL.md" \
+    "${HOME}/.codex/skills/${skill_name}/SKILL.md"; do
+    if [[ -f "${candidate}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_pinned_skill_for_agent() {
+  local skill_name="$1"
+  local pin="$2"
+  local agent="$3"
+  local candidate
+  local primary
+  case "${agent}" in
+    claude-code) primary="${HOME}/.claude/skills/${skill_name}/SKILL.md" ;;
+    codex) primary="${HOME}/.codex/skills/${skill_name}/SKILL.md" ;;
+    *) return 1 ;;
+  esac
+  for candidate in \
+    "${primary}" \
+    "${HOME}/.agents/skills/${skill_name}/SKILL.md"; do
+    if [[ -f "${candidate}" ]] && grep -Eq "^[[:space:]]*github-pinned:[[:space:]]*[\"']?${pin}[\"']?[[:space:]]*$" "${candidate}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 need_cmd python3 "runs bundled guards and runtime tests" "install Python 3 and ensure python3 is on PATH"
 if [[ "${MODE}" != "test" ]]; then
   need_cmd jq "validates JSON prompts and runtime state during checks" "macOS: brew install jq"
@@ -35,6 +70,24 @@ if [[ "${MODE}" != "test" ]]; then
   fi
   need_cmd codex "runs registered sparse frontier-advisor checkpoints" "install Codex CLI and sign in"
   need_cmd npx "installs skills from GitHub" "install Node.js 18+ so npx is available"
+  FIGURE_SKILL_PIN="70a0d595e54b8d92ca54f216d4315e0ab8c7d967"
+  if has_pinned_skill_for_agent scientific-visualization "${FIGURE_SKILL_PIN}" claude-code; then
+    ok "scientific-visualization for Claude Code (audited revision ${FIGURE_SKILL_PIN})"
+  else
+    fail "scientific-visualization for Claude Code at audited revision ${FIGURE_SKILL_PIN}"
+    printf '  fix: gh skill install K-Dense-AI/scientific-agent-skills scientific-visualization --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 --agent claude-code --scope user\n' >&2
+  fi
+  if has_pinned_skill_for_agent scientific-visualization "${FIGURE_SKILL_PIN}" codex; then
+    ok "scientific-visualization for Codex (audited revision ${FIGURE_SKILL_PIN})"
+  else
+    fail "scientific-visualization for Codex at audited revision ${FIGURE_SKILL_PIN}"
+    printf '  fix: gh skill install K-Dense-AI/scientific-agent-skills scientific-visualization --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 --agent codex --scope user\n' >&2
+  fi
+  if has_skill scientific-schematics; then
+    ok "scientific-schematics (optional proposal-only method-diagram capability)"
+  else
+    warn "scientific-schematics not found; optional AI method-diagram proposals are unavailable, deterministic figure paths remain valid"
+  fi
   if [[ "$(uname -s)" == "Darwin" ]]; then
     need_cmd launchctl "loads the optional launchd L0 rescue daemon" "launchctl is normally present on macOS"
   else
@@ -61,11 +114,15 @@ for path in \
   "${ROOT_DIR}/references/context-capsule.schema.json" \
   "${ROOT_DIR}/references/guardian-observation.schema.json" \
   "${ROOT_DIR}/references/evaluator-admission.schema.json" \
+  "${ROOT_DIR}/references/figure-artifact.schema.json" \
+  "${ROOT_DIR}/references/figure-requirements.schema.json" \
+  "${ROOT_DIR}/references/scientific-figure-pipeline.md" \
   "${ROOT_DIR}/references/canonical-conformance-workflow.json" \
   "${ROOT_DIR}/references/scripts/harness-runtime.py" \
   "${ROOT_DIR}/references/scripts/run-claude-harness.py" \
   "${ROOT_DIR}/references/scripts/cleanup-plan-resources.sh" \
   "${ROOT_DIR}/references/scripts/plan-l0-guard.py" \
+  "${ROOT_DIR}/references/scripts/validate-figure-artifacts.py" \
   "${ROOT_DIR}/references/scripts/research-state-guard.py"; do
   if [[ -f "${path}" ]]; then
     ok "found ${path#${ROOT_DIR}/}"

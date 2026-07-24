@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.13.0"
+  version: "0.14.0"
 ---
 
 # Autoresearch Paper
@@ -27,6 +27,10 @@ file-backed state.
 - Never start writing from a bare PASS string. Require a validated evaluator
   verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
   also requires APPLIED CP-04 `prewriting_final_evidence`.
+- Never promote a paper figure from appearance, an AI review score, or an
+  unbound image file. Require the repository-owned non-empty figure inventory,
+  manifest hash and path validation, and a human review receipt bound to every
+  current output.
 - Never register or advance unattended conference/journal execution without a
   current controller-applied evaluator admission whose replay, regression,
   authority, inputs, search space, and complexity policy all revalidate.
@@ -51,7 +55,8 @@ task_graph = generate_plan_yaml(
     references/task-prompt-snippets.md,
     assets/task-prompt-snippets.md,
     references/research-state-contract.md,
-    references/lifecycle-contract.md
+    references/lifecycle-contract.md,
+    references/scientific-figure-pipeline.md
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
@@ -63,6 +68,7 @@ initialize the canonical durable task graph and register its external trigger
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
+after KEEP/waiver and before writing: build figures -> validate every figure manifest
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
     observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
@@ -178,6 +184,7 @@ For `conference` and `journal-q1`, the task graph must include:
 - `T6.1 evaluate-candidate`
 - `T6.2 research-decision`
 - `T6.3 pivot-or-retry`
+- `T6.4 figure-build` after a validated KEEP decision
 - writing and package tasks only after the research gate
 
 For `arxiv`, a clean negative-result paper may proceed only with an applied,
@@ -192,6 +199,7 @@ Read these modules when generating a plan:
 - `assets/task-prompt-snippets.md`
 - `references/research-state-contract.md`
 - `references/lifecycle-contract.md`
+- `references/scientific-figure-pipeline.md`
 
 ## Research Gate
 
@@ -214,9 +222,15 @@ and result application.
 Before T7 writing, run:
 
 ```bash
+python3 references/scripts/harness-runtime.py \
+  check-figure-gate --plan-dir <plan-dir> \
+  --inventory <plan-dir>/out/figures/required-figures.json \
+  --requirements <plan-dir>/state/figure-requirements.json
+
 python3 references/scripts/research-state-guard.py \
   check-writing-gate --plan-dir <plan-dir> --tier <tier> \
-  --verdict <state/evaluator_verdicts/candidate.json>
+  --verdict <state/evaluator_verdicts/candidate.json> \
+  --figure-gate-receipt <state/figure_gates/decision.json>
 ```
 
 When distinct controller-normalized scientific directions bound to canonical
@@ -227,6 +241,38 @@ stalls never count. Validate:
 python3 references/scripts/research-state-guard.py \
   validate-pivot --plan-dir <plan-dir> --proposal <pivot-brief.md>
 ```
+
+## Scientific Figure Gate
+
+Read `references/scientific-figure-pipeline.md` before T6.4, T7, T10, or T11.
+The repository-owned figure contract is host neutral:
+
+- `scientific-visualization` is the curated default capability for truthful,
+  accessible, publication-oriented local plots;
+- `scientific-schematics` is optional and proposal-only for method or
+  architecture drafts;
+- an AI-generated image or AI quality score has no scientific-accuracy,
+  artifact-promotion, evaluator, or writing authority;
+- every promoted figure binds its source inputs, transformations, render
+  command, renderer identity, source revision, outputs, and hashes;
+- result figures are built only after a validated KEEP decision, or after the
+  applicable authenticated arxiv waiver;
+- T7 is blocked until a non-empty required-figure inventory, every bound
+  manifest, and every human output-bound review receipt pass the deterministic
+  validator.
+
+Validate the plan inventory from the installed skill directory:
+
+```bash
+python3 references/scripts/validate-figure-artifacts.py \
+  --plan-dir <plan-dir> \
+  --inventory <plan-dir>/out/figures/required-figures.json \
+  --requirements <plan-dir>/state/figure-requirements.json
+```
+
+The validator proves the declared path, hash, provenance, and artifact-format
+contract. It does not certify scientific truth, accessibility, visual
+legibility, or venue compliance; those remain independent review duties.
 
 ## Patrol And Lifecycle
 
@@ -313,6 +359,7 @@ do not count as evidence.
 | ❌-13 | Stop a plan without `cleanup-plan-resources.sh` or a residual-resource report |
 | ❌-14 | Let model advice directly accept, waive, cancel, resume, or clean lifecycle resources |
 | ❌-15 | Call Codex outside CP-01 through CP-04 or before reserving the frozen frontier budget |
+| ❌-16 | Accept a figure from an AI score, an unbound file, or a manifest that escapes the plan root |
 
 ## Failure Modes
 
@@ -336,6 +383,9 @@ do not count as evidence.
 | FM-21 | scientific threshold repeats the same direction | deduplicate controller-normalized, FAIL-bound directions and force T6.3 structural pivot | request CP-03 advice |
 | FM-22 | stop/abort leaves runtime resources behind | run `cleanup-plan-resources.sh <plan-id>` | report exact residual manual commands |
 | FM-23 | team members grow unbounded | keep stable roles and mark temporary members `ephemeral=true` | cleanup archives/deletes temporary members |
+| FM-24 | `scientific-visualization` capability is unavailable | install the pinned focused skill and retain the figure specification | block only the affected figure build; do not weaken the gate |
+| FM-25 | optional AI schematic capability or credential is unavailable | keep the textual/vector specification and deterministic renderer path | skip AI generation without blocking unrelated result figures |
+| FM-26 | figure inventory, manifest, path, hash, or human output-bound review fails | preserve the proposal and rerun the repository validator | prohibit T7/T10 promotion until corrected |
 
 ## Deliverables
 
@@ -346,6 +396,8 @@ On completion, report:
 - wall-clock vs estimate
 - research gate verdict and evidence path
 - paper paths: `paper.tex`, figures, bibliography
+- validated non-empty figure inventory, manifests, and human output-bound
+  review receipts
 - `reviewer-readiness.md`
 - `next-steps.md`
 - `cleanup_report.md`
@@ -364,6 +416,10 @@ On completion, report:
 - `references/claude-code-runtime.md` — target runtime commands and migration boundary
 - `references/learning-promotion-contract.md` — two-stage audited memory and proposal gates
 - `references/fault-soak-acceptance-contract.md` — seven faults, soak evidence, and bounded claims
+- `references/scientific-figure-pipeline.md` — deterministic plots, optional schematics, manifests, and promotion gate
+- `references/figure-artifact.schema.json` — machine-readable figure artifact contract
+- `references/figure-requirements.schema.json` — CP-01-frozen expected figure
+  identities and tier boundary
 - `references/frontier-response.schema.json` — Codex advisory response schema
 - `references/watchdog-prompt-template.md` — watchdog system prompt template
 - `references/first-action-last-seen.md` — hook registration contract
@@ -378,6 +434,11 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.14.0 (2026-07-24)** — Curated scientific-figure pipeline:
+  source-bound figure manifests, deterministic path/hash/provenance validation,
+  a post-KEEP pre-writing gate, Scientific Visualization as the focused
+  default capability, and Scientific Schematics as optional proposal-only
+  assistance.
 - **v0.13.0 (2026-07-23)** — Bounded T008 acceptance: all seven production
   fault classes, multi-session restart soak accounting, evidence manifests,
   duplicate/loss/overlap/authority checks, and measured-duration claim gates.
