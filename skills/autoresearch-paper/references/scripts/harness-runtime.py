@@ -24,9 +24,10 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Protocol
 
 
 SCHEMA_VERSION = 1
@@ -116,6 +117,126 @@ DURABLE_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 class ContractError(RuntimeError):
     """A runtime or data contract was violated."""
+
+
+@dataclass(frozen=True)
+class TransportExecution:
+    """Host-neutral result of one synchronous transport attempt."""
+
+    adapter_id: str
+    stdout: str
+    stderr: str
+    exit_code: int
+
+
+class WorkerTransport(Protocol):
+    """Dispatch a bounded worker without owning controller state."""
+
+    adapter_id: str
+
+    def dispatch(
+        self,
+        *,
+        model: str,
+        output_schema: dict[str, Any],
+        max_budget_usd: int | float,
+        allowed_tools: list[str],
+        prompt: str,
+        cwd: Path,
+        timeout: int,
+    ) -> TransportExecution: ...
+
+
+class FrontierTransport(Protocol):
+    """Send one reserved frontier request without applying its response."""
+
+    adapter_id: str
+
+    def send(
+        self,
+        *,
+        model: str,
+        reasoning_effort: str,
+        response_schema: Path,
+        raw_response: Path,
+        prompt: str,
+        cwd: Path,
+        timeout: int,
+    ) -> TransportExecution: ...
+
+
+@dataclass(frozen=True)
+class ClaudeCliWorkerTransport:
+    """Current Claude CLI compatibility adapter for MiniMax-M3 workers."""
+
+    executable: str
+    adapter_id: str = "claude-cli"
+
+    def dispatch(
+        self,
+        *,
+        model: str,
+        output_schema: dict[str, Any],
+        max_budget_usd: int | float,
+        allowed_tools: list[str],
+        prompt: str,
+        cwd: Path,
+        timeout: int,
+    ) -> TransportExecution:
+        command = [
+            self.executable, "-p", "--model", model,
+            "--output-format", "json", "--json-schema", json.dumps(output_schema),
+            "--max-budget-usd", str(max_budget_usd),
+            "--permission-mode", "dontAsk", "--tools", ",".join(allowed_tools),
+            "--no-session-persistence",
+        ]
+        completed = subprocess.run(
+            command, input=prompt, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout,
+        )
+        return TransportExecution(
+            adapter_id=self.adapter_id,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            exit_code=completed.returncode,
+        )
+
+
+@dataclass(frozen=True)
+class CodexCliFrontierTransport:
+    """Current Codex CLI compatibility adapter for sparse frontier requests."""
+
+    executable: str
+    adapter_id: str = "codex-cli"
+
+    def send(
+        self,
+        *,
+        model: str,
+        reasoning_effort: str,
+        response_schema: Path,
+        raw_response: Path,
+        prompt: str,
+        cwd: Path,
+        timeout: int,
+    ) -> TransportExecution:
+        command = [
+            self.executable, "exec", "-m", model, "-c",
+            f"model_reasoning_effort={reasoning_effort}",
+            "--sandbox", "read-only", "--cd", str(cwd),
+            "--output-schema", str(response_schema),
+            "--output-last-message", str(raw_response), "--json", "-",
+        ]
+        completed = subprocess.run(
+            command, input=prompt, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout,
+        )
+        return TransportExecution(
+            adapter_id=self.adapter_id,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            exit_code=completed.returncode,
+        )
 
 
 def reject_json_constant(value: str) -> None:
@@ -2846,13 +2967,7 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "writing_gate": writing_gate,
         "context_capsule": context_capsule,
     }, indent=2)
-    cmd = [
-        args.claude_bin, "-p", "--model", policy["worker_model"],
-        "--output-format", "json", "--json-schema", json.dumps(output_schema),
-        "--max-budget-usd", str(policy["worker_max_budget_usd"]),
-        "--permission-mode", "dontAsk", "--tools", ",".join(allowed_tools),
-        "--no-session-persistence",
-    ]
+    transport: WorkerTransport = ClaudeCliWorkerTransport(args.claude_bin)
     started = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -2880,8 +2995,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         })
     atomic_write_json(run_dir / "status.json", started)
     try:
-        proc = subprocess.run(
-            cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True,
+        execution = transport.dispatch(
+            model=policy["worker_model"],
+            output_schema=output_schema,
+            max_budget_usd=policy["worker_max_budget_usd"],
+            allowed_tools=allowed_tools,
+            prompt=prompt,
+            cwd=plan_dir,
             timeout=args.timeout,
         )
     except FileNotFoundError as exc:
@@ -2890,13 +3010,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     except subprocess.TimeoutExpired as exc:
         update_worker_status(plan_dir, run_id, "PAUSED", {"failure": "worker_timeout", "completed_at": utc_now()})
         raise ContractError(f"Claude worker timed out after {args.timeout}s") from exc
-    (run_dir / "transport.stdout").write_text(proc.stdout)
-    (run_dir / "transport.stderr").write_text(proc.stderr)
-    if proc.returncode != 0:
-        update_worker_status(plan_dir, run_id, "FAILED", {"exit_code": proc.returncode, "completed_at": utc_now()})
-        raise ContractError(f"Claude worker failed with exit {proc.returncode}: {proc.stderr[:300]}")
+    (run_dir / "transport.stdout").write_text(execution.stdout)
+    (run_dir / "transport.stderr").write_text(execution.stderr)
+    if execution.exit_code != 0:
+        update_worker_status(plan_dir, run_id, "FAILED", {"exit_code": execution.exit_code, "completed_at": utc_now()})
+        raise ContractError(f"Claude worker failed with exit {execution.exit_code}: {execution.stderr[:300]}")
     try:
-        result = extract_structured_claude_output(proc.stdout)
+        result = extract_structured_claude_output(execution.stdout)
         validate_schema(result, output_schema)
         if not isinstance(result, dict):
             raise ContractError("worker structured output must be an object")
@@ -5325,7 +5445,8 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
         claim = uuid.uuid4().hex
         transition(plan_dir, args.request_id, "BUDGET_RESERVED", budget_snapshot=ledger, estimated_input_tokens=estimated_input_tokens)
         transition(plan_dir, args.request_id, "SENT", model_id=policy["frontier_model"], send_claim=claim)
-        transition(plan_dir, args.request_id, "WAITING", transport="codex-cli", send_claim=claim)
+        transport: FrontierTransport = CodexCliFrontierTransport(args.codex_bin)
+        transition(plan_dir, args.request_id, "WAITING", transport=transport.adapter_id, send_claim=claim)
         run_dir = request_dir(plan_dir, args.request_id)
         raw_response = run_dir / "response.raw.json"
         prompt = (
@@ -5333,20 +5454,24 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             "audit only the bounded evidence it names, and return exactly the required JSON schema.\n\n"
             + request_path.read_text()
         )
-        cmd = [args.codex_bin, "exec", "-m", policy["frontier_model"], "-c",
-               f"model_reasoning_effort={policy.get('frontier_reasoning_effort', 'xhigh')}",
-               "--sandbox", "read-only", "--cd", str(plan_dir), "--output-schema", str(RESPONSE_SCHEMA),
-               "--output-last-message", str(raw_response), "--json", "-"]
         try:
-            proc = subprocess.run(cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True, timeout=args.timeout)
+            execution = transport.send(
+                model=policy["frontier_model"],
+                reasoning_effort=policy.get("frontier_reasoning_effort", "xhigh"),
+                response_schema=RESPONSE_SCHEMA,
+                raw_response=raw_response,
+                prompt=prompt,
+                cwd=plan_dir,
+                timeout=args.timeout,
+            )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             transition(plan_dir, args.request_id, "PAUSED", failure="transport_outcome_uncertain")
             raise ContractError(f"Codex transport outcome is uncertain: {exc}") from exc
-        (run_dir / "transport.events.jsonl").write_text(proc.stdout)
-        (run_dir / "transport.stderr").write_text(proc.stderr)
-        if proc.returncode != 0:
-            transition(plan_dir, args.request_id, "PAUSED", failure="transport_failed", exit_code=proc.returncode)
-            raise ContractError(f"Codex transport failed with exit {proc.returncode}")
+        (run_dir / "transport.events.jsonl").write_text(execution.stdout)
+        (run_dir / "transport.stderr").write_text(execution.stderr)
+        if execution.exit_code != 0:
+            transition(plan_dir, args.request_id, "PAUSED", failure="transport_failed", exit_code=execution.exit_code)
+            raise ContractError(f"Codex transport failed with exit {execution.exit_code}")
         return reconcile_frontier_locked(plan_dir, args.request_id)
 
 
