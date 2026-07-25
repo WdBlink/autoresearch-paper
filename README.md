@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.14.0
+- **Current version:** v0.14.1
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -163,6 +163,13 @@ Primary install path:
 
 ```bash
 npx skills add WdBlink/autoresearch-paper -g
+```
+
+Upgrade copied installations to v0.14.1 with a full bundle refresh so the
+runtime and response schema move together:
+
+```bash
+npx skills add WdBlink/autoresearch-paper -g --copy
 ```
 
 Then verify local runtime dependencies from the installed skill directory:
@@ -363,6 +370,10 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.14.1** — frontier preflight before budget reservation, strict response
+  schema compatibility, Git-safe HTTPS-only Codex routing, durable transport
+  event streaming, and conservative accounting for uncertain sends. See the
+  [CP-01 incident report](skills/autoresearch-paper/references/frontier-transport-incident-2026-07-25.md).
 - **v0.14.0** — source-bound scientific figure manifests, offline path/hash
   validation, post-KEEP pre-writing gates, focused Scientific Visualization
   integration, and optional proposal-only Scientific Schematics.
@@ -413,7 +424,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.14.0}
+  version = {0.14.1}
 }
 ```
 
@@ -425,7 +436,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.14.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.14.1-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

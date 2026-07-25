@@ -12,6 +12,40 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.1] - 2026-07-25
+
+### Fixed
+
+- Frontier dispatch now runs executable, ChatGPT login, strict response-schema,
+  and known model/transport compatibility checks before reserving the frozen
+  call/token budget.
+- The canonical ChatGPT frontier route uses an explicit HTTPS-only Codex
+  provider, avoiding repeated WebSocket retry delays while preserving the
+  authenticated ChatGPT session.
+- Controller-owned plan directories pass `--skip-git-repo-check`; Codex remains
+  read-only and cannot mutate lifecycle state.
+- Codex event and stderr streams are persisted while the process is running,
+  so a host timeout leaves durable transport evidence.
+- Frontier prompts carry controller-computed response hashes and checkpoint
+  recommendation constraints. The documented token budget now reflects
+  measured Codex base/skill/tool context rather than artifact bytes alone.
+
+### Security
+
+- Proven pre-dispatch failures consume no frontier budget. Once dispatch starts,
+  timeout or externally interrupted outcomes remain charged and PAUSED until
+  explicit reconciliation; the runtime never rewrites the ledger or blindly
+  redelivers.
+- Crash recovery covers both sides of the ledger/status commit boundary.
+  Reservations proven not to have launched transport are released only through
+  immutable per-claim intent/receipt records, including preflight failure and
+  operator expiry after restart; `SENT`/`WAITING` reservations are never
+  refunded automatically.
+- Existing v0.14.0 plans whose entire frontier budget was consumed cannot be
+  retroactively refunded. Restart from a newly frozen plan after upgrading.
+  The full failure chain and operator diagnosis are recorded in
+  [`frontier-transport-incident-2026-07-25.md`](skills/autoresearch-paper/references/frontier-transport-incident-2026-07-25.md).
+
 ## [0.14.0] - 2026-07-24
 
 ### Added

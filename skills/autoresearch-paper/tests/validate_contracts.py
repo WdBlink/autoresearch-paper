@@ -264,8 +264,8 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.14.0"' in read("SKILL.md"), "SKILL.md version must be 0.14.0", errors)
-    require("Current version:** v0.14.0" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.14.0", errors)
+    require('version: "0.14.1"' in read("SKILL.md"), "SKILL.md version must be 0.14.1", errors)
+    require("Current version:** v0.14.1" in (ROOT.parents[1] / "README.md").read_text(), "README version must be 0.14.1", errors)
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",

@@ -119,10 +119,17 @@ class RuntimeContracts(unittest.TestCase):
         executable = tmp / "fake-codex"
         executable.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, sys\n"
+            "import json, os, sys\n"
             "args = sys.argv[1:]\n"
+            "if args == ['login', 'status']:\n"
+            "  print('Logged in using ChatGPT')\n"
+            "  raise SystemExit(0)\n"
+            "if os.environ.get('CODEX_TEST_LOG'):\n"
+            "  json.dump(args, open(os.environ['CODEX_TEST_LOG'], 'w'))\n"
             "out = args[args.index('--output-last-message') + 1]\n"
             "prompt = sys.stdin.read()\n"
+            "if os.environ.get('CODEX_TEST_PROMPT_LOG'):\n"
+            "  open(os.environ['CODEX_TEST_PROMPT_LOG'], 'w').write(prompt)\n"
             "request = json.loads(prompt[prompt.index('{'):])\n"
             "import hashlib\n"
             "canonical = json.dumps(request['context_manifest'], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()\n"
@@ -321,6 +328,10 @@ class RuntimeContracts(unittest.TestCase):
             response = json.loads((request_path.parent / "response.json").read_text())
             self.assertEqual(response["model_id"], "gpt-frontier-test")
             self.assertEqual(response["usage"], {"input_tokens": 321, "output_tokens": 123})
+            transport_argv = json.loads(
+                (request_path.parent / "preflight.json").read_text()
+            )
+            self.assertEqual(transport_argv["frontier_transport"], "chatgpt-https")
             self.assertEqual(request_hash, __import__("hashlib").sha256(request_path.read_bytes()).hexdigest())
             validated = self.harness(
                 "validate-frontier-response",
@@ -358,6 +369,622 @@ class RuntimeContracts(unittest.TestCase):
             self.assertFalse(json.loads(transitions[0])["lifecycle_mutation"])
             ledger = json.loads((plan / "state" / "frontier" / "budget.json").read_text())
             self.assertEqual(ledger["reserved_calls"], 1)
+
+    def test_frontier_preflight_and_https_route_precede_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(*self.cp01_create_args(plan, "plan_route", "far_route"))
+            argv_log = tmp / "codex-argv.json"
+            prompt_log = tmp / "codex-prompt.txt"
+            proc = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_route",
+                    "--codex-bin", str(self.fake_codex(tmp)),
+                ],
+                env={
+                    "CODEX_TEST_LOG": str(argv_log),
+                    "CODEX_TEST_PROMPT_LOG": str(prompt_log),
+                },
+            )
+            self.assertEqual(proc.returncode, 0)
+            argv = json.loads(argv_log.read_text())
+            self.assertIn("--skip-git-repo-check", argv)
+            self.assertIn("--ephemeral", argv)
+            self.assertIn("--ignore-user-config", argv)
+            self.assertIn("--ignore-rules", argv)
+            self.assertIn("plugins", argv)
+            self.assertIn("apps", argv)
+            self.assertIn("multi_agent", argv)
+            self.assertIn('model_provider="chatgpt_http"', argv)
+            self.assertIn(
+                "model_providers.chatgpt_http.supports_websockets=false", argv
+            )
+            request_path = (
+                plan
+                / "state"
+                / "frontier"
+                / "requests"
+                / "far_route"
+                / "request.json"
+            )
+            prompt = prompt_log.read_text()
+            self.assertIn(
+                f"request_sha256: {hashlib.sha256(request_path.read_bytes()).hexdigest()}",
+                prompt,
+            )
+            self.assertIn('recommendation: one of ["accept", "block", "revise"]', prompt)
+
+            missing_plan = self.make_plan(tmp / "missing")
+            self.init_model_policy(missing_plan)
+            self.harness(
+                *self.cp01_create_args(missing_plan, "plan_missing", "far_missing")
+            )
+            failed = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(missing_plan),
+                "--request-id", "far_missing",
+                "--codex-bin", str(tmp / "does-not-exist"),
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("executable is unavailable", failed.stderr)
+            self.assertFalse(
+                (missing_plan / "state" / "frontier" / "budget.json").exists()
+            )
+            failure = json.loads(
+                (
+                    missing_plan
+                    / "state"
+                    / "frontier"
+                    / "requests"
+                    / "far_missing"
+                    / "preflight-failure.json"
+                ).read_text()
+            )
+            self.assertFalse(failure["budget_reserved"])
+
+            invalid_timeout_plan = self.make_plan(tmp / "invalid-timeout")
+            self.init_model_policy(invalid_timeout_plan)
+            self.harness(
+                *self.cp01_create_args(
+                    invalid_timeout_plan, "plan_invalid_timeout", "far_invalid_timeout"
+                )
+            )
+            invalid_timeout = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(invalid_timeout_plan),
+                "--request-id", "far_invalid_timeout",
+                "--codex-bin", str(self.fake_codex(tmp)),
+                "--timeout", "0",
+                check=False,
+            )
+            self.assertEqual(invalid_timeout.returncode, 2)
+            self.assertIn("between 1 and 86400", invalid_timeout.stderr)
+            self.assertFalse(
+                (
+                    invalid_timeout_plan
+                    / "state"
+                    / "frontier"
+                    / "budget.json"
+                ).exists()
+            )
+
+    def test_frontier_timeout_keeps_charge_and_durable_events(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(*self.cp01_create_args(plan, "plan_timeout", "far_timeout"))
+            codex = tmp / "slow-codex"
+            descendant_marker = tmp / "descendant-survived"
+            codex.write_text(
+                "#!/usr/bin/env python3\n"
+                "import subprocess, sys, time\n"
+                "if sys.argv[1:] == ['login', 'status']:\n"
+                "  print('Logged in using ChatGPT')\n"
+                "  raise SystemExit(0)\n"
+                f"subprocess.Popen([sys.executable, '-c', "
+                f"\"import signal,time;from pathlib import Path;"
+                f"signal.signal(signal.SIGTERM, signal.SIG_IGN);time.sleep(3);"
+                f"Path({str(descendant_marker)!r}).write_text('alive')\"])\n"
+                "print('{\"type\":\"thread.started\"}', flush=True)\n"
+                "time.sleep(30)\n"
+            )
+            codex.chmod(0o755)
+            failed = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_timeout",
+                "--codex-bin", str(codex),
+                "--timeout", "1",
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("outcome is uncertain", failed.stderr)
+            run_dir = (
+                plan / "state" / "frontier" / "requests" / "far_timeout"
+            )
+            self.assertIn("thread.started", (run_dir / "transport.events.jsonl").read_text())
+            status = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(status["failure"], "transport_outcome_uncertain")
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 1)
+            reconciled = self.harness(
+                "reconcile-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_timeout",
+            )
+            self.assertEqual(json.loads(reconciled.stdout)["state"], "PAUSED")
+            time.sleep(3.2)
+            self.assertFalse(descendant_marker.exists())
+
+    def test_frontier_preflight_rejects_minimax_without_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.harness(
+                "init-policy",
+                "--plan-dir", str(plan),
+                "--worker-model", "MiniMax-M3-test",
+                "--worker-max-budget-usd", "0.25",
+                "--frontier-model", "MiniMax-M3",
+                "--max-frontier-calls", "2",
+                "--max-frontier-input-tokens", "2000",
+                "--max-frontier-output-tokens", "1000",
+            )
+            self.harness(
+                *self.cp01_create_args(plan, "plan_wrong_model", "far_wrong_model")
+            )
+            failed = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_wrong_model",
+                "--codex-bin", str(self.fake_codex(tmp)),
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("rejected MiniMax", failed.stderr)
+            self.assertFalse(
+                (plan / "state" / "frontier" / "budget.json").exists()
+            )
+
+    def test_frontier_unstarted_transport_refunds_and_operation_retries_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_unstarted", "far_unstarted"
+                )
+            )
+            codex = tmp / "fake-codex"
+            codex.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, sys\n"
+                "if sys.argv[1:] == ['login', 'status']:\n"
+                "  os.unlink(sys.argv[0])\n"
+                "  print('Logged in using ChatGPT')\n"
+                "  raise SystemExit(0)\n"
+                "raise SystemExit(99)\n"
+            )
+            codex.chmod(0o755)
+            operation_id = "op_" + "a" * 64
+            first = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_unstarted",
+                "--codex-bin", str(codex),
+                "--operation-id", operation_id,
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            self.assertIn("did not start", first.stderr)
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 0)
+            self.assertNotIn("far_unstarted", ledger["request_ids"])
+            status = json.loads(
+                (
+                    plan
+                    / "state"
+                    / "frontier"
+                    / "requests"
+                    / "far_unstarted"
+                    / "status.json"
+                ).read_text()
+            )
+            self.assertEqual(status["state"], "CREATED")
+            self.assertEqual(status["failure"], "transport_not_started")
+            releases = list(
+                (
+                    plan
+                    / "state"
+                    / "frontier"
+                    / "requests"
+                    / "far_unstarted"
+                    / "budget-releases"
+                ).glob("*.json")
+            )
+            self.assertEqual(len([path for path in releases if ".intent." not in path.name]), 1)
+
+            self.fake_codex(tmp)
+            argv_log = tmp / "successful-argv.json"
+            second = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_unstarted",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"CODEX_TEST_LOG": str(argv_log)},
+            )
+            self.assertEqual(second.returncode, 0)
+            self.assertTrue(json.loads(second.stdout)["operation_reconciled"])
+            self.assertTrue(argv_log.exists())
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 1)
+            self.assertEqual(ledger["request_ids"], ["far_unstarted"])
+
+    def test_frontier_ledger_crash_reenters_without_duplicate_send(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_reservation_crash", "far_reservation_crash"
+                )
+            )
+            codex = self.fake_codex(tmp)
+            operation_id = "op_" + "b" * 64
+            first = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_reservation_crash",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"HARNESS_FAULT_AFTER_FRONTIER_LEDGER": "1"},
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            status_path = (
+                plan
+                / "state"
+                / "frontier"
+                / "requests"
+                / "far_reservation_crash"
+                / "status.json"
+            )
+            self.assertEqual(json.loads(status_path.read_text())["state"], "CREATED")
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 1)
+
+            argv_log = tmp / "reservation-retry-argv.json"
+            second = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_reservation_crash",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"CODEX_TEST_LOG": str(argv_log)},
+            )
+            self.assertEqual(second.returncode, 0)
+            self.assertTrue(json.loads(second.stdout)["operation_reconciled"])
+            self.assertTrue(argv_log.exists())
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 1)
+            self.assertEqual(ledger["request_ids"], ["far_reservation_crash"])
+
+    def test_reserved_frontier_preflight_failure_releases_before_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_preflight_recovery", "far_preflight_recovery"
+                )
+            )
+            codex = self.fake_codex(tmp)
+            operation_id = "op_" + "c" * 64
+            first = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_preflight_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"HARNESS_FAULT_AFTER_FRONTIER_LEDGER": "1"},
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            codex.unlink()
+
+            second = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_preflight_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                check=False,
+            )
+            self.assertEqual(second.returncode, 2)
+            self.assertIn("executable is unavailable", second.stderr)
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 0)
+            self.assertEqual(ledger["request_ids"], [])
+            run_dir = (
+                plan / "state" / "frontier" / "requests"
+                / "far_preflight_recovery"
+            )
+            status = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(status["state"], "PAUSED")
+            failure = json.loads((run_dir / "preflight-failure.json").read_text())
+            self.assertTrue(failure["budget_reserved"])
+            self.assertTrue(failure["budget_released"])
+            self.assertIsNotNone(failure["budget_recovery"])
+            self.fake_codex(tmp)
+            third = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_preflight_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                check=False,
+            )
+            self.assertEqual(third.returncode, 2)
+            self.assertIn("never redelivered", third.stderr)
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 0)
+            self.assertEqual(ledger["request_ids"], [])
+            final_status = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(final_status["state"], "PAUSED")
+            self.assertEqual(
+                final_status["failure"], "frontier_preflight_failed"
+            )
+
+    def test_reserved_frontier_deadline_releases_before_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            create_args = self.cp01_create_args(
+                plan, "plan_deadline_recovery", "far_deadline_recovery"
+            )
+            create_args += ["--deadline-seconds", "60"]
+            self.harness(*create_args)
+            codex = self.fake_codex(tmp)
+            operation_id = "op_" + "d" * 64
+            first = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_deadline_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"HARNESS_FAULT_AFTER_FRONTIER_LEDGER": "1"},
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            (
+                plan / "cp-01-normalized_brief.json"
+            ).write_text('{"changed":"after-reservation"}')
+            expired = self.harness(
+                "expire-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_deadline_recovery",
+                "--now", "2099-01-01T00:00:00Z",
+            )
+            self.assertEqual(json.loads(expired.stdout)["state"], "PAUSED")
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 0)
+            self.assertEqual(ledger["request_ids"], [])
+            status = json.loads(
+                (
+                    plan / "state" / "frontier" / "requests"
+                    / "far_deadline_recovery" / "status.json"
+                ).read_text()
+            )
+            self.assertEqual(status["state"], "PAUSED")
+            self.assertEqual(status["failure"], "deadline_expired")
+            self.assertIsNotNone(status["budget_recovery"])
+
+    def test_reserved_frontier_invalid_policy_releases_before_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_policy_recovery", "far_policy_recovery"
+                )
+            )
+            codex = self.fake_codex(tmp)
+            operation_id = "op_" + "e" * 64
+            first = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_policy_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                env={"HARNESS_FAULT_AFTER_FRONTIER_LEDGER": "1"},
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            policy_path = plan / "state" / "model_policy.json"
+            policy_path.chmod(0o644)
+            policy_path.write_text("{not-json")
+
+            second = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_policy_recovery",
+                    "--codex-bin", str(codex),
+                    "--operation-id", operation_id,
+                ],
+                check=False,
+            )
+            self.assertEqual(second.returncode, 2)
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 0)
+            self.assertEqual(ledger["request_ids"], [])
+            run_dir = (
+                plan / "state" / "frontier" / "requests"
+                / "far_policy_recovery"
+            )
+            status = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(status["state"], "PAUSED")
+            self.assertEqual(status["failure"], "prelaunch_validation_failed")
+            failure = json.loads(
+                (run_dir / "prelaunch-validation-failure.json").read_text()
+            )
+            self.assertTrue(failure["budget_reserved"])
+            self.assertTrue(failure["budget_released"])
+
+    def test_expiring_waiting_frontier_keeps_uncertain_charge(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_waiting_expiry", "far_waiting_expiry"
+                )
+            )
+            codex = self.fake_codex(tmp)
+            first = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_waiting_expiry",
+                    "--codex-bin", str(codex),
+                ],
+                env={"HARNESS_FAULT_AFTER_FRONTIER_LEDGER": "1"},
+                check=False,
+            )
+            self.assertEqual(first.returncode, 2)
+            status_path = (
+                plan / "state" / "frontier" / "requests"
+                / "far_waiting_expiry" / "status.json"
+            )
+            status = json.loads(status_path.read_text())
+            status["state"] = "WAITING"
+            status["send_claim"] = "uncertain-test-claim"
+            status_path.write_text(json.dumps(status))
+
+            expired = self.harness(
+                "expire-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_waiting_expiry",
+                "--now", "2099-01-01T00:00:00Z",
+            )
+            self.assertEqual(json.loads(expired.stdout)["state"], "PAUSED")
+            ledger = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertEqual(ledger["reserved_calls"], 1)
+            self.assertEqual(ledger["request_ids"], ["far_waiting_expiry"])
+            final_status = json.loads(status_path.read_text())
+            self.assertIsNone(final_status["budget_recovery"])
+
+    def test_legacy_policy_preserves_codex_default_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            policy_path = plan / "state" / "model_policy.json"
+            policy_path.chmod(0o644)
+            policy = json.loads(policy_path.read_text())
+            policy.pop("frontier_transport")
+            policy_path.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n")
+            policy_path.chmod(0o444)
+            self.harness(
+                *self.cp01_create_args(plan, "plan_legacy", "far_legacy")
+            )
+            argv_log = tmp / "legacy-argv.json"
+            proc = run(
+                [
+                    sys.executable,
+                    "references/scripts/harness-runtime.py",
+                    "send-frontier-request",
+                    "--plan-dir", str(plan),
+                    "--request-id", "far_legacy",
+                    "--codex-bin", str(self.fake_codex(tmp)),
+                ],
+                env={"CODEX_TEST_LOG": str(argv_log)},
+            )
+            self.assertEqual(proc.returncode, 0)
+            argv = json.loads(argv_log.read_text())
+            self.assertNotIn('model_provider="chatgpt_http"', argv)
+            status = json.loads(
+                (
+                    plan
+                    / "state"
+                    / "frontier"
+                    / "requests"
+                    / "far_legacy"
+                    / "status.json"
+                ).read_text()
+            )
+            self.assertEqual(status["transport"], "codex-default")
 
     def test_frontier_request_rejects_unregistered_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -502,7 +1129,7 @@ class RuntimeContracts(unittest.TestCase):
             self.harness(*self.cp01_create_args(budget_plan, "plan_budget", "far_budget"))
             exhausted = self.harness(
                 "send-frontier-request", "--plan-dir", str(budget_plan), "--request-id", "far_budget",
-                "--codex-bin", str(tmp / "must-not-run"), check=False,
+                "--codex-bin", str(self.fake_codex(tmp)), check=False,
             )
             self.assertEqual(exhausted.returncode, 2)
             self.assertIn("budget exhausted", exhausted.stderr)

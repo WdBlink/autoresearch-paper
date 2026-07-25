@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.14.0"
+  version: "0.14.1"
 ---
 
 # Autoresearch Paper
@@ -87,7 +87,8 @@ adapter provides:
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
 - non-interactive, schema-bounded MiniMax M3 worker dispatch through Claude Code;
 - immutable, hash-bound requests for CP-01 through CP-04;
-- pre-dispatch frontier budget reservation;
+- fail-closed frontier preflight before budget reservation, including Codex
+  executable/auth, strict response-schema, model, and transport checks;
 - authenticated, expiring, replay-protected human actions;
 - hash-bound evaluator verdict and final-writing gates;
 - executable evaluator admission and drift-triggered autonomy revocation for
@@ -107,8 +108,10 @@ adapter provides:
   task context capsules;
 - metadata-only Guardian observations and controller validation of
   pre-authorized lifecycle actions;
-- durable Codex transport, response validation, exact-once dependent
-  transitions, timeout, and restart inspection.
+- HTTPS-only durable Codex transport with streamed evidence, response
+  validation, exact-once dependent transitions, timeout, and restart
+  inspection. Outcome-uncertain sends remain charged and are never blindly
+  redelivered.
 - capsule-bound production dispatch for both MiniMax and Codex, with exact
   task/manifest/revision correlation and controller-only durable commits.
 - the packaged `references/canonical-conformance-workflow.json`
@@ -421,6 +424,8 @@ On completion, report:
 - `references/figure-requirements.schema.json` — CP-01-frozen expected figure
   identities and tier boundary
 - `references/frontier-response.schema.json` — Codex advisory response schema
+- `references/frontier-transport-incident-2026-07-25.md` — v0.14.0 CP-01
+  failure chain, v0.14.1 controls, and operator diagnosis order
 - `references/watchdog-prompt-template.md` — watchdog system prompt template
 - `references/first-action-last-seen.md` — hook registration contract
 - `assets/first-action-last-seen-hook.md` — hook body registered by bootstrap
@@ -434,6 +439,11 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.14.1 (2026-07-25)** — Frontier transport hardening: strict-schema,
+  executable/auth, and model/transport preflight before budget reservation;
+  Git-safe HTTPS-only ChatGPT routing; durable streamed transport evidence;
+  exact crash recovery for reservations proven not to have launched transport;
+  and fail-closed accounting for uncertain sends.
 - **v0.14.0 (2026-07-24)** — Curated scientific-figure pipeline:
   source-bound figure manifests, deterministic path/hash/provenance validation,
   a post-KEEP pre-writing gate, Scientific Visualization as the focused

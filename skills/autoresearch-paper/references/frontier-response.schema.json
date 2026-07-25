@@ -22,15 +22,15 @@
     "completed_at"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"type": "integer", "const": 1},
     "request_id": {"type": "string", "pattern": "^far_[A-Za-z0-9_-]+$"},
     "plan_id": {"type": "string", "minLength": 1},
-    "checkpoint": {"enum": ["CP-01", "CP-02", "CP-03", "CP-04"]},
-    "checkpoint_subtype": {"enum": [null, "acceptance_dispute", "prewriting_final_evidence"]},
+    "checkpoint": {"type": "string", "enum": ["CP-01", "CP-02", "CP-03", "CP-04"]},
+    "checkpoint_subtype": {"type": ["string", "null"], "enum": [null, "acceptance_dispute", "prewriting_final_evidence"]},
     "request_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "context_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "status": {"enum": ["completed", "refused", "failed"]},
-    "response_kind": {"enum": ["plan_audit", "evaluator_audit", "pivot_advice", "evidence_audit"]},
+    "status": {"type": "string", "enum": ["completed", "refused", "failed"]},
+    "response_kind": {"type": "string", "enum": ["plan_audit", "evaluator_audit", "pivot_advice", "evidence_audit"]},
     "recommendation": {"type": "string", "minLength": 1},
     "findings": {
       "type": "array",
@@ -39,7 +39,7 @@
         "additionalProperties": false,
         "required": ["severity", "claim", "evidence"],
         "properties": {
-          "severity": {"enum": ["info", "warn", "critical"]},
+          "severity": {"type": "string", "enum": ["info", "warn", "critical"]},
           "claim": {"type": "string"},
           "evidence": {"type": "array", "items": {"type": "string"}}
         }

@@ -19,6 +19,8 @@ import os
 import plistlib
 import re
 import secrets
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -74,6 +76,7 @@ STATES = {
     "CREATED", "BUDGET_RESERVED", "SENT", "WAITING", "RECEIVED",
     "VALIDATED", "APPLIED", "EXPIRED", "INVALID", "PAUSED",
 }
+FRONTIER_TRANSPORTS = {"chatgpt-https", "codex-default"}
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESPONSE_SCHEMA = SCRIPT_DIR.parent / "frontier-response.schema.json"
 HUMAN_ACTION_SCHEMA = SCRIPT_DIR.parent / "human-action.schema.json"
@@ -245,6 +248,11 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
         raise ContractError("worker_model must pin the MiniMax M3 family")
     if not isinstance(policy.get("frontier_model"), str) or not policy["frontier_model"].strip():
         raise ContractError("frontier_model must be pinned")
+    frontier_transport = policy.get("frontier_transport", "codex-default")
+    if frontier_transport not in FRONTIER_TRANSPORTS:
+        raise ContractError(
+            f"frontier_transport must be one of {sorted(FRONTIER_TRANSPORTS)}"
+        )
     escalation = policy.get("frontier_escalation")
     if not isinstance(escalation, dict) or escalation.get("enabled") is not True:
         raise ContractError("frontier_escalation must be enabled and frozen")
@@ -2755,6 +2763,7 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
         "worker_max_budget_usd": args.worker_max_budget_usd,
         "frontier_model": args.frontier_model,
         "frontier_reasoning_effort": args.frontier_reasoning_effort,
+        "frontier_transport": args.frontier_transport,
         "scientific_pivot_threshold": args.scientific_pivot_threshold,
         "frontier_escalation": {
             "enabled": True,
@@ -5153,6 +5162,102 @@ def reserve_budget(plan_dir: Path, request: dict[str, Any], policy: dict[str, An
         return ledger
 
 
+def release_unstarted_frontier_budget(
+    plan_dir: Path,
+    request: dict[str, Any],
+    send_claim: str,
+    error: OSError,
+) -> dict[str, Any]:
+    """Recover only a reservation proven not to have started a subprocess."""
+    root = frontier_root(plan_dir)
+    ledger_path = root / "budget.json"
+    run_dir = request_dir(plan_dir, request["request_id"])
+    recovery_dir = run_dir / "budget-releases"
+    intent_path = recovery_dir / f"{send_claim}.intent.json"
+    receipt_path = recovery_dir / f"{send_claim}.json"
+    requested = request["budget_reservation"]
+    intent = {
+        "schema_version": SCHEMA_VERSION,
+        "request_id": request["request_id"],
+        "reason": "transport_not_started",
+        "send_claim": send_claim,
+        "reservation": requested,
+    }
+    with budget_lock(plan_dir):
+        if intent_path.exists():
+            if read_json(intent_path) != intent:
+                raise ContractError("budget release intent correlation mismatch")
+        else:
+            atomic_write_json(intent_path, intent, immutable=True)
+        ledger = read_json(ledger_path)
+        before_sha256 = sha256_json(ledger)
+        if request["request_id"] in ledger["request_ids"]:
+            ledger["reserved_calls"] -= requested["call"]
+            ledger["reserved_input_tokens"] -= requested["max_input_tokens"]
+            ledger["reserved_output_tokens"] -= requested["max_output_tokens"]
+            ledger["request_ids"] = [
+                value for value in ledger["request_ids"]
+                if value != request["request_id"]
+            ]
+            if any(
+                ledger[field] < 0
+                for field in (
+                    "reserved_calls",
+                    "reserved_input_tokens",
+                    "reserved_output_tokens",
+                )
+            ):
+                raise ContractError("budget release would make the ledger negative")
+            ledger["updated_at"] = utc_now()
+            atomic_write_json(ledger_path, ledger)
+        elif not receipt_path.exists():
+            # A durable intent plus an absent request ID is the crash-recovery
+            # shape after the ledger update and before the receipt write.
+            ledger = read_json(ledger_path)
+        receipt = {
+            **intent,
+            "error_class": type(error).__name__,
+            "ledger_before_sha256": before_sha256,
+            "ledger_after_sha256": sha256_json(ledger),
+            "released_at": utc_now(),
+        }
+        if receipt_path.exists():
+            prior = read_json(receipt_path)
+            if any(prior.get(key) != receipt.get(key) for key in intent):
+                raise ContractError("budget release receipt correlation mismatch")
+            return prior
+        atomic_write_json(receipt_path, receipt, immutable=True)
+        return receipt
+
+
+def frontier_budget_is_reserved(plan_dir: Path, request_id: str) -> bool:
+    ledger_path = frontier_root(plan_dir) / "budget.json"
+    with budget_lock(plan_dir):
+        if not ledger_path.exists():
+            return False
+        ledger = read_json(ledger_path)
+        return request_id in ledger.get("request_ids", [])
+
+
+def release_frontier_prelaunch_reservation(
+    plan_dir: Path,
+    request: dict[str, Any],
+    failure: str,
+) -> dict[str, Any] | None:
+    """Release a durable reservation only while delivery is provably unstarted."""
+    if not frontier_budget_is_reserved(plan_dir, request["request_id"]):
+        return None
+    claim_digest = hashlib.sha256(
+        f"{request['request_id']}:{failure}".encode()
+    ).hexdigest()[:32]
+    return release_unstarted_frontier_budget(
+        plan_dir,
+        request,
+        f"prelaunch-{claim_digest}",
+        OSError(failure),
+    )
+
+
 def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     load_policy(plan_dir)
@@ -5278,6 +5383,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         request_sha256=request_hash,
         context_manifest_sha256=sha256_json(request["context_manifest"]),
         deadline_at=request["deadline_at"],
+        budget_reservation=request["budget_reservation"],
         model_policy_sha256=sha256_file(policy_path(plan_dir)),
     )
     return {
@@ -5500,15 +5606,232 @@ def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]
         raise ContractError(str(exc)) from None
 
 
+def resolve_executable(command: str) -> str:
+    candidate = Path(command)
+    if os.sep in command or (os.altsep and os.altsep in command):
+        resolved = candidate.expanduser().resolve()
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            raise ContractError(f"Codex executable is unavailable or not executable: {resolved}")
+        return str(resolved)
+    found = shutil.which(command)
+    if not found:
+        raise ContractError(f"Codex executable is unavailable on PATH: {command}")
+    resolved = Path(found).resolve()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ContractError(f"Codex executable is unavailable or not executable: {resolved}")
+    return str(resolved)
+
+
+def validate_frontier_output_schema() -> str:
+    schema = read_json(RESPONSE_SCHEMA)
+    validate_supported_schema(schema)
+
+    def require_typed_literals(node: Any, path: str = "$") -> None:
+        if not isinstance(node, dict):
+            return
+        if ("const" in node or "enum" in node) and "type" not in node:
+            raise ContractError(
+                f"frontier response schema is not strict-compatible: {path} "
+                "uses const/enum without an explicit type"
+            )
+        for key, child in node.get("properties", {}).items():
+            require_typed_literals(child, f"{path}.properties.{key}")
+        if "items" in node:
+            require_typed_literals(node["items"], f"{path}.items")
+
+    require_typed_literals(schema)
+    return sha256_file(RESPONSE_SCHEMA)
+
+
+def frontier_transport_args(policy: dict[str, Any]) -> list[str]:
+    transport = policy.get("frontier_transport", "codex-default")
+    if transport == "codex-default":
+        return []
+    return [
+        "-c", 'model_provider="chatgpt_http"',
+        "-c", 'model_providers.chatgpt_http.name="ChatGPT HTTP"',
+        "-c", 'model_providers.chatgpt_http.base_url="https://chatgpt.com/backend-api/codex"',
+        "-c", 'model_providers.chatgpt_http.wire_api="responses"',
+        "-c", "model_providers.chatgpt_http.requires_openai_auth=true",
+        "-c", "model_providers.chatgpt_http.supports_websockets=false",
+    ]
+
+
+def frontier_surface_reduction_args() -> list[str]:
+    return [
+        "--disable", "plugins",
+        "--disable", "apps",
+        "--disable", "multi_agent",
+        "--disable", "goals",
+        "-c", 'web_search="disabled"',
+        "-c", "tools.view_image=false",
+    ]
+
+
+def preflight_frontier_transport(
+    plan_dir: Path,
+    request_id: str,
+    codex_bin: str,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    resolved_bin = resolve_executable(codex_bin)
+    schema_sha256 = validate_frontier_output_schema()
+    transport = policy.get("frontier_transport", "codex-default")
+    normalized_model = policy["frontier_model"].lower().replace("-", "")
+    if transport == "chatgpt-https" and "minimax" in normalized_model:
+        raise ContractError(
+            "frontier preflight rejected MiniMax on the ChatGPT HTTPS transport; "
+            "pin a Codex-supported frontier model"
+        )
+    try:
+        auth = subprocess.run(
+            [resolved_bin, "login", "status"],
+            cwd=plan_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ContractError(f"Codex login preflight failed: {exc}") from exc
+    if auth.returncode != 0:
+        detail = (auth.stderr or auth.stdout).strip()
+        raise ContractError(
+            "Codex login preflight failed"
+            + (f": {detail[:500]}" if detail else f" with exit {auth.returncode}")
+        )
+    auth_summary = f"{auth.stdout}\n{auth.stderr}".lower()
+    if transport == "chatgpt-https" and "chatgpt" not in auth_summary:
+        raise ContractError(
+            "Codex login preflight did not confirm a ChatGPT session required "
+            "by chatgpt-https"
+        )
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "request_id": request_id,
+        "codex_bin": resolved_bin,
+        "frontier_model": policy["frontier_model"],
+        "frontier_transport": transport,
+        "response_schema_sha256": schema_sha256,
+        "auth_check": (
+            "chatgpt-session-passed"
+            if transport == "chatgpt-https"
+            else "codex-login-passed"
+        ),
+        "checked_at": utc_now(),
+    }
+    receipt_path = request_dir(plan_dir, request_id) / "preflight.json"
+    if receipt_path.exists():
+        prior = read_json(receipt_path)
+        stable_fields = {
+            key for key in receipt
+            if key != "checked_at"
+        }
+        if any(prior.get(key) != receipt.get(key) for key in stable_fields):
+            raise ContractError("frontier preflight receipt correlation mismatch")
+        return prior
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    return receipt
+
+
+def build_frontier_command(
+    codex_bin: str,
+    plan_dir: Path,
+    raw_response: Path,
+    policy: dict[str, Any],
+) -> list[str]:
+    return [
+        codex_bin,
+        "exec",
+        "-m",
+        policy["frontier_model"],
+        "-c",
+        f"model_reasoning_effort={policy.get('frontier_reasoning_effort', 'xhigh')}",
+        *frontier_transport_args(policy),
+        *frontier_surface_reduction_args(),
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        str(plan_dir),
+        "--output-schema",
+        str(RESPONSE_SCHEMA),
+        "--output-last-message",
+        str(raw_response),
+        "--json",
+        "-",
+    ]
+
+
+def update_transport_launch(
+    plan_dir: Path,
+    request_id: str,
+    send_claim: str,
+    phase: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    path = (
+        request_dir(plan_dir, request_id)
+        / "transport-launches"
+        / f"{send_claim}.json"
+    )
+    prior = read_json(path) if path.exists() else {}
+    value = {
+        **prior,
+        "schema_version": SCHEMA_VERSION,
+        "request_id": request_id,
+        "send_claim": send_claim,
+        "phase": phase,
+        "updated_at": utc_now(),
+        **extra,
+    }
+    atomic_write_json(path, value)
+    return value
+
+
+def terminate_transport_process_group(
+    proc: subprocess.Popen[str],
+    grace_seconds: float = 1.0,
+) -> None:
+    if os.name != "posix":
+        proc.terminate()
+        try:
+            proc.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        return
+    process_group = proc.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        proc.wait()
+        return
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        proc.poll()
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     with request_send_lock(plan_dir, args.request_id):
-        policy = load_policy(plan_dir)
-        request_path, request = load_request(plan_dir, args.request_id)
         current = read_json(status_path(plan_dir, args.request_id))
-        validate_request_durable_context(
-            plan_dir, request, require_current=current.get("state") != "APPLIED",
-        )
         if current["state"] in {"RECEIVED", "VALIDATED", "APPLIED"}:
             return {"ok": True, "idempotent": True, **current}
         if current["state"] in {"SENT", "WAITING"}:
@@ -5517,43 +5840,273 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("paused frontier requests are never redelivered; reconcile or create a new attempt")
         if current["state"] not in {"CREATED", "BUDGET_RESERVED"}:
             raise ContractError(f"cannot send request from state {current['state']}")
-        if parse_utc(request["deadline_at"]) <= datetime.now(timezone.utc):
-            transition(plan_dir, args.request_id, "EXPIRED", failure="deadline_expired")
-            transition(plan_dir, args.request_id, "PAUSED", failure="deadline_expired")
+        if not 1 <= args.timeout <= 86400:
+            raise ContractError("frontier transport timeout must be between 1 and 86400 seconds")
+        reservation_present = frontier_budget_is_reserved(
+            plan_dir, args.request_id,
+        )
+        try:
+            policy = load_policy(plan_dir)
+            request_path, request = load_request(plan_dir, args.request_id)
+            validate_request_durable_context(
+                plan_dir, request,
+                require_current=current.get("state") != "APPLIED",
+            )
+        except ContractError as exc:
+            recovery = None
+            if reservation_present:
+                recovery_request = {
+                    "request_id": args.request_id,
+                    "budget_reservation": current.get("budget_reservation"),
+                }
+                if not isinstance(
+                    recovery_request["budget_reservation"], dict
+                ):
+                    transition(
+                        plan_dir, args.request_id, "PAUSED",
+                        failure="prelaunch_validation_failed_unrecoverable_budget",
+                        validation_error=str(exc),
+                    )
+                    raise ContractError(
+                        "prelaunch validation failed after reservation and the "
+                        "durable reservation receipt is unavailable"
+                    ) from exc
+                recovery = release_frontier_prelaunch_reservation(
+                    plan_dir,
+                    recovery_request,
+                    "prelaunch_validation_failed_before_transport",
+                )
+                transition(
+                    plan_dir, args.request_id, "PAUSED",
+                    failure="prelaunch_validation_failed",
+                    validation_error=str(exc),
+                    budget_recovery=recovery,
+                )
+            atomic_write_json(
+                request_dir(plan_dir, args.request_id)
+                / "prelaunch-validation-failure.json",
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "request_id": args.request_id,
+                    "failure": "prelaunch_validation_failed",
+                    "error": str(exc),
+                    "budget_reserved": reservation_present,
+                    "budget_released": recovery is not None,
+                    "budget_recovery": recovery,
+                    "checked_at": utc_now(),
+                },
+            )
+            raise
+        deadline = parse_utc(request["deadline_at"])
+        now = datetime.now(timezone.utc)
+        if deadline <= now:
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request, "deadline_expired_before_transport",
+            )
+            transition(
+                plan_dir, args.request_id, "EXPIRED",
+                failure="deadline_expired", budget_recovery=recovery,
+            )
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                failure="deadline_expired", budget_recovery=recovery,
+            )
             raise ContractError("frontier request deadline expired")
         if current.get("model_policy_sha256") != sha256_file(policy_path(plan_dir)):
-            transition(plan_dir, args.request_id, "PAUSED", failure="model_policy_hash_changed")
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request, "model_policy_hash_changed_before_transport",
+            )
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                failure="model_policy_hash_changed", budget_recovery=recovery,
+            )
             raise ContractError("frozen model policy hash changed")
         estimated_input_tokens = estimate_frontier_input_tokens(request_path, request)
         if estimated_input_tokens > request["budget_reservation"]["max_input_tokens"]:
-            transition(plan_dir, args.request_id, "PAUSED", failure="context_exceeds_input_reservation")
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request, "context_exceeds_input_reservation_before_transport",
+            )
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                failure="context_exceeds_input_reservation",
+                budget_recovery=recovery,
+            )
             raise ContractError("estimated input exceeds reservation")
+        try:
+            preflight = preflight_frontier_transport(
+                plan_dir, args.request_id, args.codex_bin, policy,
+            )
+        except ContractError as exc:
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request, "frontier_preflight_failed_before_transport",
+            )
+            atomic_write_json(
+                request_dir(plan_dir, args.request_id) / "preflight-failure.json",
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "request_id": args.request_id,
+                    "failure": "frontier_preflight_failed",
+                    "error": str(exc),
+                    "budget_reserved": reservation_present,
+                    "budget_released": recovery is not None,
+                    "budget_recovery": recovery,
+                    "checked_at": utc_now(),
+                },
+            )
+            if recovery is not None:
+                transition(
+                    plan_dir,
+                    args.request_id,
+                    "PAUSED",
+                    failure="frontier_preflight_failed",
+                    budget_recovery=recovery,
+                )
+            raise
+        remaining_seconds = (deadline - datetime.now(timezone.utc)).total_seconds()
+        if remaining_seconds <= 0:
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request, "deadline_expired_during_preflight",
+            )
+            transition(
+                plan_dir, args.request_id, "EXPIRED",
+                failure="deadline_expired", budget_recovery=recovery,
+            )
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                failure="deadline_expired", budget_recovery=recovery,
+            )
+            raise ContractError("frontier request deadline expired during preflight")
+        effective_timeout = min(float(args.timeout), remaining_seconds)
         ledger = reserve_budget(plan_dir, request, policy)
+        if os.environ.get("HARNESS_FAULT_AFTER_FRONTIER_LEDGER") == "1":
+            raise ContractError("simulated crash after frontier ledger reservation")
         claim = uuid.uuid4().hex
-        transition(plan_dir, args.request_id, "BUDGET_RESERVED", budget_snapshot=ledger, estimated_input_tokens=estimated_input_tokens)
-        transition(plan_dir, args.request_id, "SENT", model_id=policy["frontier_model"], send_claim=claim)
-        transition(plan_dir, args.request_id, "WAITING", transport="codex-cli", send_claim=claim)
+        transition(
+            plan_dir,
+            args.request_id,
+            "BUDGET_RESERVED",
+            budget_snapshot=ledger,
+            estimated_input_tokens=estimated_input_tokens,
+            preflight=preflight,
+        )
+        update_transport_launch(
+            plan_dir, args.request_id, claim, "PREPARED",
+            budget_snapshot_sha256=sha256_json(ledger),
+        )
+        if os.environ.get("HARNESS_FAULT_AFTER_FRONTIER_RESERVATION") == "1":
+            raise ContractError("simulated crash after frontier reservation")
         run_dir = request_dir(plan_dir, args.request_id)
         raw_response = run_dir / "response.raw.json"
+        registry = CHECKPOINTS[request["checkpoint"]]
+        allowed_recommendations = sorted(registry["recommendations"])
         prompt = (
             "You are the sparse frontier advisor for a research Harness. Read the immutable request below, "
-            "audit only the bounded evidence it names, and return exactly the required JSON schema.\n\n"
+            "audit only the bounded evidence it names, and return exactly the required JSON schema.\n"
+            "Copy these controller-computed response bindings exactly; do not recalculate them:\n"
+            f"- request_sha256: {sha256_file(request_path)}\n"
+            f"- context_manifest_sha256: {sha256_json(request['context_manifest'])}\n"
+            f"- response_kind: {registry['kind']}\n"
+            f"- recommendation: one of {json.dumps(allowed_recommendations)}\n"
+            "Every findings[].evidence item must be exactly one full path or one SHA-256 value "
+            "from context_manifest; use an empty findings array when no finding is needed. "
+            "Do not add labels, prefixes, excerpts, or path/hash combinations to evidence items. "
+            "A successful audit uses status=completed and blockers=[]; model_id and usage are "
+            "transport-authoritative and will be overwritten by the controller.\n\n"
             + request_path.read_text()
         )
-        cmd = [args.codex_bin, "exec", "-m", policy["frontier_model"], "-c",
-               f"model_reasoning_effort={policy.get('frontier_reasoning_effort', 'xhigh')}",
-               "--sandbox", "read-only", "--cd", str(plan_dir), "--output-schema", str(RESPONSE_SCHEMA),
-               "--output-last-message", str(raw_response), "--json", "-"]
+        cmd = build_frontier_command(
+            preflight["codex_bin"], plan_dir, raw_response, policy,
+        )
+        events_path = run_dir / "transport.events.jsonl"
+        stderr_path = run_dir / "transport.stderr"
+        transport_started = False
         try:
-            proc = subprocess.run(cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True, timeout=args.timeout)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            with events_path.open("w") as events, stderr_path.open("w") as stderr:
+                update_transport_launch(
+                    plan_dir, args.request_id, claim, "CALLING",
+                )
+                transition(
+                    plan_dir,
+                    args.request_id,
+                    "SENT",
+                    model_id=policy["frontier_model"],
+                    send_claim=claim,
+                )
+                transition(
+                    plan_dir,
+                    args.request_id,
+                    "WAITING",
+                    transport=policy.get("frontier_transport", "codex-default"),
+                    send_claim=claim,
+                )
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=plan_dir,
+                    stdin=subprocess.PIPE,
+                    stdout=events,
+                    stderr=stderr,
+                    text=True,
+                    start_new_session=True,
+                )
+                transport_started = True
+                update_transport_launch(
+                    plan_dir, args.request_id, claim, "STARTED", pid=proc.pid,
+                )
+                try:
+                    proc.communicate(input=prompt, timeout=effective_timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        update_transport_launch(
+                            plan_dir, args.request_id, claim, "OUTCOME_UNCERTAIN",
+                            failure="timeout",
+                        )
+                    finally:
+                        terminate_transport_process_group(proc)
+                    raise
+                finally:
+                    events.flush()
+                    stderr.flush()
+                    os.fsync(events.fileno())
+                    os.fsync(stderr.fileno())
+        except OSError as exc:
+            if not transport_started:
+                recovery = release_unstarted_frontier_budget(
+                    plan_dir, request, claim, exc,
+                )
+                update_transport_launch(
+                    plan_dir,
+                    args.request_id,
+                    claim,
+                    "NOT_STARTED",
+                    budget_recovery=recovery,
+                )
+                transition(
+                    plan_dir,
+                    args.request_id,
+                    "CREATED",
+                    failure="transport_not_started",
+                    budget_recovery=recovery,
+                )
+                raise ContractError(f"Codex transport did not start: {exc}") from exc
+            terminate_transport_process_group(proc)
             transition(plan_dir, args.request_id, "PAUSED", failure="transport_outcome_uncertain")
             raise ContractError(f"Codex transport outcome is uncertain: {exc}") from exc
-        (run_dir / "transport.events.jsonl").write_text(proc.stdout)
-        (run_dir / "transport.stderr").write_text(proc.stderr)
+        except subprocess.TimeoutExpired as exc:
+            transition(plan_dir, args.request_id, "PAUSED", failure="transport_outcome_uncertain")
+            raise ContractError(f"Codex transport outcome is uncertain: {exc}") from exc
         if proc.returncode != 0:
+            update_transport_launch(
+                plan_dir,
+                args.request_id,
+                claim,
+                "FAILED",
+                exit_code=proc.returncode,
+            )
             transition(plan_dir, args.request_id, "PAUSED", failure="transport_failed", exit_code=proc.returncode)
             raise ContractError(f"Codex transport failed with exit {proc.returncode}")
+        update_transport_launch(
+            plan_dir, args.request_id, claim, "COMPLETED", exit_code=0,
+        )
         return reconcile_frontier_locked(plan_dir, args.request_id)
 
 
@@ -5561,7 +6114,13 @@ def command_reconcile_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     with request_send_lock(plan_dir, args.request_id):
         current = read_json(status_path(plan_dir, args.request_id))
-        if current["state"] not in {"SENT", "WAITING", "RECEIVED", "VALIDATED", "APPLIED"}:
+        allowed = {"SENT", "WAITING", "RECEIVED", "VALIDATED", "APPLIED"}
+        if (
+            current["state"] == "PAUSED"
+            and current.get("failure") == "transport_outcome_uncertain"
+        ):
+            allowed.add("PAUSED")
+        if current["state"] not in allowed:
             raise ContractError(f"cannot reconcile frontier request from state {current['state']}")
         return reconcile_frontier_locked(plan_dir, args.request_id)
 
@@ -5810,18 +6369,42 @@ def command_assert_transition(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_expire_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    _, request = load_request(plan_dir, args.request_id)
-    now = parse_utc(args.now)
-    current = read_json(status_path(plan_dir, args.request_id))
-    if current["state"] in {"EXPIRED", "PAUSED"} and current.get("failure") == "deadline_expired":
-        return {"ok": True, "idempotent": True, **current}
-    if current["state"] not in {"CREATED", "BUDGET_RESERVED", "SENT", "WAITING"}:
-        raise ContractError(f"cannot expire request from state {current['state']}")
-    if now <= parse_utc(request["deadline_at"]):
-        raise ContractError("request deadline has not passed")
-    transition(plan_dir, args.request_id, "EXPIRED", expired_at=args.now, failure="deadline_expired")
-    paused = transition(plan_dir, args.request_id, "PAUSED", expired_at=args.now, failure="deadline_expired")
-    return {"ok": True, **paused}
+    with request_send_lock(plan_dir, args.request_id):
+        current = read_json(status_path(plan_dir, args.request_id))
+        if current["state"] in {"EXPIRED", "PAUSED"} and current.get("failure") == "deadline_expired":
+            return {"ok": True, "idempotent": True, **current}
+        if current["state"] not in {"CREATED", "BUDGET_RESERVED", "SENT", "WAITING"}:
+            raise ContractError(f"cannot expire request from state {current['state']}")
+        now = parse_utc(args.now)
+        if now <= parse_utc(current["deadline_at"]):
+            raise ContractError("request deadline has not passed")
+        recovery = None
+        if (
+            current["state"] in {"CREATED", "BUDGET_RESERVED"}
+            and frontier_budget_is_reserved(plan_dir, args.request_id)
+        ):
+            recovery_request = {
+                "request_id": args.request_id,
+                "budget_reservation": current.get("budget_reservation"),
+            }
+            if not isinstance(recovery_request["budget_reservation"], dict):
+                raise ContractError(
+                    "durable reservation receipt is unavailable for prelaunch expiry"
+                )
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, recovery_request, "deadline_expired_before_transport",
+            )
+        transition(
+            plan_dir, args.request_id, "EXPIRED",
+            expired_at=args.now, failure="deadline_expired",
+            budget_recovery=recovery,
+        )
+        paused = transition(
+            plan_dir, args.request_id, "PAUSED",
+            expired_at=args.now, failure="deadline_expired",
+            budget_recovery=recovery,
+        )
+        return {"ok": True, **paused}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5834,6 +6417,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--worker-max-budget-usd", type=float, required=True)
     init.add_argument("--frontier-model", required=True)
     init.add_argument("--frontier-reasoning-effort", default="xhigh", choices=["low", "medium", "high", "xhigh", "max"])
+    init.add_argument(
+        "--frontier-transport",
+        default="chatgpt-https",
+        choices=sorted(FRONTIER_TRANSPORTS),
+        help="use verified HTTPS-only ChatGPT transport or the local Codex default",
+    )
     init.add_argument("--max-frontier-calls", type=int, required=True)
     init.add_argument("--max-frontier-input-tokens", type=int, required=True)
     init.add_argument("--max-frontier-output-tokens", type=int, required=True)
@@ -6306,6 +6895,62 @@ def reconcile_ambiguous_prepared_operation(
             })
         raise ContractError("worker operation is ambiguous and PAUSED; explicit reconciliation is required")
     if args.command == "send-frontier-request":
+        current = read_json(status_path(plan_dir, args.request_id))
+        if (
+            current["state"] == "PAUSED"
+            and current.get("failure") != "transport_outcome_uncertain"
+        ):
+            raise ContractError(
+                "paused frontier requests are never redelivered; "
+                "reconcile or create a new attempt"
+            )
+        ledger_path = frontier_root(plan_dir) / "budget.json"
+        ledger = read_json(ledger_path) if ledger_path.exists() else {"request_ids": []}
+        if (
+            current["state"] == "CREATED"
+            and args.request_id in ledger.get("request_ids", [])
+        ):
+            transition(
+                plan_dir,
+                args.request_id,
+                "BUDGET_RESERVED",
+                budget_snapshot=ledger,
+                recovered_from="ledger_before_status_transition",
+            )
+            return {**args.handler(args), "operation_reconciled": True}
+        if current["state"] == "BUDGET_RESERVED":
+            return {**args.handler(args), "operation_reconciled": True}
+        send_claim = current.get("send_claim")
+        release_intent = (
+            request_dir(plan_dir, args.request_id)
+            / "budget-releases"
+            / f"{send_claim}.intent.json"
+        )
+        if (
+            current["state"] in {"SENT", "WAITING"}
+            and isinstance(send_claim, str)
+            and release_intent.exists()
+        ):
+            _, request = load_request(plan_dir, args.request_id)
+            recovery = release_unstarted_frontier_budget(
+                plan_dir,
+                request,
+                send_claim,
+                OSError("recovered transport_not_started release"),
+            )
+            transition(
+                plan_dir,
+                args.request_id,
+                "CREATED",
+                failure="transport_not_started",
+                budget_recovery=recovery,
+            )
+            return {**args.handler(args), "operation_reconciled": True}
+        if (
+            current["state"] == "CREATED"
+            and args.request_id not in ledger.get("request_ids", [])
+        ):
+            return {**args.handler(args), "operation_reconciled": True}
         with request_send_lock(plan_dir, args.request_id):
             reconciled = reconcile_frontier_locked(plan_dir, args.request_id)
         if not reconciled.get("ok"):

@@ -29,15 +29,29 @@ compatibility flags.
 python3 references/scripts/harness-runtime.py init-policy \
   --plan-dir PLAN --worker-model MiniMax-M3 \
   --worker-max-budget-usd 1.00 --frontier-model FRONTIER_MODEL \
-  --frontier-reasoning-effort xhigh --max-frontier-calls 4 \
-  --max-frontier-input-tokens 80000 --max-frontier-output-tokens 20000 \
+  --frontier-reasoning-effort xhigh --frontier-transport chatgpt-https \
+  --max-frontier-calls 4 \
+  --max-frontier-input-tokens 600000 --max-frontier-output-tokens 20000 \
   --scientific-pivot-threshold 2
 ```
 
 The immutable `state/model_policy.json` pins the Claude runtime, low-cost
-worker family, per-worker USD cap, frontier model, four-call default budget,
-token budgets, and scientific pivot threshold. A changed policy hash pauses a
-frontier request.
+worker family, per-worker USD cap, frontier model and transport, four-call
+default budget, token budgets, and scientific pivot threshold. A changed policy
+hash pauses a frontier request. `chatgpt-https` is the verified default: the
+runtime creates a request-local provider overlay with WebSockets disabled and
+reuses the authenticated ChatGPT session. `codex-default` is available only
+when the local Codex transport has been independently verified.
+
+The input budget is observed transport usage, not only the request and artifact
+bytes. Codex may inject its base instructions, available skill descriptions,
+and tool context, then count the prefix again across tool turns. On the local
+v0.14.1 acceptance environment a small CP-01 audit used 79k–130k input tokens.
+Reserve at least 150k input tokens per ChatGPT frontier request and 600k for
+the default four-call plan unless a fresh measured profile justifies less.
+The runtime disables optional plugins, apps, web search, multi-agent, and goals,
+but Codex CLI 0.144.6 still discovers user skills. Cached-token discounts do
+not change the controller's conservative token accounting.
 
 ## Bounded Worker Contract
 
@@ -304,7 +318,7 @@ python3 references/scripts/harness-runtime.py create-durable-frontier-request \
   --checkpoint-subtype acceptance_dispute --attempt 1 \
   --objective "resolve bounded evidence dispute" \
   --decision-required resolve_acceptance_dispute \
-  --max-input-tokens 20000 --max-output-tokens 5000
+  --max-input-tokens 150000 --max-output-tokens 5000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
 python3 references/scripts/harness-runtime.py validate-frontier-response \
@@ -330,7 +344,8 @@ python3 references/scripts/harness-runtime.py create-frontier-request \
   --artifact brief.md::normalized_brief \
   --artifact execution.json::execution_plan \
   --artifact risk.json::risk_budget \
-  --max-input-tokens 20000 --max-output-tokens 5000
+  --artifact figure-requirements.json::figure_requirements \
+  --max-input-tokens 150000 --max-output-tokens 5000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
 python3 references/scripts/harness-runtime.py reconcile-frontier-request \
@@ -358,6 +373,23 @@ bound to the frozen manifest. A per-request send claim permits one transport;
 redelivery. Malformed raw output becomes `INVALID` then `PAUSED`. `PAUSED` and
 `EXPIRED` requests are never redelivered. A retry uses a new request ID,
 incremented attempt, deadline, and reservation. Expire an overdue request with:
+
+Before any reservation, the runtime verifies the Codex executable, `codex login
+status`, the strict frontier response schema, and known model/transport
+incompatibilities. It also passes `--skip-git-repo-check` because plan
+directories are controller-owned evidence roots, not necessarily Git
+worktrees. These deterministic failures write `preflight-failure.json` and do
+not consume budget. If the controller crashes between the ledger reservation
+and transport launch, retry or operator expiry reconciles that reservation
+through immutable `budget-releases/*.intent.json` and matching receipt files.
+Only a state that proves transport never started may be released; a
+`SENT`/`WAITING` reservation remains charged. Once `SENT` is recorded,
+stdout/stderr are streamed to durable files. A timeout, process interruption,
+or missing raw response is outcome-uncertain: the reservation remains charged,
+the request becomes `PAUSED`, and a retry requires a new request ID. Never edit
+`budget.json` by hand. The transport timeout must be 1..86400 seconds and is
+capped by the request's remaining frozen deadline. Upgrade-exhausted v0.14.0
+plans must restart from a newly frozen plan.
 
 ```bash
 python3 references/scripts/harness-runtime.py expire-frontier-request \
