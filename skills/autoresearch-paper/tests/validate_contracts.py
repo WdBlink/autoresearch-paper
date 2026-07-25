@@ -227,6 +227,8 @@ def main() -> int:
     for test_name in (
         "test_claude_worker_dispatch_is_pinned_and_mavis_free",
         "test_frontier_bridge_is_durable_bounded_and_idempotent",
+        "test_frontier_preflight_and_https_route_precede_budget",
+        "test_cp01_strong_profile_overrides_minimax_generic_frontier",
         "test_cp04_acceptance_dispute_dependent_transition",
         "test_frontier_bridge_does_not_redeliver_uncertain_request",
         "test_frontier_bridge_blocks_oversized_context_before_budget",
@@ -236,6 +238,19 @@ def main() -> int:
         "test_typed_failures_runtime_operations_and_owned_cleanup",
     ):
         require(f"def {test_name}" in runtime_tests, f"missing restored runtime regression {test_name}", errors)
+    security_tests = read("tests/test_runtime_v2_security.py")
+    require(
+        "def test_worker_dispatch_rechecks_strong_cp01_reviewer_identity"
+        in security_tests,
+        "missing strongest-model CP-01 reviewer identity regression",
+        errors,
+    )
+    require(
+        "def test_cp01_request_contract_prevents_legacy_policy_downgrade"
+        in security_tests,
+        "missing CP-01 immutable request downgrade regression",
+        errors,
+    )
     production_tests = read("tests/test_production_transport.py")
     for test_name in (
         "test_minimax_worker_is_capsule_bound_and_commits_exactly_once",
@@ -264,12 +279,12 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.14.1"' in read("SKILL.md"), "SKILL.md version must be 0.14.1", errors)
+    require('version: "0.15.0"' in read("SKILL.md"), "SKILL.md version must be 0.15.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         require(
-            "Current version:** v0.14.1" in repository_readme.read_text(),
-            "README version must be 0.14.1",
+            "Current version:** v0.15.0" in repository_readme.read_text(),
+            "README version must be 0.15.0",
             errors,
         )
     require(
@@ -278,6 +293,9 @@ def main() -> int:
             "pivot-eligibility", "wait-worker", "cancel-worker", "run-patrol",
             "promote-worker-artifacts", "reconcile-frontier-request",
             "apply-frontier-response", "dependent-transition", "assert-transition",
+            "top_level_plan_audit", "PLAN_AUDIT_MODEL",
+            "PLAN_AUDIT_REASONING_EFFORT", "reviewer_profile",
+            "top-level-plan-review-v1", "review_contract",
         )),
         "harness runtime is missing target commands",
         errors,

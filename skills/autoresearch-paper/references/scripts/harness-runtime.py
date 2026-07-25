@@ -32,6 +32,8 @@ from typing import Any, Iterator
 
 
 SCHEMA_VERSION = 1
+PLAN_AUDIT_MODEL = "gpt-5.6-sol"
+PLAN_AUDIT_REASONING_EFFORT = "ultra"
 CHECKPOINTS = {
     "CP-01": {"kind": "plan_audit", "subtypes": {None}, "recommendations": {"accept", "revise", "block"}},
     "CP-02": {"kind": "evaluator_audit", "subtypes": {None}, "recommendations": {"accept", "revise", "block"}},
@@ -248,6 +250,30 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
         raise ContractError("worker_model must pin the MiniMax M3 family")
     if not isinstance(policy.get("frontier_model"), str) or not policy["frontier_model"].strip():
         raise ContractError("frontier_model must be pinned")
+    plan_audit = policy.get("top_level_plan_audit")
+    if plan_audit is not None:
+        if (
+            not isinstance(plan_audit, dict)
+            or set(plan_audit) != {
+                "required", "declared_author_model_family", "reviewer_runtime",
+                "reviewer_model", "reasoning_effort", "checkpoint",
+                "dependent_transition",
+            }
+        ):
+            raise ContractError("top_level_plan_audit has an invalid closed shape")
+        if (
+            plan_audit.get("required") is not True
+            or plan_audit.get("declared_author_model_family") != "MiniMax-M3"
+            or plan_audit.get("reviewer_runtime") != "codex"
+            or plan_audit.get("reviewer_model") != PLAN_AUDIT_MODEL
+            or plan_audit.get("reasoning_effort") != PLAN_AUDIT_REASONING_EFFORT
+            or plan_audit.get("checkpoint") != "CP-01"
+            or plan_audit.get("dependent_transition") != "approve_execution"
+        ):
+            raise ContractError(
+                "top_level_plan_audit must pin MiniMax-M3 authorship and "
+                f"{PLAN_AUDIT_MODEL}/{PLAN_AUDIT_REASONING_EFFORT} Codex review"
+            )
     frontier_transport = policy.get("frontier_transport", "codex-default")
     if frontier_transport not in FRONTIER_TRANSPORTS:
         raise ContractError(
@@ -263,6 +289,44 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
     if worker_budget <= 0:
         raise ContractError("worker_max_budget_usd must be positive")
     return policy
+
+
+def validate_top_level_plan_review_contract(
+    request: dict[str, Any],
+) -> dict[str, Any] | None:
+    contract = request.get("review_contract")
+    if contract is None:
+        return None
+    if (
+        not isinstance(contract, dict)
+        or set(contract) != {
+            "schema_version", "kind", "declared_author_model_family",
+            "reviewer_profile", "model_policy_sha256", "evidence_roles",
+            "dependent_transition",
+        }
+    ):
+        raise ContractError("top-level plan review contract has an invalid closed shape")
+    expected_profile = {
+        "kind": "top_level_plan_audit",
+        "model": PLAN_AUDIT_MODEL,
+        "reasoning_effort": PLAN_AUDIT_REASONING_EFFORT,
+    }
+    if (
+        contract.get("schema_version") != SCHEMA_VERSION
+        or contract.get("kind") != "top-level-plan-review-v1"
+        or contract.get("declared_author_model_family") != "MiniMax-M3"
+        or contract.get("reviewer_profile") != expected_profile
+        or contract.get("evidence_roles") != sorted(
+            CHECKPOINT_EVIDENCE_PROFILES[("CP-01", None)]
+        )
+        or contract.get("dependent_transition") != "approve_execution"
+        or not isinstance(contract.get("model_policy_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", contract["model_policy_sha256"])
+    ):
+        raise ContractError("top-level plan review contract is invalid")
+    if request.get("checkpoint") != "CP-01":
+        raise ContractError("top-level plan review contract is only valid for CP-01")
+    return contract
 
 
 def verify_manifest_items(items: Any, *, base_dir: Path) -> list[dict[str, str]]:
@@ -1293,6 +1357,25 @@ def check_transition_receipt(
         raise ContractError("dependent transition context hash changed")
     if verify_live_manifest:
         verify_manifest_items(request["context_manifest"], base_dir=plan_dir)
+    policy = load_policy(plan_dir)
+    review_contract = validate_top_level_plan_review_contract(request)
+    if review_contract is not None:
+        expected_profile = review_contract["reviewer_profile"]
+        response = read_json(response_path)
+        if response.get("model_id") != expected_profile["model"]:
+            raise ContractError(
+                "CP-01 response was not produced by the frozen top-level plan reviewer"
+            )
+        if receipt.get("reviewer_profile") != expected_profile:
+            raise ContractError("CP-01 transition reviewer profile mismatch")
+        if receipt.get("model_policy_sha256") != review_contract[
+            "model_policy_sha256"
+        ]:
+            raise ContractError("CP-01 transition model policy binding mismatch")
+        if review_contract["model_policy_sha256"] != sha256_file(
+            policy_path(plan_dir)
+        ):
+            raise ContractError("CP-01 transition model policy hash changed")
     return receipt
 
 
@@ -2764,6 +2847,15 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
         "frontier_model": args.frontier_model,
         "frontier_reasoning_effort": args.frontier_reasoning_effort,
         "frontier_transport": args.frontier_transport,
+        "top_level_plan_audit": {
+            "required": True,
+            "declared_author_model_family": "MiniMax-M3",
+            "reviewer_runtime": "codex",
+            "reviewer_model": args.plan_audit_model,
+            "reasoning_effort": args.plan_audit_reasoning_effort,
+            "checkpoint": "CP-01",
+            "dependent_transition": "approve_execution",
+        },
         "scientific_pivot_threshold": args.scientific_pivot_threshold,
         "frontier_escalation": {
             "enabled": True,
@@ -5260,7 +5352,7 @@ def release_frontier_prelaunch_reservation(
 
 def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
-    load_policy(plan_dir)
+    policy = load_policy(plan_dir)
     if args.attempt < 1:
         raise ContractError("attempt must be at least 1")
     require_non_negative_int(args.max_input_tokens, "max_input_tokens")
@@ -5271,6 +5363,14 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     subtype = args.checkpoint_subtype
     if subtype not in registry["subtypes"]:
         raise ContractError(f"invalid subtype for {args.checkpoint}: {subtype}")
+    expected_transition = DEPENDENT_TRANSITIONS.get((args.checkpoint, subtype))
+    if (
+        expected_transition is None
+        or args.decision_required != expected_transition[0]
+    ):
+        raise ContractError(
+            "decision_required does not match the registered checkpoint transition"
+        )
     if args.checkpoint == "CP-03" and not pivot_eligibility(plan_dir)["eligible"]:
         raise ContractError("CP-03 requires distinct scientific pivot eligibility")
     if not 1 <= args.deadline_seconds <= 86400:
@@ -5336,6 +5436,28 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             + timedelta(seconds=args.deadline_seconds)
         ).isoformat().replace("+00:00", "Z"),
     }
+    if (
+        args.checkpoint == "CP-01"
+        and isinstance(policy.get("top_level_plan_audit"), dict)
+    ):
+        request["review_contract"] = {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "top-level-plan-review-v1",
+            "declared_author_model_family": policy[
+                "top_level_plan_audit"
+            ]["declared_author_model_family"],
+            "reviewer_profile": {
+                "kind": "top_level_plan_audit",
+                "model": policy["top_level_plan_audit"]["reviewer_model"],
+                "reasoning_effort": policy[
+                    "top_level_plan_audit"
+                ]["reasoning_effort"],
+            },
+            "model_policy_sha256": sha256_file(policy_path(plan_dir)),
+            "evidence_roles": sorted(required_roles),
+            "dependent_transition": "approve_execution",
+        }
+        validate_top_level_plan_review_contract(request)
     context_capsule_arg = getattr(args, "context_capsule", None)
     if context_capsule_arg:
         capsule, _, _, _ = validate_context_capsule(
@@ -5668,16 +5790,40 @@ def frontier_surface_reduction_args() -> list[str]:
     ]
 
 
+def frontier_review_profile(
+    policy: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, str]:
+    review_contract = validate_top_level_plan_review_contract(request)
+    if review_contract is not None:
+        return review_contract["reviewer_profile"]
+    plan_audit = policy.get("top_level_plan_audit")
+    if request.get("checkpoint") == "CP-01" and isinstance(plan_audit, dict):
+        return {
+            "kind": "top_level_plan_audit",
+            "model": plan_audit["reviewer_model"],
+            "reasoning_effort": plan_audit["reasoning_effort"],
+        }
+    return {
+        "kind": "sparse_frontier_checkpoint",
+        "model": policy["frontier_model"],
+        "reasoning_effort": policy.get(
+            "frontier_reasoning_effort", "xhigh",
+        ),
+    }
+
+
 def preflight_frontier_transport(
     plan_dir: Path,
     request_id: str,
     codex_bin: str,
     policy: dict[str, Any],
+    review_profile: dict[str, str],
 ) -> dict[str, Any]:
     resolved_bin = resolve_executable(codex_bin)
     schema_sha256 = validate_frontier_output_schema()
     transport = policy.get("frontier_transport", "codex-default")
-    normalized_model = policy["frontier_model"].lower().replace("-", "")
+    normalized_model = review_profile["model"].lower().replace("-", "")
     if transport == "chatgpt-https" and "minimax" in normalized_model:
         raise ContractError(
             "frontier preflight rejected MiniMax on the ChatGPT HTTPS transport; "
@@ -5709,7 +5855,9 @@ def preflight_frontier_transport(
         "schema_version": SCHEMA_VERSION,
         "request_id": request_id,
         "codex_bin": resolved_bin,
-        "frontier_model": policy["frontier_model"],
+        "frontier_model": review_profile["model"],
+        "reasoning_effort": review_profile["reasoning_effort"],
+        "review_profile_kind": review_profile["kind"],
         "frontier_transport": transport,
         "response_schema_sha256": schema_sha256,
         "auth_check": (
@@ -5738,14 +5886,15 @@ def build_frontier_command(
     plan_dir: Path,
     raw_response: Path,
     policy: dict[str, Any],
+    review_profile: dict[str, str],
 ) -> list[str]:
     return [
         codex_bin,
         "exec",
         "-m",
-        policy["frontier_model"],
+        review_profile["model"],
         "-c",
-        f"model_reasoning_effort={policy.get('frontier_reasoning_effort', 'xhigh')}",
+        f"model_reasoning_effort={review_profile['reasoning_effort']}",
         *frontier_transport_args(policy),
         *frontier_surface_reduction_args(),
         "--skip-git-repo-check",
@@ -5932,9 +6081,11 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
                 budget_recovery=recovery,
             )
             raise ContractError("estimated input exceeds reservation")
+        review_profile = frontier_review_profile(policy, request)
         try:
             preflight = preflight_frontier_transport(
                 plan_dir, args.request_id, args.codex_bin, policy,
+                review_profile,
             )
         except ContractError as exc:
             recovery = release_frontier_prelaunch_reservation(
@@ -6002,7 +6153,17 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
         prompt = (
             "You are the sparse frontier advisor for a research Harness. Read the immutable request below, "
             "audit only the bounded evidence it names, and return exactly the required JSON schema.\n"
-            "Copy these controller-computed response bindings exactly; do not recalculate them:\n"
+            + (
+                "This is the mandatory independent CP-01 review of the exact "
+                "top-level execution plan declared as MiniMax M3 output inside Claude "
+                "Code. Review architecture, task ordering, evaluator readiness, "
+                "risk budget, figure requirements, missing dependencies, and "
+                "whether execution should remain blocked. Do not defer this "
+                "review to a later checkpoint.\n"
+                if request["checkpoint"] == "CP-01"
+                else ""
+            )
+            + "Copy these controller-computed response bindings exactly; do not recalculate them:\n"
             f"- request_sha256: {sha256_file(request_path)}\n"
             f"- context_manifest_sha256: {sha256_json(request['context_manifest'])}\n"
             f"- response_kind: {registry['kind']}\n"
@@ -6016,6 +6177,7 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
         )
         cmd = build_frontier_command(
             preflight["codex_bin"], plan_dir, raw_response, policy,
+            review_profile,
         )
         events_path = run_dir / "transport.events.jsonl"
         stderr_path = run_dir / "transport.stderr"
@@ -6029,7 +6191,8 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
                     plan_dir,
                     args.request_id,
                     "SENT",
-                    model_id=policy["frontier_model"],
+                    model_id=review_profile["model"],
+                    reviewer_profile=review_profile,
                     send_claim=claim,
                 )
                 transition(
@@ -6172,6 +6335,24 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
     response, request, request_path = validate_frontier_response_integrity(
         plan_dir, args.request_id, current, response_path,
     )
+    policy = load_policy(plan_dir)
+    review_contract = validate_top_level_plan_review_contract(request)
+    expected_profile = frontier_review_profile(policy, request)
+    if (
+        review_contract is not None
+        and review_contract["model_policy_sha256"] != sha256_file(
+            policy_path(plan_dir)
+        )
+    ):
+        raise ContractError("frontier review contract model policy hash changed")
+    if response.get("model_id") != expected_profile["model"]:
+        raise ContractError("frontier response model does not match frozen review profile")
+    profile_is_required = (
+        review_contract is not None
+        or current.get("reviewer_profile") is not None
+    )
+    if profile_is_required and current.get("reviewer_profile") != expected_profile:
+        raise ContractError("frontier status review profile does not match frozen policy")
     if current.get("validated_response_sha256") != sha256_file(response_path):
         raise ContractError("validated response hash changed before apply")
     if current.get("validated_request_sha256") != sha256_file(request_path):
@@ -6193,6 +6374,8 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
         "response_sha256": sha256_file(response_path),
         "context_manifest_sha256": sha256_json(request["context_manifest"]),
         "response_path": current["validated_response_path"],
+        "reviewer_profile": expected_profile,
+        "model_policy_sha256": sha256_file(policy_path(plan_dir)),
         "advisory_only": True,
         "lifecycle_mutation": False,
         "controller_note": args.controller_note,
@@ -6204,6 +6387,13 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         current = read_json(status_path(plan_dir, args.request_id))
         validate_frontier_response_integrity(plan_dir, args.request_id, current, response_path)
+        if (
+            profile_is_required
+            and current.get("reviewer_profile") != expected_profile
+        ):
+            raise ContractError(
+                "frontier status review profile changed while applying"
+            )
         if current.get("validated_response_sha256") != sha256_file(response_path):
             raise ContractError("validated response hash changed while applying")
         if target.exists():
@@ -6416,7 +6606,23 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--worker-model", required=True)
     init.add_argument("--worker-max-budget-usd", type=float, required=True)
     init.add_argument("--frontier-model", required=True)
-    init.add_argument("--frontier-reasoning-effort", default="xhigh", choices=["low", "medium", "high", "xhigh", "max"])
+    init.add_argument(
+        "--frontier-reasoning-effort",
+        default="xhigh",
+        choices=["low", "medium", "high", "xhigh", "max", "ultra"],
+    )
+    init.add_argument(
+        "--plan-audit-model",
+        default=PLAN_AUDIT_MODEL,
+        choices=[PLAN_AUDIT_MODEL],
+        help="strongest verified Codex model for mandatory CP-01 top-level plan review",
+    )
+    init.add_argument(
+        "--plan-audit-reasoning-effort",
+        default=PLAN_AUDIT_REASONING_EFFORT,
+        choices=[PLAN_AUDIT_REASONING_EFFORT],
+        help="highest verified reasoning effort for mandatory CP-01 review",
+    )
     init.add_argument(
         "--frontier-transport",
         default="chatgpt-https",

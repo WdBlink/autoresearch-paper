@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.14.1"
+  version: "0.15.0"
 ---
 
 # Autoresearch Paper
@@ -27,6 +27,11 @@ file-backed state.
 - Never start writing from a bare PASS string. Require a validated evaluator
   verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
   also requires APPLIED CP-04 `prewriting_final_evidence`.
+- Never dispatch a MiniMax worker from its own top-level plan. CP-01 must first
+  bind the exact normalized brief, execution plan, risk budget, and figure
+  requirements to an independent Codex `gpt-5.6-sol` review at `ultra`
+  reasoning; only its validated `accept` receipt may unlock
+  `approve_execution`.
 - Never promote a paper figure from appearance, an AI review score, or an
   unbound image file. Require the repository-owned non-empty figure inventory,
   manifest hash and path validation, and a human review receipt bound to every
@@ -60,6 +65,8 @@ task_graph = generate_plan_yaml(
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
+bind the exact controller-declared MiniMax top-level plan to CP-01 -> run gpt-5.6-sol/ultra review
+require validated CP-01 accept -> apply + assert approve_execution
 route routine bounded tasks through harness-runtime.py dispatch-worker
 at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent transition
 write watchdog-system-prompt.md from references/watchdog-prompt-template.md
@@ -85,6 +92,9 @@ Read `references/claude-code-runtime.md` before dispatch. The current target
 adapter provides:
 
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
+- a mandatory independent CP-01 top-level-plan audit pinned to
+  `gpt-5.6-sol` at `ultra`, with reviewer identity and policy hash carried into
+  the durable `approve_execution` receipt;
 - non-interactive, schema-bounded MiniMax M3 worker dispatch through Claude Code;
 - immutable, hash-bound requests for CP-01 through CP-04;
 - fail-closed frontier preflight before budget reservation, including Codex
@@ -363,6 +373,7 @@ do not count as evidence.
 | ❌-14 | Let model advice directly accept, waive, cancel, resume, or clean lifecycle resources |
 | ❌-15 | Call Codex outside CP-01 through CP-04 or before reserving the frozen frontier budget |
 | ❌-16 | Accept a figure from an AI score, an unbound file, or a manifest that escapes the plan root |
+| ❌-17 | Let MiniMax M3 approve or execute its own top-level plan without the frozen strongest-model CP-01 receipt |
 
 ## Failure Modes
 
@@ -439,6 +450,10 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.15.0 (2026-07-25)** — Mandatory strongest-model top-level plan review:
+  the controller may declare MiniMax M3 as the initial-plan author, but CP-01 is pinned to Codex
+  `gpt-5.6-sol` at `ultra`; the reviewer profile and frozen policy hash are
+  revalidated before `approve_execution` and every worker dispatch.
 - **v0.14.1 (2026-07-25)** — Frontier transport hardening: strict-schema,
   executable/auth, and model/transport preflight before budget reservation;
   Git-safe HTTPS-only ChatGPT routing; durable streamed transport evidence;

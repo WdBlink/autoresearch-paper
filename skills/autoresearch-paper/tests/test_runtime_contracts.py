@@ -308,7 +308,7 @@ class RuntimeContracts(unittest.TestCase):
             create_args = [
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_bridge",
                 "--checkpoint", "CP-01", "--objective", "Audit the initial research plan.",
-                "--decision-required", "initial_plan_approval", "--constraint", "do not mutate lifecycle state",
+                "--decision-required", "approve_execution", "--constraint", "do not mutate lifecycle state",
                 "--max-input-tokens", "1000", "--max-output-tokens", "250", "--request-id", "far_test_request",
             ]
             for role, path in profile.items():
@@ -326,12 +326,18 @@ class RuntimeContracts(unittest.TestCase):
                 "--codex-bin", str(codex),
             )
             response = json.loads((request_path.parent / "response.json").read_text())
-            self.assertEqual(response["model_id"], "gpt-frontier-test")
+            self.assertEqual(response["model_id"], "gpt-5.6-sol")
             self.assertEqual(response["usage"], {"input_tokens": 321, "output_tokens": 123})
             transport_argv = json.loads(
                 (request_path.parent / "preflight.json").read_text()
             )
             self.assertEqual(transport_argv["frontier_transport"], "chatgpt-https")
+            self.assertEqual(transport_argv["frontier_model"], "gpt-5.6-sol")
+            self.assertEqual(transport_argv["reasoning_effort"], "ultra")
+            self.assertEqual(
+                transport_argv["review_profile_kind"],
+                "top_level_plan_audit",
+            )
             self.assertEqual(request_hash, __import__("hashlib").sha256(request_path.read_bytes()).hexdigest())
             validated = self.harness(
                 "validate-frontier-response",
@@ -375,6 +381,18 @@ class RuntimeContracts(unittest.TestCase):
             tmp = Path(td)
             plan = self.make_plan(tmp / "plan")
             self.init_model_policy(plan)
+            policy = json.loads(
+                (plan / "state" / "model_policy.json").read_text()
+            )
+            self.assertEqual(policy["top_level_plan_audit"], {
+                "required": True,
+                "declared_author_model_family": "MiniMax-M3",
+                "reviewer_runtime": "codex",
+                "reviewer_model": "gpt-5.6-sol",
+                "reasoning_effort": "ultra",
+                "checkpoint": "CP-01",
+                "dependent_transition": "approve_execution",
+            })
             self.harness(*self.cp01_create_args(plan, "plan_route", "far_route"))
             argv_log = tmp / "codex-argv.json"
             prompt_log = tmp / "codex-prompt.txt"
@@ -394,6 +412,8 @@ class RuntimeContracts(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             argv = json.loads(argv_log.read_text())
+            self.assertEqual(argv[argv.index("-m") + 1], "gpt-5.6-sol")
+            self.assertIn("model_reasoning_effort=ultra", argv)
             self.assertIn("--skip-git-repo-check", argv)
             self.assertIn("--ephemeral", argv)
             self.assertIn("--ignore-user-config", argv)
@@ -413,7 +433,34 @@ class RuntimeContracts(unittest.TestCase):
                 / "far_route"
                 / "request.json"
             )
+            request = json.loads(request_path.read_text())
+            self.assertEqual(
+                request["review_contract"]["kind"],
+                "top-level-plan-review-v1",
+            )
+            self.assertEqual(
+                request["review_contract"]["reviewer_profile"],
+                {
+                    "kind": "top_level_plan_audit",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "ultra",
+                },
+            )
+            self.assertEqual(
+                request["review_contract"]["evidence_roles"],
+                [
+                    "execution_plan",
+                    "figure_requirements",
+                    "normalized_brief",
+                    "risk_budget",
+                ],
+            )
             prompt = prompt_log.read_text()
+            self.assertIn(
+                "mandatory independent CP-01 review of the exact top-level "
+                "execution plan declared as MiniMax M3 output",
+                prompt,
+            )
             self.assertIn(
                 f"request_sha256: {hashlib.sha256(request_path.read_bytes()).hexdigest()}",
                 prompt,
@@ -540,6 +587,14 @@ class RuntimeContracts(unittest.TestCase):
                 "--max-frontier-input-tokens", "2000",
                 "--max-frontier-output-tokens", "1000",
             )
+            policy_path = plan / "state" / "model_policy.json"
+            policy_path.chmod(0o644)
+            policy = json.loads(policy_path.read_text())
+            policy.pop("top_level_plan_audit")
+            policy_path.write_text(
+                json.dumps(policy, indent=2, sort_keys=True) + "\n"
+            )
+            policy_path.chmod(0o444)
             self.harness(
                 *self.cp01_create_args(plan, "plan_wrong_model", "far_wrong_model")
             )
@@ -555,6 +610,44 @@ class RuntimeContracts(unittest.TestCase):
             self.assertFalse(
                 (plan / "state" / "frontier" / "budget.json").exists()
             )
+
+    def test_cp01_strong_profile_overrides_minimax_generic_frontier(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.harness(
+                "init-policy",
+                "--plan-dir", str(plan),
+                "--worker-model", "MiniMax-M3-test",
+                "--worker-max-budget-usd", "0.25",
+                "--frontier-model", "MiniMax-M3",
+                "--max-frontier-calls", "2",
+                "--max-frontier-input-tokens", "2000",
+                "--max-frontier-output-tokens", "1000",
+            )
+            self.harness(
+                *self.cp01_create_args(
+                    plan, "plan_strong_override", "far_strong_override"
+                )
+            )
+            sent = self.harness(
+                "send-frontier-request",
+                "--plan-dir", str(plan),
+                "--request-id", "far_strong_override",
+                "--codex-bin", str(self.fake_codex(tmp)),
+            )
+            self.assertEqual(json.loads(sent.stdout)["state"], "RECEIVED")
+            run_dir = (
+                plan / "state" / "frontier" / "requests"
+                / "far_strong_override"
+            )
+            response = json.loads((run_dir / "response.json").read_text())
+            self.assertEqual(response["model_id"], "gpt-5.6-sol")
+            preflight = json.loads((run_dir / "preflight.json").read_text())
+            self.assertEqual(
+                preflight["review_profile_kind"], "top_level_plan_audit"
+            )
+            self.assertEqual(preflight["reasoning_effort"], "ultra")
 
     def test_frontier_unstarted_transport_refunds_and_operation_retries_once(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -954,6 +1047,7 @@ class RuntimeContracts(unittest.TestCase):
             policy_path.chmod(0o644)
             policy = json.loads(policy_path.read_text())
             policy.pop("frontier_transport")
+            policy.pop("top_level_plan_audit")
             policy_path.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n")
             policy_path.chmod(0o444)
             self.harness(
@@ -985,6 +1079,26 @@ class RuntimeContracts(unittest.TestCase):
                 ).read_text()
             )
             self.assertEqual(status["transport"], "codex-default")
+            status_path = (
+                plan / "state" / "frontier" / "requests"
+                / "far_legacy" / "status.json"
+            )
+            status.pop("reviewer_profile")
+            status_path.chmod(0o644)
+            status_path.write_text(json.dumps(status))
+            self.harness(
+                "validate-frontier-response",
+                "--plan-dir", str(plan),
+                "--request-id", "far_legacy",
+            )
+            applied = self.harness(
+                "apply-frontier-response",
+                "--plan-dir", str(plan),
+                "--request-id", "far_legacy",
+                "--dependent-transition", "approve_execution",
+                "--controller-note", "legacy in-flight request accepted",
+            )
+            self.assertEqual(json.loads(applied.stdout)["state"], "APPLIED")
 
     def test_frontier_request_rejects_unregistered_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1003,6 +1117,21 @@ class RuntimeContracts(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 2)
             self.assertIn("unregistered checkpoint", proc.stderr)
+            wrong_decision = self.harness(
+                "create-frontier-request",
+                "--plan-dir", str(plan),
+                "--plan-id", "plan_bad_checkpoint",
+                "--checkpoint", "CP-01",
+                "--objective", "bypass execution approval",
+                "--decision-required", "initial_plan_approval",
+                "--max-input-tokens", "10",
+                "--max-output-tokens", "10",
+                check=False,
+            )
+            self.assertEqual(wrong_decision.returncode, 2)
+            self.assertIn(
+                "registered checkpoint transition", wrong_decision.stderr
+            )
 
     def test_cp04_acceptance_dispute_dependent_transition(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1068,7 +1197,7 @@ class RuntimeContracts(unittest.TestCase):
             profile["normalized_brief"].write_text("x" * 3000)
             args = [
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_large_context",
-                "--checkpoint", "CP-01", "--objective", "audit", "--decision-required", "plan_approval",
+                "--checkpoint", "CP-01", "--objective", "audit", "--decision-required", "approve_execution",
                 "--max-input-tokens", "100", "--max-output-tokens", "100", "--request-id", "far_large_context",
             ]
             for role, path in profile.items():

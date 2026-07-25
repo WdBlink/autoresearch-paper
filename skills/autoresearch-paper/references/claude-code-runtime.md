@@ -30,6 +30,8 @@ python3 references/scripts/harness-runtime.py init-policy \
   --plan-dir PLAN --worker-model MiniMax-M3 \
   --worker-max-budget-usd 1.00 --frontier-model FRONTIER_MODEL \
   --frontier-reasoning-effort xhigh --frontier-transport chatgpt-https \
+  --plan-audit-model gpt-5.6-sol \
+  --plan-audit-reasoning-effort ultra \
   --max-frontier-calls 4 \
   --max-frontier-input-tokens 600000 --max-frontier-output-tokens 20000 \
   --scientific-pivot-threshold 2
@@ -37,8 +39,11 @@ python3 references/scripts/harness-runtime.py init-policy \
 
 The immutable `state/model_policy.json` pins the Claude runtime, low-cost
 worker family, per-worker USD cap, frontier model and transport, four-call
-default budget, token budgets, and scientific pivot threshold. A changed policy
-hash pauses a frontier request. `chatgpt-https` is the verified default: the
+default budget, token budgets, scientific pivot threshold, and a distinct
+mandatory top-level-plan reviewer. Every new plan pins CP-01 to Codex
+`gpt-5.6-sol` at `ultra`; the general `frontier_model` remains available for
+CP-02 through CP-04. A changed policy hash pauses a frontier request.
+`chatgpt-https` is the verified default: the
 runtime creates a request-local provider overlay with WebSockets disabled and
 reuses the authenticated ChatGPT session. `codex-default` is available only
 when the local Codex transport has been independently verified.
@@ -308,6 +313,19 @@ The registry and dependent transitions are fixed:
 | CP-03 | — | `pivot` or `repair` | `authorize_structural_pivot` |
 | CP-04 | `acceptance_dispute` | `accept` | `resolve_acceptance_dispute` |
 | CP-04 | `prewriting_final_evidence` | `accept` | `start_writing` |
+
+CP-01 is not a self-review. The controller declares MiniMax M3 as the initial
+plan author inside Claude Code, but the exact `normalized_brief`, `execution_plan`,
+`risk_budget`, and `figure_requirements` files are independently reviewed by
+the frozen `gpt-5.6-sol`/`ultra` profile. The reviewer identity and model-policy
+hash are written into the applied transition receipt and revalidated by
+`assert-transition` and every `dispatch-worker` call. Any `revise`, `block`,
+missing receipt, weaker reviewer, or artifact drift leaves
+`approve_execution` blocked.
+
+The author-family field is declared provenance, not cryptographic model
+attestation. The enforceable guarantee is that the exact frozen plan bytes are
+reviewed by the independent Codex profile before execution.
 
 For a checkpoint that is itself a durable work unit, derive the request from
 the current capsule. Do not reconstruct its context from chat history:

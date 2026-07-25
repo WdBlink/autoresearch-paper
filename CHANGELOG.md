@@ -12,6 +12,27 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.0] - 2026-07-25
+
+### Added
+
+- The top-level plan declared by the controller as MiniMax M3 output now has a
+  dedicated CP-01 review profile pinned to Codex `gpt-5.6-sol` at `ultra`
+  reasoning.
+- CP-01 carries the exact normalized brief, execution plan, risk budget, and
+  figure requirements. No worker dispatch is admitted before a validated
+  `accept` response is applied as `approve_execution`.
+
+### Security
+
+- The applied transition receipt records the reviewer profile and frozen model
+  policy hash. `assert-transition` and every MiniMax worker dispatch revalidate
+  that identity, so a weaker or mutated reviewer cannot unlock execution.
+- Legacy policies without the new profile retain their historical behavior;
+  every newly initialized v0.15.0 plan freezes the stronger CP-01 contract.
+- The runtime binds the controller-declared author family; it does not claim
+  cryptographic proof of which model process generated the plan bytes.
+
 ## [0.14.1] - 2026-07-25
 
 ### Fixed

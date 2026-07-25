@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.14.1
+- **Current version:** v0.15.0
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -39,6 +39,9 @@ start writing.
   binds source data, transformations, renderer identity, commands, outputs,
   hashes, a CP-01-frozen expected figure set, an exact inventory, and
   output-bound human review before writing.
+  The controller-declared MiniMax top-level plan is now independently reviewed at CP-01
+  by Codex `gpt-5.6-sol` with `ultra` reasoning; the exact reviewer profile is
+  frozen into the execution-unlock receipt.
   The measured soak in this
   release is intentionally short, so 24h/7×24/full-cutover stability is not
   claimed.
@@ -165,7 +168,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.14.1 with a full bundle refresh so the
+Upgrade copied installations to v0.15.0 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -370,6 +373,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.15.0** — MiniMax M3 may draft the top-level research plan, but Codex
+  `gpt-5.6-sol` at `ultra` must independently accept the exact CP-01 evidence
+  bundle before any worker dispatch; reviewer identity and policy hash remain
+  revalidated by downstream consumers.
+  The author family is controller-declared provenance, not cryptographic model
+  attestation.
 - **v0.14.1** — frontier preflight before budget reservation, strict response
   schema compatibility, Git-safe HTTPS-only Codex routing, durable transport
   event streaming, and conservative accounting for uncertain sends. See the
@@ -424,7 +433,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.14.1}
+  version = {0.15.0}
 }
 ```
 
@@ -436,7 +445,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.14.1-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.15.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

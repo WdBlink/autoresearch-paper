@@ -143,6 +143,114 @@ class RuntimeV2Security(unittest.TestCase):
             proc=self.call("apply-frontier-response","--plan-dir",str(plan),"--request-id",rid,"--dependent-transition","approve_execution","--controller-note","x",check=False)
             self.assertEqual(proc.returncode,2); self.assertFalse((plan/"state"/"frontier"/"transitions"/"approve_execution.json").exists())
 
+    def test_worker_dispatch_rechecks_strong_cp01_reviewer_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.plan(root)
+            self.approve_cp01(plan, root)
+            receipt_path = (
+                plan / "state" / "frontier" / "transitions"
+                / "approve_execution" / "far_approve.json"
+            )
+            receipt_path.chmod(0o644)
+            receipt = json.loads(receipt_path.read_text())
+            receipt["reviewer_profile"]["model"] = "frontier-test"
+            receipt_path.write_text(json.dumps(receipt))
+            contract = plan / "bounded-task.json"
+            contract.write_text(json.dumps({
+                "schema_version": 1,
+                "task_id": "must-remain-blocked",
+                "instruction": "produce no artifacts",
+                "inputs": [],
+                "allowed_tools": [],
+                "allowed_write_paths": [],
+                "artifact_outputs": [],
+                "completion_check": {
+                    "type": "output_schema",
+                    "assertion": "valid",
+                },
+                "output_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["summary", "ok", "artifacts"],
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "ok": {"type": "boolean"},
+                        "artifacts": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                    },
+                },
+            }))
+            blocked = self.call(
+                "dispatch-worker",
+                "--plan-dir", str(plan),
+                "--task-contract", str(contract),
+                "--claude-bin", str(root / "must-not-run"),
+                check=False,
+            )
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("reviewer profile mismatch", blocked.stderr)
+            self.assertFalse((plan / "state" / "worker_runs").exists())
+
+    def test_cp01_request_contract_prevents_legacy_policy_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.plan(root)
+            self.approve_cp01(plan, root)
+            policy_path = plan / "state" / "model_policy.json"
+            policy_path.chmod(0o644)
+            policy = json.loads(policy_path.read_text())
+            policy.pop("top_level_plan_audit")
+            policy_path.write_text(json.dumps(policy, sort_keys=True))
+            blocked_assert = self.call(
+                "assert-transition",
+                "--plan-dir", str(plan),
+                "--plan-id", plan.name,
+                "--transition", "approve_execution",
+                check=False,
+            )
+            self.assertEqual(blocked_assert.returncode, 2)
+            self.assertIn("model policy hash changed", blocked_assert.stderr)
+            contract = plan / "downgrade-task.json"
+            contract.write_text(json.dumps({
+                "schema_version": 1,
+                "task_id": "downgrade-must-not-dispatch",
+                "instruction": "produce no artifacts",
+                "inputs": [],
+                "allowed_tools": [],
+                "allowed_write_paths": [],
+                "artifact_outputs": [],
+                "completion_check": {
+                    "type": "output_schema",
+                    "assertion": "valid",
+                },
+                "output_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["summary", "ok", "artifacts"],
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "ok": {"type": "boolean"},
+                        "artifacts": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                    },
+                },
+            }))
+            blocked_dispatch = self.call(
+                "dispatch-worker",
+                "--plan-dir", str(plan),
+                "--task-contract", str(contract),
+                "--claude-bin", str(root / "must-not-run"),
+                check=False,
+            )
+            self.assertEqual(blocked_dispatch.returncode, 2)
+            self.assertIn("model policy hash changed", blocked_dispatch.stderr)
+            self.assertFalse((plan / "state" / "worker_runs").exists())
+
     def test_acceptance_dispute_consumer_requires_and_consumes_cp04(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); plan=self.plan(root); resolution=plan/"dispute.json"
