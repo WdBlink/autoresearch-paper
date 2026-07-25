@@ -1336,12 +1336,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 self.preflight(plan)
                 request_id = f"far_release_{boundary.lower()}"
                 self.create_cp01_request(plan, request_id)
-                operation_id = "op_" + digest(f"release:{boundary}")
                 command = [
                     sys.executable, str(RUNTIME), "send-frontier-request",
                     "--plan-dir", str(plan), "--request-id", request_id,
                     "--codex-bin", str(self.disappearing_codex(plan)),
-                    "--operation-id", operation_id,
                 ]
                 env = dict(os.environ)
                 env[
@@ -1415,14 +1413,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 self.preflight(conflict)
                 request_id = f"far_release_conflict_{dimension}"
                 self.create_cp01_request(conflict, request_id)
-                operation_id = "op_" + digest(
-                    f"release-conflict:{dimension}"
-                )
                 command = [
                     sys.executable, str(RUNTIME), "send-frontier-request",
                     "--plan-dir", str(conflict), "--request-id", request_id,
                     "--codex-bin", str(self.disappearing_codex(conflict)),
-                    "--operation-id", operation_id,
                 ]
                 env = dict(os.environ)
                 env["HARNESS_FAULT_AFTER_STAGED_RELEASE_PREPARED"] = "1"
@@ -1937,6 +1931,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 sys.executable, str(RUNTIME), "compile-next-stage",
                 "--plan-dir", str(recovery), "--stage-envelope", str(path),
                 "--authorized-evidence", "evidence_stage_1",
+                "--authorized-evidence", "evidence_extra",
                 "--authorization-receipt", authorization,
             ]
             env = dict(os.environ)
@@ -1953,6 +1948,39 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 (recovery_root / "stages" / "stage_1"
                  / "next-stage.json").exists()
             )
+            frozen_projection = {
+                str(item.relative_to(recovery_root)): item.read_bytes()
+                for item in recovery_root.rglob("*") if item.is_file()
+            }
+            drifted_evidence = (
+                ["evidence_stage_1", "evidence_extra", "evidence_added"],
+                ["evidence_stage_1"],
+                ["evidence_extra", "evidence_stage_1"],
+            )
+            for evidence_values in drifted_evidence:
+                drifted_command = [
+                    sys.executable, str(RUNTIME), "compile-next-stage",
+                    "--plan-dir", str(recovery),
+                    "--stage-envelope", str(path),
+                ]
+                for evidence in evidence_values:
+                    drifted_command += ["--authorized-evidence", evidence]
+                drifted_command += [
+                    "--authorization-receipt", authorization,
+                ]
+                rejected = subprocess.run(
+                    drifted_command, cwd=ROOT, text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("identity conflict", rejected.stderr)
+                self.assertEqual(
+                    {
+                        str(item.relative_to(recovery_root)): item.read_bytes()
+                        for item in recovery_root.rglob("*") if item.is_file()
+                    },
+                    frozen_projection,
+                )
             recovered = subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True,
             )
@@ -1966,6 +1994,98 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     "active_stage_id"
                 ],
                 "stage_2",
+            )
+
+            figure_recovery = Path(td) / "figure_recovery"
+            figure_cycle = self.prepare_compilable_stage(
+                figure_recovery, "9",
+            )
+            inventory = self.write(
+                figure_recovery / "inputs" / "figure-requirements.json",
+                {
+                    "schema_version": 1,
+                    "plan_id": "plan_staged",
+                    "tier": "arxiv",
+                    "expected_figure_ids": ["fig_1"],
+                },
+            )
+            original_inventory = inventory.read_bytes()
+            figure_envelope = self.envelope(
+                "stage_figures", source="stage_1",
+                incumbent=figure_cycle["resulting_incumbent_sha256"],
+                kind="figure_production",
+            )
+            figure_envelope["figure_requirements_sha256"] = hashlib.sha256(
+                original_inventory
+            ).hexdigest()
+            figure_path = self.write(
+                figure_recovery / "inputs" / "figure-stage.json",
+                figure_envelope,
+            )
+            figure_authorization = self.authorize_next_stage(
+                figure_recovery, figure_path,
+            )
+            figure_command = [
+                sys.executable, str(RUNTIME), "compile-next-stage",
+                "--plan-dir", str(figure_recovery),
+                "--stage-envelope", str(figure_path),
+                "--authorized-evidence", "evidence_stage_1",
+                "--figure-requirements", str(inventory),
+                "--authorization-receipt", figure_authorization,
+            ]
+            crashed = subprocess.run(
+                figure_command, cwd=ROOT, text=True,
+                capture_output=True, env=env,
+            )
+            self.assertEqual(crashed.returncode, 87)
+            figure_root = (
+                figure_recovery / "state" / "staged_research" / "v1"
+            )
+            frozen_figure_projection = {
+                str(item.relative_to(figure_root)): item.read_bytes()
+                for item in figure_root.rglob("*") if item.is_file()
+            }
+
+            without_figure = [
+                item for item in figure_command
+                if item not in {"--figure-requirements", str(inventory)}
+            ]
+            alternate = figure_recovery / "inputs" / "alternate-figures.json"
+            alternate.write_bytes(original_inventory)
+            with_alternate = list(figure_command)
+            with_alternate[
+                with_alternate.index(str(inventory))
+            ] = str(alternate)
+            inventory.write_text('{"changed":true}\n')
+            drift_commands = (
+                without_figure,
+                with_alternate,
+                figure_command,
+            )
+            for drifted_command in drift_commands:
+                rejected = subprocess.run(
+                    drifted_command, cwd=ROOT, text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("identity conflict", rejected.stderr)
+                self.assertEqual(
+                    {
+                        str(item.relative_to(figure_root)): item.read_bytes()
+                        for item in figure_root.rglob("*") if item.is_file()
+                    },
+                    frozen_figure_projection,
+                )
+            inventory.write_bytes(original_inventory)
+            recovered = subprocess.run(
+                figure_command, cwd=ROOT, text=True, capture_output=True,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            self.assertEqual(
+                json.loads((figure_root / "state.json").read_text())[
+                    "active_stage_id"
+                ],
+                "stage_figures",
             )
 
     def test_figure_inventory_freezes_only_at_figure_stage(self) -> None:

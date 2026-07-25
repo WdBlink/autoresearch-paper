@@ -6672,6 +6672,85 @@ def terminate_transport_process_group(
         proc.wait()
 
 
+def recover_public_unstarted_release(
+    plan_dir: Path, request_id: str, current: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Complete canonical non-start release before generic reconciliation."""
+    send_claim = current.get("send_claim")
+    if not isinstance(send_claim, str):
+        return None
+    run_dir = request_dir(plan_dir, request_id)
+    intent_path = run_dir / "budget-releases" / f"{send_claim}.intent.json"
+    if not intent_path.exists():
+        return None
+    combined_path = (
+        staged_root(plan_dir) / "capacity-journals" / f"{request_id}.json"
+    )
+    if not staged_is_active(plan_dir) or not combined_path.exists():
+        return None
+    _, request = load_request(plan_dir, request_id)
+    expected_intent = {
+        "schema_version": SCHEMA_VERSION,
+        "request_id": request_id,
+        "reason": "transport_not_started",
+        "send_claim": send_claim,
+        "reservation": request["budget_reservation"],
+    }
+    if read_json(intent_path) != expected_intent:
+        raise ContractError("public unstarted release intent identity conflict")
+    combined = read_json(combined_path)
+    generation = require_non_negative_int(
+        combined.get("reservation_generation", 1),
+        "reservation_generation",
+    )
+    if generation < 1:
+        raise ContractError("reservation_generation must be positive")
+    release_path = _staged_release_journal_path(
+        plan_dir, request_id, generation,
+    )
+    if not release_path.exists():
+        raise ContractError(
+            "public unstarted release intent lacks its generation journal"
+        )
+    release = read_json(release_path)
+    if (
+        release.get("phase") not in {"PREPARED", "RELEASED"}
+        or release.get("dispatch_id") != request_id
+        or release.get("reservation_generation") != generation
+        or release.get("send_claim") != send_claim
+        or release.get("reason") != "transport_not_started"
+    ):
+        raise ContractError("public unstarted release journal identity conflict")
+    launch_path = run_dir / "transport-launches" / f"{send_claim}.json"
+    launch = read_json(launch_path)
+    if (
+        launch.get("request_id") != request_id
+        or launch.get("send_claim") != send_claim
+        or launch.get("phase") not in {"CALLING", "NOT_STARTED"}
+        or "pid" in launch
+    ):
+        raise ContractError(
+            "public unstarted release lacks canonical non-start proof"
+        )
+    recovery = release_unstarted_frontier_budget(
+        plan_dir,
+        request,
+        send_claim,
+        OSError("recovered canonical transport_not_started release"),
+    )
+    update_transport_launch(
+        plan_dir, request_id, send_claim, "NOT_STARTED",
+        budget_recovery=recovery,
+    )
+    return transition(
+        plan_dir,
+        request_id,
+        "CREATED",
+        failure="transport_not_started",
+        budget_recovery=recovery,
+    )
+
+
 def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     with request_send_lock(plan_dir, args.request_id):
@@ -6679,7 +6758,12 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
         if current["state"] in {"RECEIVED", "VALIDATED", "APPLIED"}:
             return {"ok": True, "idempotent": True, **current}
         if current["state"] in {"SENT", "WAITING"}:
-            return reconcile_frontier_locked(plan_dir, args.request_id)
+            recovered = recover_public_unstarted_release(
+                plan_dir, args.request_id, current,
+            )
+            if recovered is None:
+                return reconcile_frontier_locked(plan_dir, args.request_id)
+            current = recovered
         if current["state"] == "PAUSED":
             raise ContractError("paused frontier requests are never redelivered; reconcile or create a new attempt")
         if current["state"] not in {"CREATED", "BUDGET_RESERVED"}:
@@ -9187,10 +9271,39 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
+def staged_compile_operation_identity(
+    args: argparse.Namespace, incoming_source: Path,
+) -> dict[str, Any]:
+    """Freeze every authority-bearing compile input with ordered-set semantics."""
+    ordered_evidence = list(dict.fromkeys(args.authorized_evidence))
+    figure_raw = getattr(args, "figure_requirements", None)
+    figure_path = Path(figure_raw).resolve() if figure_raw else None
+    figure_identity = {
+        "present": figure_path is not None,
+        "path": str(figure_path) if figure_path is not None else None,
+        "sha256": sha256_file(figure_path) if figure_path is not None else None,
+    }
+    authorization_path = Path(args.authorization_receipt).resolve()
+    return {
+        "schema_version": 1,
+        "stage_envelope_path": str(incoming_source),
+        "stage_envelope_sha256": sha256_file(incoming_source),
+        "authorization_receipt_path": str(authorization_path),
+        "authorization_receipt_sha256": sha256_file(authorization_path),
+        # First-occurrence order is semantic; duplicates are not authority.
+        "authorized_evidence_ordered_set": ordered_evidence,
+        "figure_requirements": figure_identity,
+    }
+
+
 def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     incoming_source = Path(args.stage_envelope).resolve()
     incoming_envelope = read_json(incoming_source)
+    operation_identity = staged_compile_operation_identity(
+        args, incoming_source,
+    )
+    operation_identity_sha256 = sha256_json(operation_identity)
     journal_dir = staged_root(plan_dir) / "compile-journals"
     prepared = [
         path for path in sorted(journal_dir.glob("*.json"))
@@ -9201,10 +9314,9 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("multiple prepared next-stage compilations")
         journal = read_json(prepared[0])
         if (
-            sha256_file(incoming_source)
-            != journal["stage_envelope_sha256"]
-            or sha256_file(Path(args.authorization_receipt).resolve())
-            != journal["authorization_receipt_sha256"]
+            journal.get("operation_identity") != operation_identity
+            or journal.get("operation_identity_sha256")
+            != operation_identity_sha256
         ):
             raise ContractError("prepared next-stage compilation identity conflict")
         return _finish_next_stage_compile_locked(
@@ -9271,6 +9383,10 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         if sha256_file(requirements_path) != envelope["figure_requirements_sha256"]:
             raise ContractError("figure-production inventory binding mismatch")
     else:
+        if args.figure_requirements:
+            raise ContractError(
+                "only figure-production compilation accepts figure requirements"
+            )
         requirements_path = None
     prior_stage = state["active_stage_id"]
     target_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
@@ -9302,6 +9418,8 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         "stage_envelope_sha256": sha256_file(source),
         "authorization_receipt_path": str(authorization_path),
         "authorization_receipt_sha256": sha256_file(authorization_path),
+        "operation_identity": operation_identity,
+        "operation_identity_sha256": operation_identity_sha256,
         "figure_requirements_path": (
             str(requirements_path) if requirements_path is not None else None
         ),
@@ -9325,6 +9443,12 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
 def _finish_next_stage_compile_locked(
     plan_dir: Path, journal_path: Path, journal: dict[str, Any],
 ) -> dict[str, Any]:
+    if (
+        not isinstance(journal.get("operation_identity"), dict)
+        or sha256_json(journal["operation_identity"])
+        != journal.get("operation_identity_sha256")
+    ):
+        raise ContractError("prepared next-stage operation identity changed")
     source = Path(journal["stage_envelope_path"])
     authorization_path = Path(journal["authorization_receipt_path"])
     if (
