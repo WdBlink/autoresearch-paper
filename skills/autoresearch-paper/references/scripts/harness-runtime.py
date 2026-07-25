@@ -5313,6 +5313,94 @@ def reserve_budget(plan_dir: Path, request: dict[str, Any], policy: dict[str, An
         return ledger
 
 
+def _staged_release_journal_path(
+    plan_dir: Path, dispatch_id: str, generation: int,
+) -> Path:
+    return (
+        staged_root(plan_dir) / "capacity-release-journals"
+        / f"{dispatch_id}.{generation}.json"
+    )
+
+
+def _staged_release_roll_image(
+    path: Path,
+    images: dict[str, Any],
+    label: str,
+    *,
+    released_absent: bool = False,
+) -> None:
+    current = read_json(path) if path.exists() else None
+    current_sha = sha256_json(current)
+    if current_sha == images["reserved_sha256"]:
+        if released_absent:
+            path.unlink()
+        else:
+            atomic_write_json(path, images["released"])
+    elif current_sha != images["released_sha256"]:
+        raise ContractError(f"staged release {label} image is irreconcilable")
+
+
+def _finish_staged_release_locked(
+    plan_dir: Path, journal_path: Path, journal: dict[str, Any],
+) -> dict[str, Any]:
+    """Roll one proven-unstarted combined reservation to RELEASED."""
+    dispatch_id = journal["dispatch_id"]
+    global_path = frontier_root(plan_dir) / "budget.json"
+    capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+    usage_path = Path(journal["usage_path"])
+    marker_path = (
+        staged_root(plan_dir) / "dispatch-reservations"
+        / f"{dispatch_id}.json"
+    )
+    combined_path = (
+        staged_root(plan_dir) / "capacity-journals"
+        / f"{dispatch_id}.json"
+    )
+    boundaries = (
+        ("global", global_path, False, "GLOBAL"),
+        ("usage", usage_path, False, "USAGE"),
+        ("staged", capacity_path, False, "CAPACITY"),
+        ("marker", marker_path, True, "MARKER"),
+        ("combined", combined_path, False, "COMBINED"),
+    )
+    # Validate every frozen projection before changing any of them.  A late
+    # conflict must not partially reopen capacity or remove the marker.
+    for label, path, _, _ in boundaries:
+        current = read_json(path) if path.exists() else None
+        if sha256_json(current) not in {
+            journal[label]["reserved_sha256"],
+            journal[label]["released_sha256"],
+        }:
+            raise ContractError(
+                f"staged release {label} image is irreconcilable"
+            )
+    for label, path, released_absent, fault_name in boundaries:
+        _staged_release_roll_image(
+            path, journal[label], label, released_absent=released_absent,
+        )
+        if os.environ.get(
+            f"HARNESS_FAULT_AFTER_STAGED_RELEASE_{fault_name}"
+        ) == "1":
+            os._exit(89)
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "model_dispatch_released_unstarted",
+        {
+            "dispatch_id": dispatch_id,
+            "reservation_generation": journal["reservation_generation"],
+        },
+        {
+            "send_claim": journal["send_claim"],
+            "checkpoint": journal["checkpoint"],
+            "reason": "transport_not_started",
+        },
+    )
+    journal["phase"] = "RELEASED"
+    journal["released_at"] = journal.get("released_at", utc_now())
+    atomic_write_json(journal_path, journal)
+    return journal
+
+
 def reserve_frontier_and_staged_budget(
     plan_dir: Path, request: dict[str, Any], policy: dict[str, Any],
 ) -> dict[str, Any]:
@@ -5340,6 +5428,46 @@ def reserve_frontier_and_staged_budget(
                 staged_stage_dir(plan_dir, state["active_stage_id"])
                 / "usage-ledger.json"
             )
+            requested = request["budget_reservation"]
+            previous_release: dict[str, Any] | None = None
+            if journal_path.exists():
+                journal = read_json(journal_path)
+                if (
+                    journal.get("dispatch_id") != dispatch_id
+                    or journal.get("checkpoint") != checkpoint
+                    or not all(
+                        name in journal
+                        for name in ("global", "staged", "usage", "marker_after")
+                    )
+                ):
+                    raise ContractError(
+                        "combined capacity journal correlation mismatch"
+                    )
+                generation = require_non_negative_int(
+                    journal.get("reservation_generation", 1),
+                    "reservation_generation",
+                )
+                if generation < 1:
+                    raise ContractError("reservation_generation must be positive")
+                release_path = _staged_release_journal_path(
+                    plan_dir, dispatch_id, generation,
+                )
+                if release_path.exists():
+                    release_journal = read_json(release_path)
+                    if release_journal.get("phase") == "PREPARED":
+                        _finish_staged_release_locked(
+                            plan_dir, release_path, release_journal,
+                        )
+                        journal = read_json(journal_path)
+                if journal.get("phase") == "RELEASED":
+                    if (
+                        not release_path.exists()
+                        or read_json(release_path).get("phase") != "RELEASED"
+                    ):
+                        raise ContractError(
+                            "released combined capacity lacks its release journal"
+                        )
+                    previous_release = journal
             ledger = read_json(global_path) if global_path.exists() else {
                 "schema_version": 1,
                 "reserved_calls": 0,
@@ -5347,8 +5475,7 @@ def reserve_frontier_and_staged_budget(
                 "reserved_output_tokens": 0,
                 "request_ids": [],
             }
-            requested = request["budget_reservation"]
-            if journal_path.exists():
+            if journal_path.exists() and previous_release is None:
                 journal = read_json(journal_path)
                 if (
                     journal.get("dispatch_id") != dispatch_id
@@ -5464,6 +5591,15 @@ def reserve_frontier_and_staged_budget(
                 journal = {
                     "schema_version": 1, "phase": "PREPARED",
                     "dispatch_id": dispatch_id, "checkpoint": checkpoint,
+                    "reservation_generation": (
+                        previous_release.get("reservation_generation", 1) + 1
+                        if previous_release is not None else 1
+                    ),
+                    "prior_release_sha256": (
+                        sha256_json(previous_release)
+                        if previous_release is not None else None
+                    ),
+                    "usage_path": str(usage_path),
                     "global": {
                         "before_exists": global_path.exists(),
                         "before": ledger, "before_sha256": sha256_json(ledger),
@@ -5528,12 +5664,18 @@ def reserve_frontier_and_staged_budget(
             audit_has_reservation = audit_path.exists() and any(
                 strict_json_loads(line).get("event") == "model_dispatch_reserved"
                 and strict_json_loads(line).get("dispatch_id") == dispatch_id
+                and strict_json_loads(line).get(
+                    "reservation_generation", 1,
+                ) == journal["reservation_generation"]
                 for line in audit_path.read_text().splitlines()
                 if line.strip()
             )
             if not audit_has_reservation:
                 _staged_append_audit_locked(plan_dir, "model_dispatch_reserved", {
                     "dispatch_id": dispatch_id,
+                    "reservation_generation": journal[
+                        "reservation_generation"
+                    ],
                     "stage_id": state["active_stage_id"],
                     "checkpoint": checkpoint,
                     "remaining_calls": journal["staged"]["after"][
@@ -5575,6 +5717,211 @@ def release_unstarted_frontier_budget(
         "send_claim": send_claim,
         "reservation": requested,
     }
+    combined_path = (
+        staged_root(plan_dir) / "capacity-journals"
+        / f"{request['request_id']}.json"
+    )
+    if staged_is_active(plan_dir) and combined_path.exists():
+        with staged_transaction_lock(plan_dir):
+            with budget_lock(plan_dir):
+                if intent_path.exists():
+                    if read_json(intent_path) != intent:
+                        raise ContractError(
+                            "budget release intent correlation mismatch"
+                        )
+                else:
+                    atomic_write_json(intent_path, intent, immutable=True)
+                combined = read_json(combined_path)
+                generation = require_non_negative_int(
+                    combined.get("reservation_generation", 1),
+                    "reservation_generation",
+                )
+                if generation < 1:
+                    raise ContractError("reservation_generation must be positive")
+                journal_path = _staged_release_journal_path(
+                    plan_dir, request["request_id"], generation,
+                )
+                if journal_path.exists():
+                    journal = read_json(journal_path)
+                    if (
+                        journal.get("dispatch_id") != request["request_id"]
+                        or journal.get("send_claim") != send_claim
+                        or journal.get("reservation_generation") != generation
+                    ):
+                        raise ContractError(
+                            "staged release journal correlation mismatch"
+                        )
+                else:
+                    if combined.get("phase") != "COMMITTED":
+                        raise ContractError(
+                            "staged release requires a committed reservation"
+                        )
+                    global_path = root / "budget.json"
+                    capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+                    usage_path = Path(
+                        combined.get(
+                            "usage_path",
+                            str(
+                                staged_stage_dir(
+                                    plan_dir,
+                                    staged_load_state(plan_dir)[
+                                        "active_stage_id"
+                                    ],
+                                ) / "usage-ledger.json"
+                            ),
+                        )
+                    )
+                    marker_path = (
+                        staged_root(plan_dir) / "dispatch-reservations"
+                        / f"{request['request_id']}.json"
+                    )
+                    global_reserved = read_json(global_path)
+                    capacity_reserved = read_json(capacity_path)
+                    usage_reserved = read_json(usage_path)
+                    marker_reserved = (
+                        read_json(marker_path) if marker_path.exists() else None
+                    )
+                    usage_id = f"frontier:{request['request_id']}"
+                    checkpoint = combined.get("checkpoint")
+                    if (
+                        request["request_id"]
+                        not in global_reserved.get("request_ids", [])
+                        or usage_id
+                        not in usage_reserved.get("reservation_ids", [])
+                        or marker_reserved != combined.get("marker_after")
+                    ):
+                        raise ContractError(
+                            "staged release reserved projection mismatch"
+                        )
+                    if checkpoint is not None and (
+                        capacity_reserved["checkpoint_capacity"][
+                            checkpoint
+                        ]["spent"] != 1
+                    ):
+                        raise ContractError(
+                            "staged release named capacity is not reserved"
+                        )
+                    global_released = json.loads(json.dumps(global_reserved))
+                    global_released["reserved_calls"] -= requested["call"]
+                    global_released["reserved_input_tokens"] -= requested[
+                        "max_input_tokens"
+                    ]
+                    global_released["reserved_output_tokens"] -= requested[
+                        "max_output_tokens"
+                    ]
+                    global_released["request_ids"] = [
+                        item for item in global_released["request_ids"]
+                        if item != request["request_id"]
+                    ]
+                    if any(
+                        global_released[field] < 0
+                        for field in (
+                            "reserved_calls",
+                            "reserved_input_tokens",
+                            "reserved_output_tokens",
+                        )
+                    ):
+                        raise ContractError(
+                            "staged release would make global budget negative"
+                        )
+                    global_released["updated_at"] = utc_now()
+                    capacity_released = json.loads(
+                        json.dumps(capacity_reserved)
+                    )
+                    capacity_released["remaining_calls"] += 1
+                    if checkpoint is not None:
+                        capacity_released["checkpoint_capacity"][
+                            checkpoint
+                        ]["spent"] = 0
+                        capacity_released["mandatory_future_calls"] += 1
+                    staged_validate_capacity(capacity_released)
+                    usage_released = json.loads(json.dumps(usage_reserved))
+                    usage_released["used"]["review_tokens"] -= requested[
+                        "max_output_tokens"
+                    ]
+                    usage_released["reservation_ids"] = [
+                        item for item in usage_released["reservation_ids"]
+                        if item != usage_id
+                    ]
+                    if usage_released["used"]["review_tokens"] < 0:
+                        raise ContractError(
+                            "staged release would make usage negative"
+                        )
+                    usage_released["updated_at"] = utc_now()
+                    combined_released = json.loads(json.dumps(combined))
+                    combined_released.update({
+                        "phase": "RELEASED",
+                        "release_send_claim": send_claim,
+                        "released_at": utc_now(),
+                    })
+
+                    def release_images(
+                        reserved: Any, released: Any,
+                    ) -> dict[str, Any]:
+                        return {
+                            "reserved": reserved,
+                            "reserved_sha256": sha256_json(reserved),
+                            "released": released,
+                            "released_sha256": sha256_json(released),
+                        }
+
+                    journal = {
+                        "schema_version": 1,
+                        "phase": "PREPARED",
+                        "dispatch_id": request["request_id"],
+                        "checkpoint": checkpoint,
+                        "reservation_generation": generation,
+                        "send_claim": send_claim,
+                        "reason": "transport_not_started",
+                        "usage_path": str(usage_path),
+                        "global": release_images(
+                            global_reserved, global_released,
+                        ),
+                        "staged": release_images(
+                            capacity_reserved, capacity_released,
+                        ),
+                        "usage": release_images(
+                            usage_reserved, usage_released,
+                        ),
+                        "marker": release_images(marker_reserved, None),
+                        "combined": release_images(
+                            combined, combined_released,
+                        ),
+                        "prepared_at": utc_now(),
+                    }
+                    atomic_write_json(journal_path, journal)
+                    if os.environ.get(
+                        "HARNESS_FAULT_AFTER_STAGED_RELEASE_PREPARED"
+                    ) == "1":
+                        os._exit(89)
+                journal = _finish_staged_release_locked(
+                    plan_dir, journal_path, journal,
+                )
+                receipt = {
+                    **intent,
+                    "error_class": type(error).__name__,
+                    "reservation_generation": generation,
+                    "release_journal_path": str(journal_path),
+                    "release_journal_sha256": sha256_file(journal_path),
+                    "ledger_before_sha256": journal["global"][
+                        "reserved_sha256"
+                    ],
+                    "ledger_after_sha256": journal["global"][
+                        "released_sha256"
+                    ],
+                    "released_at": journal["released_at"],
+                }
+                if receipt_path.exists():
+                    prior = read_json(receipt_path)
+                    if any(
+                        prior.get(key) != receipt.get(key) for key in intent
+                    ):
+                        raise ContractError(
+                            "budget release receipt correlation mismatch"
+                        )
+                    return prior
+                atomic_write_json(receipt_path, receipt, immutable=True)
+                return receipt
     with budget_lock(plan_dir):
         if intent_path.exists():
             if read_json(intent_path) != intent:
@@ -7038,6 +7385,42 @@ def _staged_append_audit_locked(
     return record
 
 
+def _staged_ensure_audit_once_locked(
+    plan_dir: Path,
+    event: str,
+    identity: dict[str, Any],
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Complete one correlated audit effect without duplicating it on replay."""
+    _, audit_path = _staged_reconcile_audit_revision_locked(plan_dir)
+    records = [
+        strict_json_loads(line)
+        for line in audit_path.read_text().splitlines()
+        if line.strip()
+    ] if audit_path.exists() else []
+    matches = [
+        record for record in records
+        if record.get("event") == event
+        and all(record.get(key) == value for key, value in identity.items())
+    ]
+    if len(matches) > 1:
+        raise ContractError(f"duplicate staged audit identity for {event}")
+    if matches:
+        expected = {**identity, **details}
+        if any(matches[0].get(key) != value for key, value in expected.items()):
+            raise ContractError(f"staged audit identity conflict for {event}")
+        return matches[0]
+    return _staged_append_audit_locked(
+        plan_dir, event, {**identity, **details},
+    )
+
+
+def _staged_fault_after_artifact(operation: str) -> None:
+    """Deterministic process-exit boundary for artifact-first recovery tests."""
+    if os.environ.get("HARNESS_FAULT_AFTER_STAGED_ARTIFACT") == operation:
+        os._exit(88)
+
+
 def staged_append_audit(
     plan_dir: Path, event: str, details: dict[str, Any],
 ) -> dict[str, Any]:
@@ -7233,17 +7616,21 @@ def _staged_authorize_first_stage_locked(
     if not transition_path.is_file():
         raise ContractError("staged CP-01 transition receipt is missing")
     state = staged_load_state(plan_dir)
-    if state["state"] != "CONTRACTED":
-        return
-    state["state"] = "STAGE_AUTHORIZED"
-    atomic_write_json(staged_state_path(plan_dir), state)
-    _staged_append_audit_locked(plan_dir, "first_stage_authorized", {
-        "stage_id": state["active_stage_id"],
-        "cp01_request_id": request_id,
-        "cp01_transition_receipt_sha256": sha256_file(transition_path),
-        "review_advisory_only": True,
-        "controller_authoritative": True,
-    })
+    if state["state"] == "CONTRACTED":
+        state["state"] = "STAGE_AUTHORIZED"
+        atomic_write_json(staged_state_path(plan_dir), state)
+        _staged_fault_after_artifact("first_stage_authorize")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "first_stage_authorized",
+        {"stage_id": state["active_stage_id"]},
+        {
+            "cp01_request_id": request_id,
+            "cp01_transition_receipt_sha256": sha256_file(transition_path),
+            "review_advisory_only": True,
+            "controller_authoritative": True,
+        },
+    )
 
 
 def staged_validate_contract(contract: dict[str, Any]) -> None:
@@ -7499,12 +7886,35 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         }
         if any(state.get(key) != value for key, value in expected.items()):
             raise ContractError("staged research initialization collision")
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "staged_research_initialized",
+            {"contract_version": contract["contract_version"]},
+            {
+                "contract_sha256": state["contract_sha256"],
+                "stage_id": envelope["stage_id"],
+                "stage_envelope_sha256": state[
+                    "active_stage_envelope_sha256"
+                ],
+                "evaluation_profile_sha256": state[
+                    "evaluation_profile_sha256"
+                ],
+                "checkpoint_capacity_sha256": state[
+                    "checkpoint_capacity_sha256"
+                ],
+                "executable_stage_count": 1,
+                "controller_authoritative": True,
+            },
+        )
         return {"ok": True, "idempotent": True, **state}
     root = staged_root(plan_dir)
     root.mkdir(parents=True, exist_ok=True)
     contract_target = root / "contracts" / f"{contract['contract_version']}.json"
     stage_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
+    contract_was_absent = not contract_target.exists()
     staged_copy_immutable(contract_path, contract_target)
+    if contract_was_absent:
+        _staged_fault_after_artifact("init")
     staged_copy_immutable(evaluation_path, root / "evaluation-profile.json")
     staged_copy_immutable(capacity_path, root / "checkpoint-capacity.json")
     staged_copy_immutable(capacity_path, root / "capacity-ledger.json")
@@ -7533,16 +7943,20 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     }
     validate_schema(state, read_json(STAGED_RESEARCH_SCHEMA))
     atomic_write_json(state_path, state)
-    event = _staged_append_audit_locked(plan_dir, "staged_research_initialized", {
-        "contract_version": contract["contract_version"],
-        "contract_sha256": state["contract_sha256"],
-        "stage_id": envelope["stage_id"],
-        "stage_envelope_sha256": state["active_stage_envelope_sha256"],
-        "evaluation_profile_sha256": state["evaluation_profile_sha256"],
-        "checkpoint_capacity_sha256": state["checkpoint_capacity_sha256"],
-        "executable_stage_count": 1,
-        "controller_authoritative": True,
-    })
+    event = _staged_ensure_audit_once_locked(
+        plan_dir,
+        "staged_research_initialized",
+        {"contract_version": contract["contract_version"]},
+        {
+            "contract_sha256": state["contract_sha256"],
+            "stage_id": envelope["stage_id"],
+            "stage_envelope_sha256": state["active_stage_envelope_sha256"],
+            "evaluation_profile_sha256": state["evaluation_profile_sha256"],
+            "checkpoint_capacity_sha256": state["checkpoint_capacity_sha256"],
+            "executable_stage_count": 1,
+            "controller_authoritative": True,
+        },
+    )
     return {
         "ok": True, **read_json(state_path), "executable_stage_count": 1,
         "event": event,
@@ -7785,11 +8199,16 @@ def command_preflight_staged_research(args: argparse.Namespace) -> dict[str, Any
         raise ContractError("current-stage preflight changed")
     if not target.exists():
         atomic_write_json(target, payload, immutable=True)
-        _staged_append_audit_locked(plan_dir, "stage_preflight_passed", {
-            "stage_id": state["active_stage_id"],
+        _staged_fault_after_artifact("preflight")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "stage_preflight_passed",
+        {"stage_id": state["active_stage_id"]},
+        {
             "preflight_sha256": sha256_file(target),
             "critical_path": payload["critical_path"],
-        })
+        },
+    )
     return {"ok": True, "preflight_path": str(target), "preflight_sha256": sha256_file(target)}
 
 
@@ -7825,67 +8244,130 @@ def _staged_reserve_dispatch_locked(
 ) -> None:
     if not staged_is_active(plan_dir):
         return
-    reservation_path = (
-        staged_root(plan_dir) / "dispatch-reservations" / f"{dispatch_id}.json"
-    )
-    if reservation_path.exists():
-        prior = read_json(reservation_path)
-        if prior.get("checkpoint") != checkpoint:
-            raise ContractError("staged dispatch reservation identity collision")
-        return
-    staged_require_preflight(plan_dir)
-    state = staged_load_state(plan_dir)
-    allowed_dispatch_states = {"STAGE_AUTHORIZED", "DEVELOPING"}
-    if dispatch_id.startswith("far_"):
-        allowed_dispatch_states.add("RECORDED")
-    if checkpoint is None and state["state"] not in allowed_dispatch_states:
-        raise ContractError("worker dispatch requires controller-authorized stage")
     root = staged_root(plan_dir)
-    path = root / "capacity-ledger.json"
-    capacity = read_json(path)
-    staged_validate_capacity(capacity)
-    if checkpoint is None:
-        if capacity["remaining_calls"] - 1 < capacity["mandatory_future_calls"]:
-            raise ContractError(
-                "dispatch blocked: remaining_calls would fall below mandatory_future_calls"
-            )
+    reservation_path = (
+        root / "dispatch-reservations" / f"{dispatch_id}.json"
+    )
+    journal_path = root / "dispatch-journals" / f"{dispatch_id}.json"
+    capacity_path = root / "capacity-ledger.json"
+    if journal_path.exists():
+        journal = read_json(journal_path)
+        if (
+            journal.get("dispatch_id") != dispatch_id
+            or journal.get("checkpoint") != checkpoint
+        ):
+            raise ContractError("staged dispatch journal identity collision")
     else:
-        slot = capacity["checkpoint_capacity"].get(checkpoint)
-        if slot is None or slot["spent"] != 0:
-            raise ContractError(f"non-fungible {checkpoint} capacity is unavailable")
-    capacity["remaining_calls"] -= 1
-    if capacity["remaining_calls"] < 0:
-        raise ContractError("dispatch blocked: no remaining calls")
-    if checkpoint is not None:
-        capacity["checkpoint_capacity"][checkpoint]["spent"] = 1
-        capacity["mandatory_future_calls"] -= 1
-    staged_validate_capacity(capacity)
-    atomic_write_json(path, capacity)
-    state = staged_load_state(plan_dir)
-    atomic_write_json(reservation_path, {
-        "schema_version": 1,
-        "dispatch_id": dispatch_id,
-        "checkpoint": checkpoint,
-        "remaining_calls": capacity["remaining_calls"],
-        "mandatory_future_calls": capacity["mandatory_future_calls"],
-        "reserved_at": utc_now(),
-    }, immutable=True)
-    _staged_append_audit_locked(plan_dir, "model_dispatch_reserved", {
-        "dispatch_id": dispatch_id,
-        "stage_id": state["active_stage_id"],
-        "checkpoint": checkpoint,
-        "remaining_calls": capacity["remaining_calls"],
-        "mandatory_future_calls": capacity["mandatory_future_calls"],
-    })
-    if checkpoint is None and not dispatch_id.startswith("far_"):
+        if reservation_path.exists():
+            raise ContractError(
+                "staged dispatch marker exists without its recovery journal"
+            )
+        staged_require_preflight(plan_dir)
         state = staged_load_state(plan_dir)
-        state["state"] = "DEVELOPING"
+        allowed_dispatch_states = {"STAGE_AUTHORIZED", "DEVELOPING"}
+        if checkpoint is None and state["state"] not in allowed_dispatch_states:
+            raise ContractError(
+                "worker dispatch requires controller-authorized stage"
+            )
+        capacity = read_json(capacity_path)
+        staged_validate_capacity(capacity)
+        capacity_after = json.loads(json.dumps(capacity))
+        if checkpoint is None:
+            if (
+                capacity["remaining_calls"] - 1
+                < capacity["mandatory_future_calls"]
+            ):
+                raise ContractError(
+                    "dispatch blocked: remaining_calls would fall below "
+                    "mandatory_future_calls"
+                )
+        else:
+            slot = capacity["checkpoint_capacity"].get(checkpoint)
+            if slot is None or slot["spent"] != 0:
+                raise ContractError(
+                    f"non-fungible {checkpoint} capacity is unavailable"
+                )
+        capacity_after["remaining_calls"] -= 1
+        if checkpoint is not None:
+            capacity_after["checkpoint_capacity"][checkpoint]["spent"] = 1
+            capacity_after["mandatory_future_calls"] -= 1
+        staged_validate_capacity(capacity_after)
+        marker = {
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "checkpoint": checkpoint,
+            "remaining_calls": capacity_after["remaining_calls"],
+            "mandatory_future_calls": capacity_after[
+                "mandatory_future_calls"
+            ],
+            "reserved_at": utc_now(),
+        }
+        journal = {
+            "schema_version": 1,
+            "phase": "PREPARED",
+            "dispatch_id": dispatch_id,
+            "checkpoint": checkpoint,
+            "stage_id": state["active_stage_id"],
+            "capacity_before": capacity,
+            "capacity_before_sha256": sha256_json(capacity),
+            "capacity_after": capacity_after,
+            "capacity_after_sha256": sha256_json(capacity_after),
+            "marker_after": marker,
+            "marker_after_sha256": sha256_json(marker),
+            "state_before": state["state"],
+            "state_after": (
+                "DEVELOPING" if checkpoint is None else state["state"]
+            ),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+    current_capacity = read_json(capacity_path)
+    current_sha = sha256_json(current_capacity)
+    if current_sha == journal["capacity_before_sha256"]:
+        atomic_write_json(capacity_path, journal["capacity_after"])
+        _staged_fault_after_artifact("dispatch_reservation")
+    elif current_sha != journal["capacity_after_sha256"]:
+        raise ContractError("staged dispatch capacity is irreconcilable")
+    if reservation_path.exists():
+        if read_json(reservation_path) != journal["marker_after"]:
+            raise ContractError("staged dispatch marker is irreconcilable")
+    else:
+        atomic_write_json(
+            reservation_path, journal["marker_after"], immutable=True,
+        )
+    state = staged_load_state(plan_dir)
+    if state["state"] == journal["state_before"]:
+        state["state"] = journal["state_after"]
         atomic_write_json(staged_state_path(plan_dir), state)
+    elif state["state"] != journal["state_after"]:
+        raise ContractError("staged dispatch state is irreconcilable")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "model_dispatch_reserved",
+        {"dispatch_id": dispatch_id},
+        {
+            "stage_id": journal["stage_id"],
+            "checkpoint": checkpoint,
+            "remaining_calls": journal["capacity_after"]["remaining_calls"],
+            "mandatory_future_calls": journal["capacity_after"][
+                "mandatory_future_calls"
+            ],
+        },
+    )
+    journal["phase"] = "COMMITTED"
+    journal["committed_at"] = journal.get("committed_at", utc_now())
+    atomic_write_json(journal_path, journal)
 
 
 def command_record_role_visible_state(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
+    target = staged_root(plan_dir) / "role-visible" / f"{args.call_id}.json"
+    source_audit_revision = (
+        read_json(target).get("audit_revision")
+        if target.exists()
+        else state["audit_revision"]
+    )
     source_refs: list[str]
     if args.call_kind == "worker":
         run_dir = worker_run_dir(plan_dir, args.call_id)
@@ -7958,7 +8440,7 @@ def command_record_role_visible_state(args: argparse.Namespace) -> dict[str, Any
         "schema_version": 1,
         "call_id": args.call_id,
         "role": role,
-        "audit_revision": state["audit_revision"],
+        "audit_revision": source_audit_revision,
         "context_policy_version": "canonical-runtime-context-v1",
         "visible_message_manifest_sha256": manifest_sha,
         "context_events": context_events,
@@ -7977,18 +8459,22 @@ def command_record_role_visible_state(args: argparse.Namespace) -> dict[str, Any
     )["external_suite_identity_sha256"]
     if external_identity in canonical_json(visible).decode("utf-8"):
         raise ContractError("external transfer suite leaked into role-visible state")
-    target = staged_root(plan_dir) / "role-visible" / f"{visible['call_id']}.json"
     if target.exists():
         if read_json(target) != visible:
             raise ContractError("canonical role-visible call record changed")
     else:
         atomic_write_json(target, visible, immutable=True)
-    _staged_append_audit_locked(plan_dir, "role_visible_state_recorded", {
-        "call_id": visible["call_id"],
+        _staged_fault_after_artifact("role_visible")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "role_visible_state_recorded",
+        {"call_id": visible["call_id"]},
+        {
         "role": visible["role"],
         "role_visible_state_sha256": sha256_file(target),
         "source_audit_revision": visible["audit_revision"],
-    })
+        },
+    )
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
@@ -7996,7 +8482,9 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
     staged_require_preflight(plan_dir)
-    if state["state"] not in {"STAGE_AUTHORIZED", "DEVELOPING"}:
+    if state["state"] not in {
+        "STAGE_AUTHORIZED", "DEVELOPING", "CANDIDATE_FROZEN",
+    }:
         raise ContractError("candidate freeze requires a controller-authorized stage")
     stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
     target = stage_dir / "candidate.json"
@@ -8063,33 +8551,45 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
         comparable = {k: v for k, v in prior.items() if k != "frozen_at"}
         if comparable != {k: v for k, v in record.items() if k != "frozen_at"}:
             raise ContractError("one stage may freeze only one candidate")
-        return {"ok": True, "idempotent": True, **prior}
-    atomic_write_json(target, record, immutable=True)
+        record = prior
+    else:
+        atomic_write_json(target, record, immutable=True)
+        _staged_fault_after_artifact("candidate")
     maturity_path = stage_dir / "evidence-maturity.json"
-    transitions = []
-    for maturity, authority in (
-        ("idea", "candidate_pool"),
-        ("screened", f"promotion:{run_id}"),
-        ("full_experiment", f"promotion:{run_id}"),
-    ):
-        transitions.append({
-            "maturity": maturity, "authority": authority,
-            "recorded_at": utc_now(),
-        })
-    atomic_write_json(maturity_path, {
-        "schema_version": 1,
-        "evidence_id": f"evidence_{state['active_stage_id']}",
-        "candidate_sha256": candidate_sha,
-        "current_maturity": "full_experiment",
-        "transitions": transitions,
-    }, immutable=True)
+    if maturity_path.exists():
+        maturity = read_json(maturity_path)
+        staged_validate_evidence_maturity(maturity, candidate_sha)
+        if maturity["current_maturity"] != "full_experiment":
+            raise ContractError("candidate maturity identity conflict")
+    else:
+        transitions = []
+        for maturity_name, authority in (
+            ("idea", "candidate_pool"),
+            ("screened", f"promotion:{run_id}"),
+            ("full_experiment", f"promotion:{run_id}"),
+        ):
+            transitions.append({
+                "maturity": maturity_name, "authority": authority,
+                "recorded_at": utc_now(),
+            })
+        atomic_write_json(maturity_path, {
+            "schema_version": 1,
+            "evidence_id": f"evidence_{state['active_stage_id']}",
+            "candidate_sha256": candidate_sha,
+            "current_maturity": "full_experiment",
+            "transitions": transitions,
+        }, immutable=True)
     state["state"] = "CANDIDATE_FROZEN"
     atomic_write_json(staged_state_path(plan_dir), state)
-    _staged_append_audit_locked(plan_dir, "stage_candidate_frozen", {
-        "stage_id": state["active_stage_id"],
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "stage_candidate_frozen",
+        {"stage_id": state["active_stage_id"]},
+        {
         "candidate_sha256": candidate_sha,
         "incumbent_sha256": state["current_incumbent_sha256"],
-    })
+        },
+    )
     return {"ok": True, **record}
 
 
@@ -8127,15 +8627,22 @@ def command_create_logical_gate_query(args: argparse.Namespace) -> dict[str, Any
     if path.exists():
         if read_json(path) != query:
             raise ContractError("candidate already has a logical Gate query")
-        return {"ok": True, "idempotent": True, **query}
-    atomic_write_json(path, query)
+    else:
+        atomic_write_json(path, query)
+        _staged_fault_after_artifact("gate_query")
+    if state["state"] not in {"CANDIDATE_FROZEN", "GATE_QUERIED"}:
+        raise ContractError("logical Gate query state is irreconcilable")
     state["state"] = "GATE_QUERIED"
     atomic_write_json(staged_state_path(plan_dir), state)
-    _staged_append_audit_locked(plan_dir, "logical_gate_query_created", {
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "logical_gate_query_created",
+        {"logical_gate_query_id": query["logical_gate_query_id"]},
+        {
         "stage_id": state["active_stage_id"],
-        "logical_gate_query_id": query["logical_gate_query_id"],
         "candidate_sha256": query["candidate_sha256"],
-    })
+        },
+    )
     return {"ok": True, **query}
 
 
@@ -8547,15 +9054,22 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     if report["candidate_sha256"] != candidate["candidate_sha256"]:
         raise ContractError("stage report candidate mismatch")
     target = staged_stage_dir(plan_dir, state["active_stage_id"]) / "stage-report.json"
+    target_was_absent = not target.exists()
     staged_copy_immutable(source, target)
-    _staged_append_audit_locked(plan_dir, "minimax_terminal_stage_report_recorded", {
+    if target_was_absent:
+        _staged_fault_after_artifact("stage_report")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "minimax_terminal_stage_report_recorded",
+        {"stage_report_id": report["stage_report_id"]},
+        {
         "stage_id": state["active_stage_id"],
-        "stage_report_id": report["stage_report_id"],
         "stage_report_sha256": sha256_file(target),
         "worker_run_id": args.worker_run_id,
         "worker_status_sha256": sha256_file(status_path_value),
         "promotion_receipt_sha256": sha256_file(promotion_path),
-    })
+        },
+    )
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
@@ -8657,14 +9171,19 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         raise ContractError("strong stage review receipt collision")
     if not target.exists():
         atomic_write_json(target, review, immutable=True)
-    _staged_append_audit_locked(plan_dir, "strong_stage_review_recorded", {
+        _staged_fault_after_artifact("strong_review")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "strong_stage_review_recorded",
+        {"review_receipt_id": review["review_receipt_id"]},
+        {
         "stage_id": state["active_stage_id"],
         "stage_report_id": report["stage_report_id"],
-        "review_receipt_id": review["review_receipt_id"],
         "recommendation": review["recommendation"],
         "advisory_only": True,
         "controller_authoritative": True,
-    })
+        },
+    )
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
@@ -8882,7 +9401,7 @@ def command_record_human_stage_input(args: argparse.Namespace) -> dict[str, Any]
         report = read_json(report_path)
         if report.get("stage_report_id") != args.stage_report_id:
             raise ContractError("human feedback stage report ID is unresolved")
-    record = {
+    stable_record = {
         "schema_version": 1,
         "input_id": staged_require_id(args.input_id, "input_id"),
         "kind": args.kind,
@@ -8891,13 +9410,35 @@ def command_record_human_stage_input(args: argparse.Namespace) -> dict[str, Any]
         "content_sha256": staged_require_sha256(args.content_sha256, "content_sha256"),
         "status": "candidate_pool",
         "authorization_created": False,
-        "recorded_at": utc_now(),
     }
     path = staged_root(plan_dir) / "human-inputs.jsonl"
-    append_jsonl(path, record)
-    _staged_append_audit_locked(plan_dir, "human_stage_input_recorded", {
-        **record, "silence_is_approval": False,
-    })
+    records = [
+        strict_json_loads(line)
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ] if path.exists() else []
+    prior = [item for item in records if item.get("input_id") == args.input_id]
+    if len(prior) > 1:
+        raise ContractError("duplicate human stage input identity")
+    if prior:
+        record = prior[0]
+        if {
+            key: record.get(key) for key in stable_record
+        } != stable_record:
+            raise ContractError("human stage input identity collision")
+    else:
+        record = {**stable_record, "recorded_at": utc_now()}
+        append_jsonl(path, record)
+        _staged_fault_after_artifact("human_input")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "human_stage_input_recorded",
+        {"input_id": record["input_id"]},
+        {
+            **{key: value for key, value in record.items() if key != "input_id"},
+            "silence_is_approval": False,
+        },
+    )
     return {"ok": True, **record}
 
 
@@ -8911,8 +9452,6 @@ def command_release_staged_evidence(args: argparse.Namespace) -> dict[str, Any]:
         staged_validate_evidence_maturity(
             maturity, read_json(stage_dir / "candidate.json")["candidate_sha256"],
         )
-        if maturity.get("current_maturity") != "gate_accepted":
-            raise ContractError("released evidence must advance from gate_accepted")
         receipt = validate_applied_action_receipt(
             plan_dir, Path(args.authorization_receipt).resolve(),
             "release_evidence",
@@ -8927,14 +9466,24 @@ def command_release_staged_evidence(args: argparse.Namespace) -> dict[str, Any]:
             plan_dir, plan_identity(plan_dir), "start_writing",
             args.cp04_request_id,
         )
-        maturity["transitions"].append({
+        release_transition = {
             "maturity": "released",
             "authority": f"human:{receipt['record_id']}",
             "cp04_request_id": cp04["request_id"],
-            "recorded_at": utc_now(),
-        })
-        maturity["current_maturity"] = "released"
-        atomic_write_json(maturity_path, maturity)
+        }
+        if maturity.get("current_maturity") == "gate_accepted":
+            maturity["transitions"].append({
+                **release_transition, "recorded_at": utc_now(),
+            })
+            maturity["current_maturity"] = "released"
+            atomic_write_json(maturity_path, maturity)
+            _staged_fault_after_artifact("evidence_release")
+        elif maturity.get("current_maturity") == "released":
+            last = maturity["transitions"][-1]
+            if any(last.get(key) != value for key, value in release_transition.items()):
+                raise ContractError("released evidence operation identity conflict")
+        else:
+            raise ContractError("released evidence must advance from gate_accepted")
         entry = {
             "schema_version": 1,
             "evidence_id": maturity["evidence_id"],
@@ -8954,15 +9503,37 @@ def command_release_staged_evidence(args: argparse.Namespace) -> dict[str, Any]:
             "active_for_retrieval": True,
         }
         released_receipt_path = stage_dir / "released-evidence-receipt.json"
-        atomic_write_json(released_receipt_path, entry, immutable=True)
-        append_jsonl(staged_root(plan_dir) / "evidence-ledger.jsonl", entry)
-        _staged_append_audit_locked(plan_dir, "staged_evidence_released", {
+        if released_receipt_path.exists():
+            if read_json(released_receipt_path) != entry:
+                raise ContractError("released evidence receipt collision")
+        else:
+            atomic_write_json(released_receipt_path, entry, immutable=True)
+        ledger_path = staged_root(plan_dir) / "evidence-ledger.jsonl"
+        ledger_records = [
+            strict_json_loads(line)
+            for line in ledger_path.read_text().splitlines()
+            if line.strip()
+        ] if ledger_path.exists() else []
+        matching = [
+            item for item in ledger_records
+            if item.get("evidence_id") == entry["evidence_id"]
+            and item.get("maturity") == "released"
+        ]
+        if len(matching) > 1 or matching and matching[0] != entry:
+            raise ContractError("released evidence ledger identity conflict")
+        if not matching:
+            append_jsonl(ledger_path, entry)
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "staged_evidence_released",
+            {"evidence_id": entry["evidence_id"]},
+            {
             "stage_id": state["active_stage_id"],
-            "evidence_id": entry["evidence_id"],
             "released_evidence_receipt_sha256": sha256_file(
                 released_receipt_path
             ),
-        })
+            },
+        )
         return {"ok": True, "evidence": entry}
 
 
@@ -9173,12 +9744,17 @@ def command_pause_staged_research(args: argparse.Namespace) -> dict[str, Any]:
             ledger["stop_reason"] = args.reason
             ledger["stopped_at"] = utc_now()
             atomic_write_json(ledger_path, ledger)
+            _staged_fault_after_artifact("pause")
+        elif ledger.get("stop_reason") != args.reason:
+            raise ContractError("stage pause operation identity conflict")
         state["state"] = "PAUSED"
         atomic_write_json(staged_state_path(plan_dir), state)
-        _staged_append_audit_locked(plan_dir, "stage_stop_condition_applied", {
-            "stage_id": state["active_stage_id"], "reason": args.reason,
-            "controller_authoritative": True,
-        })
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "stage_stop_condition_applied",
+            {"stage_id": state["active_stage_id"], "reason": args.reason},
+            {"controller_authoritative": True},
+        )
         return {"ok": True, "stage_id": state["active_stage_id"], "reason": args.reason}
 
 
@@ -9210,19 +9786,26 @@ def command_reauthorize_staged_research(args: argparse.Namespace) -> dict[str, A
             / "usage-ledger.json"
         )
         ledger = read_json(ledger_path)
-        ledger["stop_reason"] = None
-        ledger["reauthorization_record_id"] = receipt["record_id"]
-        ledger["reauthorized_at"] = utc_now()
-        atomic_write_json(ledger_path, ledger)
+        prior_record_id = ledger.get("reauthorization_record_id")
+        if prior_record_id not in {None, receipt["record_id"]}:
+            raise ContractError("stage reauthorization operation identity conflict")
+        if prior_record_id is None:
+            ledger["stop_reason"] = None
+            ledger["reauthorization_record_id"] = receipt["record_id"]
+            ledger["reauthorized_at"] = utc_now()
+            atomic_write_json(ledger_path, ledger)
+            _staged_fault_after_artifact("reauthorize")
         state["state"] = "STAGE_AUTHORIZED"
         state["active_stage_authorization_path"] = str(receipt_path)
         state["active_stage_authorization_sha256"] = sha256_file(receipt_path)
         state["active_stage_authorization_action"] = "reauthorize_stage"
         atomic_write_json(staged_state_path(plan_dir), state)
-        _staged_append_audit_locked(plan_dir, "stage_reauthorized", {
-            "stage_id": state["active_stage_id"],
-            "record_id": receipt["record_id"],
-        })
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "stage_reauthorized",
+            {"record_id": receipt["record_id"]},
+            {"stage_id": state["active_stage_id"]},
+        )
         return {"ok": True, "stage_id": state["active_stage_id"]}
 
 
@@ -9253,7 +9836,7 @@ def command_record_evaluator_rebaseline(args: argparse.Namespace) -> dict[str, A
         or run.get("evaluator_sha256") != contract["acceptance_evaluator_sha256"]
     ):
         raise ContractError("rebaseline requires canonical calibration of new evaluator")
-    receipt = {
+    stable_receipt = {
         "schema_version": 1,
         "rebaseline_id": f"rebaseline_{contract['contract_version']}",
         "prior_contract_version": state["contract_version"],
@@ -9265,34 +9848,99 @@ def command_record_evaluator_rebaseline(args: argparse.Namespace) -> dict[str, A
         "execution_receipt_sha256": sha256_file(run_path),
         "authorization_receipt_path": str(authorization_path),
         "authorization_receipt_sha256": sha256_file(authorization_path),
-        "recorded_at": utc_now(),
     }
     target = (
         staged_root(plan_dir) / "rebaseline-receipts"
-        / f"{receipt['rebaseline_id']}.json"
+        / f"{stable_receipt['rebaseline_id']}.json"
     )
-    if target.exists() and read_json(target) != receipt:
-        raise ContractError("rebaseline receipt collision")
-    if not target.exists():
+    if target.exists():
+        receipt = read_json(target)
+        if {
+            key: receipt.get(key) for key in stable_receipt
+        } != stable_receipt:
+            raise ContractError("rebaseline receipt collision")
+    else:
+        receipt = {**stable_receipt, "recorded_at": utc_now()}
         atomic_write_json(target, receipt, immutable=True)
+        _staged_fault_after_artifact("rebaseline")
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "evaluator_rebaseline_recorded",
+        {"rebaseline_id": receipt["rebaseline_id"]},
+        {
+            "prior_contract_version": receipt["prior_contract_version"],
+            "contract_version": receipt["contract_version"],
+            "contract_sha256": receipt["contract_sha256"],
+            "evaluator_sha256": receipt["evaluator_sha256"],
+            "authorization_receipt_sha256": receipt[
+                "authorization_receipt_sha256"
+            ],
+        },
+    )
     return {"ok": True, "receipt_path": str(target), **receipt}
 
 
 def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     with staged_transaction_lock(plan_dir):
-        state = staged_load_state(plan_dir)
-        if state["state"] not in {"RECORDED", "PAUSED"}:
-            raise ContractError("contract amendment requires a terminal recorded stage")
-        old_contract = read_json(
-            staged_root(plan_dir) / "contracts"
-            / f"{state['contract_version']}.json"
+        incoming_contract_path = Path(args.contract).resolve()
+        incoming_contract = read_json(incoming_contract_path)
+        staged_validate_contract(incoming_contract)
+        amendment_journal_path = (
+            staged_root(plan_dir) / "amendment-journals"
+            / f"{incoming_contract['contract_version']}.json"
         )
+        if amendment_journal_path.exists():
+            amendment_journal = read_json(amendment_journal_path)
+            source_checks = {
+                "contract_sha256": sha256_file(incoming_contract_path),
+                "evaluation_profile_sha256": sha256_file(
+                    Path(args.evaluation_profile).resolve()
+                ),
+                "stage_envelope_sha256": sha256_file(
+                    Path(args.stage_envelope).resolve()
+                ),
+                "rebaseline_receipt_sha256": sha256_file(
+                    Path(args.rebaseline_receipt).resolve()
+                ),
+            }
+            if (
+                amendment_journal.get("contract_version")
+                != incoming_contract["contract_version"]
+                or any(
+                    amendment_journal.get(key) != value
+                    for key, value in source_checks.items()
+                )
+            ):
+                raise ContractError("contract amendment journal identity conflict")
+            raw_state = read_json(staged_state_path(plan_dir))
+            if (
+                raw_state.get("contract_version")
+                != incoming_contract["contract_version"]
+            ):
+                evaluation_target = (
+                    staged_root(plan_dir) / "evaluation-profile.json"
+                )
+                current_evaluation = read_json(evaluation_target)
+                current_sha = sha256_json(current_evaluation)
+                if current_sha == amendment_journal[
+                    "evaluation_after_sha256"
+                ]:
+                    atomic_write_json(
+                        evaluation_target,
+                        amendment_journal["evaluation_before"],
+                    )
+                elif current_sha != amendment_journal[
+                    "evaluation_before_sha256"
+                ]:
+                    raise ContractError(
+                        "prepared contract amendment evaluation is "
+                        "irreconcilable"
+                    )
+        state = staged_load_state(plan_dir)
         contract_path = Path(args.contract).resolve()
         contract = read_json(contract_path)
         staged_validate_contract(contract)
-        if contract["contract_version"] == state["contract_version"]:
-            raise ContractError("contract amendment must create a new version")
         rebaseline_path = Path(args.rebaseline_receipt).resolve()
         rebaseline = read_json(rebaseline_path)
         canonical_rebaseline = (
@@ -9304,6 +9952,54 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
             or rebaseline.get("contract_sha256") != sha256_file(contract_path)
         ):
             raise ContractError("contract amendment lacks canonical rebaseline")
+        if state["contract_version"] == contract["contract_version"]:
+            root = staged_root(plan_dir)
+            evaluation_path = Path(args.evaluation_profile).resolve()
+            envelope_path = Path(args.stage_envelope).resolve()
+            envelope = read_json(envelope_path)
+            expected = {
+                "contract_sha256": sha256_file(contract_path),
+                "evaluation_profile_sha256": sha256_file(evaluation_path),
+                "active_stage_id": envelope["stage_id"],
+                "active_stage_envelope_sha256": sha256_file(envelope_path),
+            }
+            if (
+                any(state.get(key) != value for key, value in expected.items())
+                or sha256_file(
+                    root / "contracts" / f"{contract['contract_version']}.json"
+                ) != expected["contract_sha256"]
+            ):
+                raise ContractError("committed contract amendment identity conflict")
+            _staged_ensure_audit_once_locked(
+                plan_dir,
+                "contract_lineage_amended",
+                {"contract_version": contract["contract_version"]},
+                {
+                    "prior_contract_version": rebaseline[
+                        "prior_contract_version"
+                    ],
+                    "rebaseline_receipt_sha256": sha256_file(rebaseline_path),
+                },
+            )
+            if amendment_journal_path.exists():
+                amendment_journal = read_json(amendment_journal_path)
+                amendment_journal["phase"] = "COMMITTED"
+                amendment_journal["committed_at"] = amendment_journal.get(
+                    "committed_at", utc_now(),
+                )
+                atomic_write_json(
+                    amendment_journal_path, amendment_journal,
+                )
+            return {
+                "ok": True, "idempotent": True,
+                "contract_version": contract["contract_version"],
+            }
+        if state["state"] not in {"RECORDED", "PAUSED"}:
+            raise ContractError("contract amendment requires a terminal recorded stage")
+        old_contract = read_json(
+            staged_root(plan_dir) / "contracts"
+            / f"{state['contract_version']}.json"
+        )
         changed_policy = any(
             old_contract[field] != contract[field]
             for field in ("acceptance_evaluator_sha256", "adoption_policy_sha256")
@@ -9328,14 +10024,49 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
         if authorization["record_id"] != contract["authorization_receipt_id"]:
             raise ContractError("new contract owner authorization ID mismatch")
         root = staged_root(plan_dir)
-        staged_copy_immutable(
-            contract_path,
-            root / "contracts" / f"{contract['contract_version']}.json",
+        if amendment_journal_path.exists():
+            amendment_journal = read_json(amendment_journal_path)
+        else:
+            evaluation_target = root / "evaluation-profile.json"
+            evaluation_before = read_json(evaluation_target)
+            amendment_journal = {
+                "schema_version": 1,
+                "phase": "PREPARED",
+                "contract_version": contract["contract_version"],
+                "prior_contract_version": state["contract_version"],
+                "contract_sha256": sha256_file(contract_path),
+                "evaluation_profile_sha256": sha256_file(evaluation_path),
+                "stage_envelope_sha256": sha256_file(envelope_path),
+                "rebaseline_receipt_sha256": sha256_file(rebaseline_path),
+                "evaluation_before": evaluation_before,
+                "evaluation_before_sha256": sha256_json(evaluation_before),
+                "evaluation_after_sha256": sha256_json(evaluation),
+                "prepared_at": utc_now(),
+            }
+            atomic_write_json(amendment_journal_path, amendment_journal)
+        contract_target = (
+            root / "contracts" / f"{contract['contract_version']}.json"
         )
+        contract_was_absent = not contract_target.exists()
+        staged_copy_immutable(
+            contract_path, contract_target,
+        )
+        if contract_was_absent:
+            _staged_fault_after_artifact("amend")
         atomic_write_json(root / "evaluation-profile.json", evaluation)
+        if os.environ.get("HARNESS_FAULT_AFTER_AMEND_EVALUATION") == "1":
+            os._exit(90)
         target_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
         staged_copy_immutable(envelope_path, target_dir / "envelope.json")
-        staged_initialize_usage_ledger(plan_dir, envelope)
+        usage_path = target_dir / "usage-ledger.json"
+        if usage_path.exists():
+            usage = read_json(usage_path)
+            expected_usage = staged_usage_ledger_image(envelope)
+            expected_usage["started_at"] = usage.get("started_at")
+            if usage != expected_usage:
+                raise ContractError("stage usage ledger initialization collision")
+        else:
+            staged_initialize_usage_ledger(plan_dir, envelope)
         state.update({
             "contract_version": contract["contract_version"],
             "contract_sha256": sha256_file(
@@ -9357,11 +10088,20 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
             "state": "CONTRACTED", "next_stage_compiled": False,
         })
         atomic_write_json(staged_state_path(plan_dir), state)
-        _staged_append_audit_locked(plan_dir, "contract_lineage_amended", {
-            "prior_contract_version": old_contract["contract_version"],
-            "contract_version": contract["contract_version"],
-            "rebaseline_receipt_sha256": sha256_file(rebaseline_path),
-        })
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "contract_lineage_amended",
+            {"contract_version": contract["contract_version"]},
+            {
+                "prior_contract_version": old_contract["contract_version"],
+                "rebaseline_receipt_sha256": sha256_file(rebaseline_path),
+            },
+        )
+        amendment_journal["phase"] = "COMMITTED"
+        amendment_journal["committed_at"] = amendment_journal.get(
+            "committed_at", utc_now(),
+        )
+        atomic_write_json(amendment_journal_path, amendment_journal)
         return {"ok": True, "contract_version": contract["contract_version"]}
 
 

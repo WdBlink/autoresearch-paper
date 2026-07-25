@@ -30,10 +30,13 @@ def digest(value: object) -> str:
 class StagedResearchGovernanceTests(unittest.TestCase):
     maxDiff = None
 
-    def invoke(self, *args: str, ok: bool = True) -> subprocess.CompletedProcess[str]:
+    def invoke(
+        self, *args: str, ok: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(
             [sys.executable, str(RUNTIME), *args],
-            cwd=ROOT, text=True, capture_output=True,
+            cwd=ROOT, text=True, capture_output=True, env=env,
         )
         if ok and proc.returncode != 0:
             self.fail(f"command failed: {proc.stderr}\n{proc.stdout}")
@@ -293,12 +296,21 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         ).stdout)
         return applied["receipt"]["receipt_path"]
 
-    def visible(self, plan: Path, call_id: str, role: str) -> dict:
-        proc = self.invoke(
+    def visible(
+        self, plan: Path, call_id: str, role: str, *,
+        crash_record: bool = False,
+    ) -> dict:
+        args = (
             "record-role-visible-state", "--plan-dir", str(plan),
             "--call-kind", "worker" if role == "worker" else "frontier",
             "--call-id", call_id,
         )
+        if crash_record:
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "role_visible"
+            crashed = self.invoke(*args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+        proc = self.invoke(*args)
         return json.loads(proc.stdout)
 
     def prepare_candidate_promotion(
@@ -340,7 +352,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         })
         return promotion
 
-    def prepare_worker_report(self, plan: Path, cycle: dict, suffix: str) -> tuple[Path, str]:
+    def prepare_worker_report(
+        self, plan: Path, cycle: dict, suffix: str, *,
+        visible_crash: bool = False,
+    ) -> tuple[Path, str]:
         run_id = "cwr_" + (suffix * 32)[:32]
         run_dir = plan / "state" / "worker_runs" / run_id
         contract_path = self.write(
@@ -360,7 +375,9 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
             "model_policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         })
-        visible = self.visible(plan, run_id, "worker")
+        visible = self.visible(
+            plan, run_id, "worker", crash_record=visible_crash,
+        )
         report_path = self.write(plan / "out" / f"stage-report-{suffix}.json", {
             "schema_version": 1,
             "stage_report_id": "report_stage_1",
@@ -413,7 +430,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             " 'checkpoint_subtype':request['checkpoint_subtype'],\n"
             " 'request_sha256':hashlib.sha256(request_path.read_bytes()).hexdigest(),\n"
             " 'context_manifest_sha256':hashlib.sha256(canonical).hexdigest(),\n"
-            " 'status':'completed','response_kind':'stage_review',\n"
+            " 'status':'completed','response_kind':"
+            "{'CP-01':'plan_audit','CP-02':'evaluator_audit',"
+            "'CP-03':'pivot_advice','CP-04':'evidence_audit',"
+            "'STAGE-REVIEW':'stage_review'}[request['checkpoint']],\n"
             " 'recommendation':'accept','findings':[], 'proposed_actions':[],\n"
             " 'assumptions':[],'blockers':[],'model_id':'transport-overwrites',\n"
             " 'usage':{'input_tokens':0,'output_tokens':0},\n"
@@ -425,7 +445,28 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
-    def apply_strong_review(self, plan: Path, report_path: Path) -> str:
+    def disappearing_codex(self, plan: Path) -> Path:
+        """Pass preflight, then make the actual Popen path provably absent."""
+        executable = plan / "fake-codex"
+        child_marker = plan / "child-started"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os,sys\n"
+            "from pathlib import Path\n"
+            "a=sys.argv[1:]\n"
+            "if a[:2]==['login','status']:\n"
+            " os.unlink(__file__)\n"
+            " print('Logged in with ChatGPT')\n"
+            " raise SystemExit(0)\n"
+            f"Path({str(child_marker)!r}).write_text('started')\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
+    def apply_strong_review(
+        self, plan: Path, report_path: Path, *,
+        crash_record: bool = False,
+    ) -> str:
         root = plan / "state" / "staged_research" / "v1"
         state = json.loads((root / "state.json").read_text())
         artifacts = {
@@ -464,10 +505,16 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--controller-note", "controller recorded advisory review",
         )
         self.visible(plan, "far_stage_review", "reviewer")
-        self.invoke(
+        review_args = (
             "record-strong-stage-review", "--plan-dir", str(plan),
             "--request-id", "far_stage_review",
         )
+        if crash_record:
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "strong_review"
+            crashed = self.invoke(*review_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+        self.invoke(*review_args)
         return "far_stage_review"
 
     def run_terminal_cycle(
@@ -871,6 +918,200 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 1,
             )
 
+    def test_artifact_first_mutators_resume_complete_operation_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+
+            def crash_then_replay(
+                operation: str, args: tuple[str, ...],
+            ) -> dict:
+                env = dict(os.environ)
+                env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = operation
+                crashed = self.invoke(*args, ok=False, env=env)
+                self.assertEqual(crashed.returncode, 88, crashed.stderr)
+                return json.loads(self.invoke(*args).stdout)
+
+            validators = self.write(
+                plan / "inputs" / "validators.json", self.raw_preflight(),
+            )
+            crash_then_replay("preflight", (
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(validators),
+            ))
+            self.authorize_fixture(plan)
+            candidate = self.write(
+                plan / "inputs" / "candidate-accept.json", {"score": 0.8},
+            )
+            promotion = self.prepare_candidate_promotion(
+                plan, candidate, "accept",
+            )
+            crash_then_replay("candidate", (
+                "freeze-stage-candidate", "--plan-dir", str(plan),
+                "--candidate", str(candidate),
+                "--promotion-receipt", str(promotion),
+            ))
+            contract = json.loads(
+                (plan / "inputs" / "contract.json").read_text()
+            )
+            candidate_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            query_args = (
+                "create-logical-gate-query", "--plan-dir", str(plan),
+                "--logical-gate-query-id", "gate_accept",
+                "--candidate-sha256", candidate_sha,
+                "--evaluator-sha256",
+                contract["acceptance_evaluator_sha256"],
+            )
+            crash_then_replay("gate_query", query_args)
+            human_args = (
+                "record-human-stage-input", "--plan-dir", str(plan),
+                "--input-id", "proposal_recovery", "--kind", "proposal",
+                "--content-sha256", digest("proposal recovery"),
+            )
+            crash_then_replay("human_input", human_args)
+            drifted = self.invoke(
+                "record-human-stage-input", "--plan-dir", str(plan),
+                "--input-id", "proposal_recovery", "--kind", "proposal",
+                "--content-sha256", digest("changed proposal"), ok=False,
+            )
+            self.assertIn("identity collision", drifted.stderr)
+            drifted_query = self.invoke(
+                "create-logical-gate-query", "--plan-dir", str(plan),
+                "--logical-gate-query-id", "gate_changed",
+                "--candidate-sha256", candidate_sha,
+                "--evaluator-sha256",
+                contract["acceptance_evaluator_sha256"],
+                ok=False,
+            )
+            self.assertIn("logical Gate query", drifted_query.stderr)
+            root = plan / "state" / "staged_research" / "v1"
+            audit = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            for event in (
+                "stage_preflight_passed",
+                "stage_candidate_frozen",
+                "logical_gate_query_created",
+                "human_stage_input_recorded",
+            ):
+                self.assertEqual(
+                    len([item for item in audit if item["event"] == event]), 1,
+                    event,
+                )
+            self.assertEqual(
+                [item["audit_revision"] for item in audit],
+                list(range(1, len(audit) + 1)),
+            )
+
+    def test_evidence_release_resumes_maturity_ledger_and_audit_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            cycle = self.run_terminal_cycle(plan, "accept")
+            root = plan / "state" / "staged_research" / "v1"
+            stage_dir = root / "stages" / "stage_1"
+            roles = {
+                role: self.write(
+                    plan / "inputs" / f"cp04-{role}.json",
+                    {"schema_version": 1, "role": role},
+                )
+                for role in (
+                    "candidate", "claim_evidence_map", "evaluator_contract",
+                    "evaluator_verdict", "raw_result_manifest", "baselines",
+                    "uncertainty_robustness", "figure_gate",
+                )
+            }
+            roles["candidate"] = stage_dir / "candidate-artifact"
+            request_id = "far_release_evidence"
+            create_args = [
+                "create-frontier-request", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--checkpoint", "CP-04",
+                "--checkpoint-subtype", "prewriting_final_evidence",
+                "--objective", "audit released staged evidence",
+                "--decision-required", "start_writing",
+                "--max-input-tokens", "10000", "--max-output-tokens", "2000",
+                "--request-id", request_id,
+            ]
+            for role, path in roles.items():
+                create_args += ["--artifact", f"{path}::{role}"]
+            self.invoke(*create_args)
+            self.invoke(
+                "send-frontier-request", "--plan-dir", str(plan),
+                "--request-id", request_id,
+                "--codex-bin", str(self.fake_codex(plan)),
+            )
+            self.invoke(
+                "validate-frontier-response", "--plan-dir", str(plan),
+                "--request-id", request_id,
+            )
+            self.invoke(
+                "apply-frontier-response", "--plan-dir", str(plan),
+                "--request-id", request_id,
+                "--dependent-transition", "start_writing",
+                "--controller-note", "controller accepted CP-04",
+            )
+            key = plan / "owner.key"
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--action", "release_evidence",
+                "--key-file", str(key), "--expires-in", "3600",
+                "--record-id", "har_release_evidence",
+                "--actor", "research-owner",
+                "--evidence-id", "evidence_stage_1",
+                "--binding-sha256", cycle["candidate_sha256"],
+            ).stdout)
+            applied = json.loads(self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "release_evidence",
+            ).stdout)
+            release_args = (
+                "release-staged-evidence", "--plan-dir", str(plan),
+                "--authorization-receipt",
+                applied["receipt"]["receipt_path"],
+                "--cp04-request-id", request_id,
+            )
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "evidence_release"
+            crashed = self.invoke(*release_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            released = json.loads(self.invoke(*release_args).stdout)
+            self.assertEqual(released["evidence"]["maturity"], "released")
+            maturity = json.loads(
+                (stage_dir / "evidence-maturity.json").read_text()
+            )
+            self.assertEqual(maturity["current_maturity"], "released")
+            ledger = [
+                json.loads(line)
+                for line in (root / "evidence-ledger.jsonl")
+                .read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(
+                len([
+                    item for item in ledger
+                    if item["evidence_id"] == "evidence_stage_1"
+                    and item["maturity"] == "released"
+                ]),
+                1,
+            )
+            audit = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(
+                len([
+                    item for item in audit
+                    if item["event"] == "staged_evidence_released"
+                ]),
+                1,
+            )
+
     def test_gate_crash_recovery_is_exact_once_and_maturity_skip_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = Path(td) / "recover"
@@ -1084,6 +1325,198 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 6,
             )
 
+    def test_proven_unstarted_release_is_recoverable_and_rereservable(self) -> None:
+        boundaries = (
+            "PREPARED", "GLOBAL", "USAGE", "CAPACITY", "MARKER", "COMBINED",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            for index, boundary in enumerate(boundaries):
+                plan = Path(td) / boundary.lower()
+                self.initialize(plan)
+                self.preflight(plan)
+                request_id = f"far_release_{boundary.lower()}"
+                self.create_cp01_request(plan, request_id)
+                operation_id = "op_" + digest(f"release:{boundary}")
+                command = [
+                    sys.executable, str(RUNTIME), "send-frontier-request",
+                    "--plan-dir", str(plan), "--request-id", request_id,
+                    "--codex-bin", str(self.disappearing_codex(plan)),
+                    "--operation-id", operation_id,
+                ]
+                env = dict(os.environ)
+                env[
+                    f"HARNESS_FAULT_AFTER_STAGED_RELEASE_{boundary}"
+                ] = "1"
+                crashed = subprocess.run(
+                    command, cwd=ROOT, text=True, capture_output=True, env=env,
+                )
+                self.assertEqual(crashed.returncode, 89, crashed.stderr)
+                self.assertFalse((plan / "child-started").exists())
+                root = plan / "state" / "staged_research" / "v1"
+                release_path = (
+                    root / "capacity-release-journals"
+                    / f"{request_id}.1.json"
+                )
+                prepared = json.loads(release_path.read_text())
+                self.assertEqual(prepared["phase"], "PREPARED")
+                self.fake_codex(plan)
+                recovered = subprocess.run(
+                    command, cwd=ROOT, text=True, capture_output=True,
+                )
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                released = json.loads(release_path.read_text())
+                self.assertEqual(released["phase"], "RELEASED")
+                combined = json.loads(
+                    (root / "capacity-journals" / f"{request_id}.json")
+                    .read_text()
+                )
+                self.assertEqual(combined["phase"], "COMMITTED")
+                self.assertEqual(combined["reservation_generation"], 2)
+                budget = json.loads(
+                    (plan / "state" / "frontier" / "budget.json").read_text()
+                )
+                self.assertEqual(budget["request_ids"].count(request_id), 1)
+                capacity = json.loads(
+                    (root / "capacity-ledger.json").read_text()
+                )
+                self.assertEqual(
+                    capacity["checkpoint_capacity"]["CP-01"]["spent"], 1,
+                )
+                usage = json.loads(
+                    (root / "stages" / "stage_1" / "usage-ledger.json")
+                    .read_text()
+                )
+                self.assertEqual(
+                    usage["reservation_ids"].count(f"frontier:{request_id}"), 1,
+                )
+                self.assertTrue(
+                    (root / "dispatch-reservations" / f"{request_id}.json")
+                    .is_file()
+                )
+                audit = [
+                    json.loads(line)
+                    for line in (root / "audit.jsonl").read_text().splitlines()
+                    if line.strip()
+                ]
+                self.assertEqual(
+                    len([
+                        item for item in audit
+                        if item["event"]
+                        == "model_dispatch_released_unstarted"
+                    ]),
+                    1,
+                )
+
+            for dimension in (
+                "global", "staged", "usage", "marker", "combined",
+            ):
+                conflict = Path(td) / f"conflict_{dimension}"
+                self.initialize(conflict)
+                self.preflight(conflict)
+                request_id = f"far_release_conflict_{dimension}"
+                self.create_cp01_request(conflict, request_id)
+                operation_id = "op_" + digest(
+                    f"release-conflict:{dimension}"
+                )
+                command = [
+                    sys.executable, str(RUNTIME), "send-frontier-request",
+                    "--plan-dir", str(conflict), "--request-id", request_id,
+                    "--codex-bin", str(self.disappearing_codex(conflict)),
+                    "--operation-id", operation_id,
+                ]
+                env = dict(os.environ)
+                env["HARNESS_FAULT_AFTER_STAGED_RELEASE_PREPARED"] = "1"
+                crashed = subprocess.run(
+                    command, cwd=ROOT, text=True,
+                    capture_output=True, env=env,
+                )
+                self.assertEqual(crashed.returncode, 89)
+                root = conflict / "state" / "staged_research" / "v1"
+                paths = {
+                    "global": (
+                        conflict / "state" / "frontier" / "budget.json"
+                    ),
+                    "staged": root / "capacity-ledger.json",
+                    "usage": (
+                        root / "stages" / "stage_1" / "usage-ledger.json"
+                    ),
+                    "marker": (
+                        root / "dispatch-reservations"
+                        / f"{request_id}.json"
+                    ),
+                    "combined": (
+                        root / "capacity-journals" / f"{request_id}.json"
+                    ),
+                }
+                value = json.loads(paths[dimension].read_text())
+                if dimension == "global":
+                    value["reserved_calls"] += 5
+                elif dimension == "staged":
+                    value["remaining_calls"] -= 2
+                elif dimension == "usage":
+                    value["used"]["review_tokens"] += 13
+                elif dimension == "marker":
+                    value["remaining_calls"] -= 2
+                else:
+                    value["tampered"] = True
+                paths[dimension].chmod(0o600)
+                self.write(paths[dimension], value)
+                before_rejection = {
+                    name: path.read_bytes() for name, path in paths.items()
+                }
+                self.fake_codex(conflict)
+                rejected = subprocess.run(
+                    command, cwd=ROOT, text=True, capture_output=True,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("irreconcilable", rejected.stderr)
+                self.assertEqual(
+                    {
+                        name: path.read_bytes()
+                        for name, path in paths.items()
+                    },
+                    before_rejection,
+                )
+
+            ambiguous = Path(td) / "ambiguous_started"
+            self.initialize(ambiguous)
+            self.preflight(ambiguous)
+            request_id = "far_started_failure"
+            self.create_cp01_request(ambiguous, request_id)
+            executable = ambiguous / "started-codex"
+            child_marker = ambiguous / "child-started"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "if sys.argv[1:3] == ['login','status']:\n"
+                " print('Logged in with ChatGPT'); raise SystemExit(0)\n"
+                f"Path({str(child_marker)!r}).write_text('started')\n"
+                "raise SystemExit(7)\n"
+            )
+            executable.chmod(0o755)
+            failed = self.invoke(
+                "send-frontier-request", "--plan-dir", str(ambiguous),
+                "--request-id", request_id, "--codex-bin", str(executable),
+                ok=False,
+            )
+            self.assertIn("transport failed", failed.stderr)
+            self.assertTrue(child_marker.is_file())
+            ambiguous_root = (
+                ambiguous / "state" / "staged_research" / "v1"
+            )
+            self.assertFalse(
+                (ambiguous_root / "capacity-release-journals").exists()
+            )
+            budget = json.loads(
+                (ambiguous / "state" / "frontier" / "budget.json").read_text()
+            )
+            self.assertIn(request_id, budget["request_ids"])
+            self.assertTrue(
+                (ambiguous_root / "dispatch-reservations"
+                 / f"{request_id}.json").is_file()
+            )
+
     def test_evaluator_adoption_drift_requires_rebaseline_and_owner_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = Path(td) / "plan"
@@ -1175,24 +1608,37 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--authorization-receipt", str(forged), ok=False,
             )
             self.assertIn("canonical applied receipt", proc.stderr)
-            rebaseline = json.loads(self.invoke(
+            rebaseline_args = (
                 "record-evaluator-rebaseline", "--plan-dir", str(plan),
                 "--contract", str(contract_path),
                 "--execution-receipt", str(calibration_path),
                 "--authorization-receipt", authorization,
-            ).stdout)
+            )
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "rebaseline"
+            crashed = self.invoke(*rebaseline_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            rebaseline = json.loads(self.invoke(*rebaseline_args).stdout)
             evaluation = self.evaluation_profile()
             evaluation["profile_id"] = "evaluation_v2"
             evaluation_path = self.write(
                 plan / "inputs" / "evaluation-v2.json", evaluation,
             )
-            amended = json.loads(self.invoke(
+            amend_args = (
                 "amend-staged-contract", "--plan-dir", str(plan),
                 "--contract", str(contract_path),
                 "--evaluation-profile", str(evaluation_path),
                 "--stage-envelope", str(envelope_path),
                 "--rebaseline-receipt", rebaseline["receipt_path"],
-            ).stdout)
+            )
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "amend"
+            crashed = self.invoke(*amend_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            env.pop("HARNESS_FAULT_AFTER_STAGED_ARTIFACT")
+            env["HARNESS_FAULT_AFTER_AMEND_EVALUATION"] = "1"
+            crashed = self.invoke(*amend_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 90)
+            amended = json.loads(self.invoke(*amend_args).stdout)
             self.assertEqual(amended["contract_version"], "contract_v2")
             state = json.loads((root / "state.json").read_text())
             self.assertEqual(state["active_stage_id"], "stage_2")
@@ -1206,10 +1652,15 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.initialize(plan)
             self.preflight(plan)
             self.authorize_fixture(plan)
-            paused = json.loads(self.invoke(
+            pause_args = (
                 "pause-staged-research", "--plan-dir", str(plan),
                 "--reason", "risk",
-            ).stdout)
+            )
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "pause"
+            crashed = self.invoke(*pause_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            paused = json.loads(self.invoke(*pause_args).stdout)
             self.assertEqual(paused["reason"], "risk")
             self.assertEqual(
                 json.loads(
@@ -1235,10 +1686,14 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 / "stage_1" / "envelope.json"
             )
             authorization = self.authorize_next_stage(plan, envelope_path)
-            resumed = json.loads(self.invoke(
+            reauthorize_args = (
                 "reauthorize-staged-research", "--plan-dir", str(plan),
                 "--authorization-receipt", authorization,
-            ).stdout)
+            )
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "reauthorize"
+            crashed = self.invoke(*reauthorize_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            resumed = json.loads(self.invoke(*reauthorize_args).stdout)
             self.assertEqual(resumed["stage_id"], "stage_1")
             state = json.loads(
                 (plan / "state" / "staged_research" / "v1"
@@ -1355,7 +1810,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.authorize_fixture(plan)
             cycle = self.run_terminal_cycle(plan, "accept")
             report_path, worker_run_id = self.prepare_worker_report(
-                plan, cycle, "a",
+                plan, cycle, "a", visible_crash=True,
             )
             promotion_journal_path = (
                 plan / "state" / "worker_runs" / worker_run_id
@@ -1372,12 +1827,21 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertIn("COMMITTED MiniMax promotion", proc.stderr)
             promotion_journal["phase"] = "COMMITTED"
             self.write(promotion_journal_path, promotion_journal)
-            report = json.loads(self.invoke(
+            report_args = (
                 "record-stage-report", "--plan-dir", str(plan),
                 "--stage-report", str(report_path),
                 "--worker-run-id", worker_run_id,
+            )
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = "stage_report"
+            crashed = self.invoke(*report_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88)
+            report = json.loads(self.invoke(
+                *report_args,
             ).stdout)
-            self.apply_strong_review(plan, Path(report["path"]))
+            self.apply_strong_review(
+                plan, Path(report["path"]), crash_record=True,
+            )
             next_envelope = self.envelope(
                 "stage_2", source="stage_1",
                 incumbent=cycle["resulting_incumbent_sha256"],
