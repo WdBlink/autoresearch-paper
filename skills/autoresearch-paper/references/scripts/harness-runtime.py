@@ -5334,6 +5334,12 @@ def reserve_frontier_and_staged_budget(
     with staged_transaction_lock(plan_dir):
         with budget_lock(plan_dir):
             global_path = frontier_root(plan_dir) / "budget.json"
+            capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+            state = staged_load_state(plan_dir)
+            usage_path = (
+                staged_stage_dir(plan_dir, state["active_stage_id"])
+                / "usage-ledger.json"
+            )
             ledger = read_json(global_path) if global_path.exists() else {
                 "schema_version": 1,
                 "reserved_calls": 0,
@@ -5341,23 +5347,27 @@ def reserve_frontier_and_staged_budget(
                 "reserved_output_tokens": 0,
                 "request_ids": [],
             }
-            if dispatch_id in ledger["request_ids"] and staged_reservation.exists():
-                journal = read_json(journal_path)
-                if journal.get("phase") != "COMMITTED":
-                    journal.update({"phase": "COMMITTED", "recovered_at": utc_now()})
-                    atomic_write_json(journal_path, journal)
-                return ledger
             requested = request["budget_reservation"]
-            limits = policy["frontier_escalation"]
-            global_already_committed = dispatch_id in ledger["request_ids"]
-            next_values = (
-                {
-                    "reserved_calls": ledger["reserved_calls"],
-                    "reserved_input_tokens": ledger["reserved_input_tokens"],
-                    "reserved_output_tokens": ledger["reserved_output_tokens"],
-                }
-                if global_already_committed
-                else {
+            if journal_path.exists():
+                journal = read_json(journal_path)
+                if (
+                    journal.get("dispatch_id") != dispatch_id
+                    or journal.get("checkpoint") != checkpoint
+                    or not all(
+                        name in journal
+                        for name in ("global", "staged", "usage", "marker_after")
+                    )
+                ):
+                    raise ContractError("combined capacity journal correlation mismatch")
+            else:
+                if dispatch_id in ledger["request_ids"] or staged_reservation.exists():
+                    raise ContractError(
+                        "combined capacity state exists without its recovery journal"
+                    )
+                staged_require_preflight(plan_dir)
+                limits = policy["frontier_escalation"]
+                global_after = dict(ledger)
+                global_after.update({
                     "reserved_calls": ledger["reserved_calls"] + requested["call"],
                     "reserved_input_tokens": (
                         ledger["reserved_input_tokens"]
@@ -5367,65 +5377,181 @@ def reserve_frontier_and_staged_budget(
                         ledger["reserved_output_tokens"]
                         + requested["max_output_tokens"]
                     ),
+                    "request_ids": [*ledger["request_ids"], dispatch_id],
+                    "updated_at": utc_now(),
+                })
+                if (
+                    global_after["reserved_calls"] > limits["max_calls"]
+                    or global_after["reserved_input_tokens"]
+                    > limits["max_input_tokens"]
+                    or global_after["reserved_output_tokens"]
+                    > limits["max_output_tokens"]
+                ):
+                    raise ContractError("frontier budget exhausted")
+                capacity = read_json(capacity_path)
+                staged_validate_capacity(capacity)
+                capacity_after = json.loads(json.dumps(capacity))
+                if checkpoint is None:
+                    if (
+                        capacity["remaining_calls"] - 1
+                        < capacity["mandatory_future_calls"]
+                    ):
+                        raise ContractError(
+                            "dispatch blocked: remaining_calls would fall below "
+                            "mandatory_future_calls"
+                        )
+                else:
+                    slot = capacity["checkpoint_capacity"].get(checkpoint)
+                    if slot is None or slot["spent"] != 0:
+                        raise ContractError(
+                            f"non-fungible {checkpoint} capacity is unavailable"
+                        )
+                capacity_after["remaining_calls"] -= 1
+                if checkpoint is not None:
+                    capacity_after["checkpoint_capacity"][checkpoint]["spent"] = 1
+                    capacity_after["mandatory_future_calls"] -= 1
+                staged_validate_capacity(capacity_after)
+                usage = read_json(usage_path)
+                usage_after = json.loads(json.dumps(usage))
+                usage_id = f"frontier:{dispatch_id}"
+                if usage_id in usage["reservation_ids"]:
+                    raise ContractError("stage usage exists without combined journal")
+                controller_path = plan_dir / "state" / "controller.json"
+                if (
+                    controller_path.exists()
+                    and read_json(controller_path).get("status")
+                    in {"paused", "stopped"}
+                ):
+                    raise ContractError(
+                        "stage dispatch blocked by canonical human lifecycle state"
+                    )
+                elapsed = (
+                    datetime.now(timezone.utc) - parse_utc(usage["started_at"])
+                ).total_seconds()
+                if usage.get("stop_reason") is not None or state["state"] == "PAUSED":
+                    raise ContractError(
+                        "stage is stopped pending canonical human reauthorization"
+                    )
+                if elapsed > usage["limits"]["time_seconds"]:
+                    usage["stop_reason"] = "deadline"
+                    atomic_write_json(usage_path, usage)
+                    state["state"] = "PAUSED"
+                    atomic_write_json(staged_state_path(plan_dir), state)
+                    raise ContractError("stage time budget exhausted")
+                if (
+                    usage["used"]["review_tokens"]
+                    + requested["max_output_tokens"]
+                    > usage["limits"]["review_tokens"]
+                ):
+                    usage["stop_reason"] = "review_tokens_exhausted"
+                    atomic_write_json(usage_path, usage)
+                    state["state"] = "PAUSED"
+                    atomic_write_json(staged_state_path(plan_dir), state)
+                    raise ContractError("stage review_tokens budget exhausted")
+                usage_after["used"]["review_tokens"] += requested["max_output_tokens"]
+                usage_after["reservation_ids"].append(usage_id)
+                usage_after["updated_at"] = utc_now()
+                marker_after = {
+                    "schema_version": 1,
+                    "dispatch_id": dispatch_id,
+                    "checkpoint": checkpoint,
+                    "remaining_calls": capacity_after["remaining_calls"],
+                    "mandatory_future_calls": capacity_after[
+                        "mandatory_future_calls"
+                    ],
+                    "reserved_at": utc_now(),
                 }
-            )
-            if (
-                next_values["reserved_calls"] > limits["max_calls"]
-                or next_values["reserved_input_tokens"] > limits["max_input_tokens"]
-                or next_values["reserved_output_tokens"] > limits["max_output_tokens"]
-            ):
-                raise ContractError("frontier budget exhausted")
-            capacity = read_json(staged_root(plan_dir) / "capacity-ledger.json")
-            staged_validate_capacity(capacity)
-            if checkpoint is None:
-                if capacity["remaining_calls"] - 1 < capacity["mandatory_future_calls"]:
+                journal = {
+                    "schema_version": 1, "phase": "PREPARED",
+                    "dispatch_id": dispatch_id, "checkpoint": checkpoint,
+                    "global": {
+                        "before_exists": global_path.exists(),
+                        "before": ledger, "before_sha256": sha256_json(ledger),
+                        "after": global_after,
+                        "after_sha256": sha256_json(global_after),
+                    },
+                    "staged": {
+                        "before_exists": capacity_path.exists(),
+                        "before": capacity,
+                        "before_sha256": sha256_json(capacity),
+                        "after": capacity_after,
+                        "after_sha256": sha256_json(capacity_after),
+                    },
+                    "usage": {
+                        "before_exists": usage_path.exists(),
+                        "before": usage, "before_sha256": sha256_json(usage),
+                        "after": usage_after,
+                        "after_sha256": sha256_json(usage_after),
+                    },
+                    "marker_after": marker_after,
+                    "marker_after_sha256": sha256_json(marker_after),
+                    "prepared_at": utc_now(),
+                }
+                atomic_write_json(journal_path, journal)
+
+            def roll_forward(path: Path, images: dict[str, Any], label: str) -> None:
+                if not path.exists():
+                    if images.get("before_exists") is not False:
+                        raise ContractError(
+                            f"combined capacity {label} image is missing"
+                        )
+                    current = images["before"]
+                else:
+                    current = read_json(path)
+                current_sha = sha256_json(current)
+                if current_sha == images["before_sha256"]:
+                    atomic_write_json(path, images["after"])
+                elif current_sha != images["after_sha256"]:
                     raise ContractError(
-                        "dispatch blocked: remaining_calls would fall below mandatory_future_calls"
+                        f"combined capacity {label} image is irreconcilable"
                     )
-            else:
-                slot = capacity["checkpoint_capacity"].get(checkpoint)
-                if slot is None or slot["spent"] != 0:
-                    raise ContractError(
-                        f"non-fungible {checkpoint} capacity is unavailable"
-                    )
-            _staged_consume_stage_budget_locked(
-                plan_dir, f"frontier:{dispatch_id}",
-                {"review_tokens": requested["max_output_tokens"]},
-            )
-            journal = read_json(journal_path) if journal_path.exists() else {
-                "schema_version": 1, "phase": "PREPARED",
-                "dispatch_id": dispatch_id, "checkpoint": checkpoint,
-                "global_before_sha256": sha256_json(ledger),
-                "staged_before_sha256": sha256_json(capacity),
-                "prepared_at": utc_now(),
-            }
-            if (
-                journal.get("dispatch_id") != dispatch_id
-                or journal.get("checkpoint") != checkpoint
-            ):
-                raise ContractError("combined capacity journal correlation mismatch")
-            atomic_write_json(journal_path, journal)
-            if not global_already_committed:
-                ledger.update(next_values)
-                ledger["request_ids"] = [*ledger["request_ids"], dispatch_id]
-                ledger["updated_at"] = utc_now()
-                atomic_write_json(global_path, ledger)
+
+            roll_forward(global_path, journal["global"], "global")
             if os.environ.get("HARNESS_FAULT_AFTER_COMBINED_GLOBAL") == "1":
                 raise ContractError("simulated crash after combined global reservation")
-            if not staged_reservation.exists():
-                _staged_reserve_dispatch_locked(
-                    plan_dir, checkpoint=checkpoint, dispatch_id=dispatch_id,
+            roll_forward(usage_path, journal["usage"], "usage")
+            roll_forward(capacity_path, journal["staged"], "staged")
+            if os.environ.get(
+                "HARNESS_FAULT_AFTER_COMBINED_STAGED_CAPACITY"
+            ) == "1":
+                os._exit(86)
+            if staged_reservation.exists():
+                if read_json(staged_reservation) != journal["marker_after"]:
+                    raise ContractError(
+                        "combined capacity reservation marker is irreconcilable"
+                    )
+            else:
+                atomic_write_json(
+                    staged_reservation, journal["marker_after"], immutable=True,
                 )
+            audit_path = staged_root(plan_dir) / "audit.jsonl"
+            audit_has_reservation = audit_path.exists() and any(
+                strict_json_loads(line).get("event") == "model_dispatch_reserved"
+                and strict_json_loads(line).get("dispatch_id") == dispatch_id
+                for line in audit_path.read_text().splitlines()
+                if line.strip()
+            )
+            if not audit_has_reservation:
+                _staged_append_audit_locked(plan_dir, "model_dispatch_reserved", {
+                    "dispatch_id": dispatch_id,
+                    "stage_id": state["active_stage_id"],
+                    "checkpoint": checkpoint,
+                    "remaining_calls": journal["staged"]["after"][
+                        "remaining_calls"
+                    ],
+                    "mandatory_future_calls": journal["staged"]["after"][
+                        "mandatory_future_calls"
+                    ],
+                })
+            _staged_reconcile_audit_revision_locked(plan_dir)
             journal.update({
                 "phase": "COMMITTED",
-                "global_after_sha256": sha256_file(global_path),
-                "staged_after_sha256": sha256_file(
-                    staged_root(plan_dir) / "capacity-ledger.json"
-                ),
+                "global_after_sha256": sha256_json(journal["global"]["after"]),
+                "staged_after_sha256": sha256_json(journal["staged"]["after"]),
                 "committed_at": utc_now(),
             })
             atomic_write_json(journal_path, journal)
-            return ledger
+            return read_json(global_path)
 
 
 def release_unstarted_frontier_budget(
@@ -6870,11 +6996,34 @@ def staged_copy_immutable(source: Path, target: Path) -> dict[str, Any]:
     return value
 
 
-def staged_append_audit(
-    plan_dir: Path, event: str, details: dict[str, Any],
-) -> dict[str, Any]:
+def _staged_reconcile_audit_revision_locked(
+    plan_dir: Path,
+) -> tuple[dict[str, Any], Path]:
     state_path = staged_state_path(plan_dir)
     state = read_json(state_path)
+    audit_path = staged_root(plan_dir) / "audit.jsonl"
+    prior_records = [
+        strict_json_loads(line)
+        for line in audit_path.read_text().splitlines()
+        if line.strip()
+    ] if audit_path.exists() else []
+    revisions = [item.get("audit_revision") for item in prior_records]
+    if revisions != list(range(1, len(revisions) + 1)):
+        raise ContractError("staged audit revisions are not contiguous")
+    if len(revisions) == state["audit_revision"] + 1:
+        # Recover a process exit after append and before the state revision write.
+        state["audit_revision"] = len(revisions)
+        atomic_write_json(state_path, state)
+    elif len(revisions) != state["audit_revision"]:
+        raise ContractError("staged audit revision disagrees with controller state")
+    return state, audit_path
+
+
+def _staged_append_audit_locked(
+    plan_dir: Path, event: str, details: dict[str, Any],
+) -> dict[str, Any]:
+    state, audit_path = _staged_reconcile_audit_revision_locked(plan_dir)
+    state_path = staged_state_path(plan_dir)
     revision = state["audit_revision"] + 1
     record = {
         "schema_version": 1,
@@ -6883,10 +7032,17 @@ def staged_append_audit(
         "recorded_at": utc_now(),
         **details,
     }
-    append_jsonl(staged_root(plan_dir) / "audit.jsonl", record)
+    append_jsonl(audit_path, record)
     state["audit_revision"] = revision
     atomic_write_json(state_path, state)
     return record
+
+
+def staged_append_audit(
+    plan_dir: Path, event: str, details: dict[str, Any],
+) -> dict[str, Any]:
+    with staged_transaction_lock(plan_dir):
+        return _staged_append_audit_locked(plan_dir, event, details)
 
 
 def staged_load_state(plan_dir: Path) -> dict[str, Any]:
@@ -6964,9 +7120,18 @@ def staged_stage_dir(plan_dir: Path, stage_id: str) -> Path:
 def staged_initialize_usage_ledger(
     plan_dir: Path, envelope: dict[str, Any],
 ) -> None:
-    budget = envelope["stage_budget_and_stop"]
     target = staged_stage_dir(plan_dir, envelope["stage_id"]) / "usage-ledger.json"
-    value = {
+    value = staged_usage_ledger_image(envelope)
+    if target.exists():
+        if read_json(target) != value:
+            raise ContractError("stage usage ledger initialization collision")
+    else:
+        atomic_write_json(target, value)
+
+
+def staged_usage_ledger_image(envelope: dict[str, Any]) -> dict[str, Any]:
+    budget = envelope["stage_budget_and_stop"]
+    return {
         "schema_version": 1,
         "stage_id": envelope["stage_id"],
         "budget_profile_id": budget["profile_id"],
@@ -6985,11 +7150,6 @@ def staged_initialize_usage_ledger(
         "reservation_ids": [],
         "stop_reason": None,
     }
-    if target.exists():
-        if read_json(target) != value:
-            raise ContractError("stage usage ledger initialization collision")
-    else:
-        atomic_write_json(target, value)
 
 
 def staged_consume_stage_budget(
@@ -7048,7 +7208,7 @@ def _staged_consume_stage_budget_locked(
 
 @contextmanager
 def staged_transaction_lock(plan_dir: Path) -> Iterator[None]:
-    lock_path = staged_root(plan_dir) / ".transaction.lock"
+    lock_path = plan_dir / "state" / ".staged-research.transaction.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -7061,6 +7221,15 @@ def staged_transaction_lock(plan_dir: Path) -> Iterator[None]:
 def staged_authorize_first_stage(
     plan_dir: Path, request_id: str, transition_path: Path,
 ) -> None:
+    with staged_transaction_lock(plan_dir):
+        _staged_authorize_first_stage_locked(
+            plan_dir, request_id, transition_path,
+        )
+
+
+def _staged_authorize_first_stage_locked(
+    plan_dir: Path, request_id: str, transition_path: Path,
+) -> None:
     if not transition_path.is_file():
         raise ContractError("staged CP-01 transition receipt is missing")
     state = staged_load_state(plan_dir)
@@ -7068,7 +7237,7 @@ def staged_authorize_first_stage(
         return
     state["state"] = "STAGE_AUTHORIZED"
     atomic_write_json(staged_state_path(plan_dir), state)
-    staged_append_audit(plan_dir, "first_stage_authorized", {
+    _staged_append_audit_locked(plan_dir, "first_stage_authorized", {
         "stage_id": state["active_stage_id"],
         "cp01_request_id": request_id,
         "cp01_transition_receipt_sha256": sha256_file(transition_path),
@@ -7364,7 +7533,7 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     }
     validate_schema(state, read_json(STAGED_RESEARCH_SCHEMA))
     atomic_write_json(state_path, state)
-    event = staged_append_audit(plan_dir, "staged_research_initialized", {
+    event = _staged_append_audit_locked(plan_dir, "staged_research_initialized", {
         "contract_version": contract["contract_version"],
         "contract_sha256": state["contract_sha256"],
         "stage_id": envelope["stage_id"],
@@ -7616,7 +7785,7 @@ def command_preflight_staged_research(args: argparse.Namespace) -> dict[str, Any
         raise ContractError("current-stage preflight changed")
     if not target.exists():
         atomic_write_json(target, payload, immutable=True)
-        staged_append_audit(plan_dir, "stage_preflight_passed", {
+        _staged_append_audit_locked(plan_dir, "stage_preflight_passed", {
             "stage_id": state["active_stage_id"],
             "preflight_sha256": sha256_file(target),
             "critical_path": payload["critical_path"],
@@ -7701,7 +7870,7 @@ def _staged_reserve_dispatch_locked(
         "mandatory_future_calls": capacity["mandatory_future_calls"],
         "reserved_at": utc_now(),
     }, immutable=True)
-    staged_append_audit(plan_dir, "model_dispatch_reserved", {
+    _staged_append_audit_locked(plan_dir, "model_dispatch_reserved", {
         "dispatch_id": dispatch_id,
         "stage_id": state["active_stage_id"],
         "checkpoint": checkpoint,
@@ -7814,7 +7983,7 @@ def command_record_role_visible_state(args: argparse.Namespace) -> dict[str, Any
             raise ContractError("canonical role-visible call record changed")
     else:
         atomic_write_json(target, visible, immutable=True)
-    staged_append_audit(plan_dir, "role_visible_state_recorded", {
+    _staged_append_audit_locked(plan_dir, "role_visible_state_recorded", {
         "call_id": visible["call_id"],
         "role": visible["role"],
         "role_visible_state_sha256": sha256_file(target),
@@ -7916,7 +8085,7 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     }, immutable=True)
     state["state"] = "CANDIDATE_FROZEN"
     atomic_write_json(staged_state_path(plan_dir), state)
-    staged_append_audit(plan_dir, "stage_candidate_frozen", {
+    _staged_append_audit_locked(plan_dir, "stage_candidate_frozen", {
         "stage_id": state["active_stage_id"],
         "candidate_sha256": candidate_sha,
         "incumbent_sha256": state["current_incumbent_sha256"],
@@ -7962,7 +8131,7 @@ def command_create_logical_gate_query(args: argparse.Namespace) -> dict[str, Any
     atomic_write_json(path, query)
     state["state"] = "GATE_QUERIED"
     atomic_write_json(staged_state_path(plan_dir), state)
-    staged_append_audit(plan_dir, "logical_gate_query_created", {
+    _staged_append_audit_locked(plan_dir, "logical_gate_query_created", {
         "stage_id": state["active_stage_id"],
         "logical_gate_query_id": query["logical_gate_query_id"],
         "candidate_sha256": query["candidate_sha256"],
@@ -8064,7 +8233,7 @@ def command_record_gate_transport_attempt(args: argparse.Namespace) -> dict[str,
                     if line.strip()
                 )
             if not audit_has_attempt:
-                staged_append_audit(
+                _staged_append_audit_locked(
                     plan_dir, "gate_transport_attempt_recorded", {
                         "logical_gate_query_id": query["logical_gate_query_id"],
                         **prior,
@@ -8119,7 +8288,7 @@ def command_record_gate_transport_attempt(args: argparse.Namespace) -> dict[str,
             "committed_at": utc_now(),
         })
         atomic_write_json(journal_path, journal)
-        staged_append_audit(plan_dir, "gate_transport_attempt_recorded", {
+        _staged_append_audit_locked(plan_dir, "gate_transport_attempt_recorded", {
             "logical_gate_query_id": query["logical_gate_query_id"],
             **attempt,
         })
@@ -8301,7 +8470,7 @@ def _finish_gate_decision_transaction(
             if line.strip()
         )
     if not audit_has_decision:
-        staged_append_audit(plan_dir, "logical_gate_decision_applied", {
+        _staged_append_audit_locked(plan_dir, "logical_gate_decision_applied", {
             **decision,
             "evidence_id": evidence["evidence_id"],
         })
@@ -8379,7 +8548,7 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("stage report candidate mismatch")
     target = staged_stage_dir(plan_dir, state["active_stage_id"]) / "stage-report.json"
     staged_copy_immutable(source, target)
-    staged_append_audit(plan_dir, "minimax_terminal_stage_report_recorded", {
+    _staged_append_audit_locked(plan_dir, "minimax_terminal_stage_report_recorded", {
         "stage_id": state["active_stage_id"],
         "stage_report_id": report["stage_report_id"],
         "stage_report_sha256": sha256_file(target),
@@ -8488,7 +8657,7 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         raise ContractError("strong stage review receipt collision")
     if not target.exists():
         atomic_write_json(target, review, immutable=True)
-    staged_append_audit(plan_dir, "strong_stage_review_recorded", {
+    _staged_append_audit_locked(plan_dir, "strong_stage_review_recorded", {
         "stage_id": state["active_stage_id"],
         "stage_report_id": report["stage_report_id"],
         "review_receipt_id": review["review_receipt_id"],
@@ -8501,6 +8670,37 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
 
 def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    incoming_source = Path(args.stage_envelope).resolve()
+    incoming_envelope = read_json(incoming_source)
+    journal_dir = staged_root(plan_dir) / "compile-journals"
+    prepared = [
+        path for path in sorted(journal_dir.glob("*.json"))
+        if read_json(path).get("phase") == "PREPARED"
+    ]
+    if prepared:
+        if len(prepared) != 1:
+            raise ContractError("multiple prepared next-stage compilations")
+        journal = read_json(prepared[0])
+        if (
+            sha256_file(incoming_source)
+            != journal["stage_envelope_sha256"]
+            or sha256_file(Path(args.authorization_receipt).resolve())
+            != journal["authorization_receipt_sha256"]
+        ):
+            raise ContractError("prepared next-stage compilation identity conflict")
+        return _finish_next_stage_compile_locked(
+            plan_dir, prepared[0], journal,
+        )
+    prior_cycle = incoming_envelope.get("source_cycle_id")
+    prior_journal_path = journal_dir / f"{prior_cycle}.json"
+    if (
+        isinstance(prior_cycle, str)
+        and prior_journal_path.exists()
+        and read_json(prior_journal_path).get("phase") == "COMMITTED"
+    ):
+        raise ContractError(
+            "next-stage compilation identity conflict: source cycle is committed"
+        )
     state = staged_load_state(plan_dir)
     if state["state"] != "RECORDED":
         raise ContractError("next-stage compilation requires a non-escalated recorded cycle")
@@ -8517,8 +8717,8 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         or review["stage_cycle_id"] != state["active_stage_id"]
     ):
         raise ContractError("fresh report-bound strong review is required")
-    source = Path(args.stage_envelope).resolve()
-    envelope = read_json(source)
+    source = incoming_source
+    envelope = incoming_envelope
     staged_validate_envelope(
         envelope, state["contract_version"],
         decision["resulting_incumbent_sha256"], first=False,
@@ -8551,36 +8751,122 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         )
         if sha256_file(requirements_path) != envelope["figure_requirements_sha256"]:
             raise ContractError("figure-production inventory binding mismatch")
-        staged_copy_immutable(
-            requirements_path,
-            staged_stage_dir(plan_dir, envelope["stage_id"]) / "figure-requirements.json",
-        )
-    target_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
-    staged_copy_immutable(source, target_dir / "envelope.json")
-    staged_initialize_usage_ledger(plan_dir, envelope)
+    else:
+        requirements_path = None
     prior_stage = state["active_stage_id"]
-    state.update({
+    target_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
+    state_transition = {
         "active_stage_id": envelope["stage_id"],
-        "active_stage_envelope_sha256": sha256_file(target_dir / "envelope.json"),
+        "active_stage_envelope_sha256": sha256_file(source),
         "state": "CONTRACTED",
         "next_stage_compiled": False,
         "active_stage_authorization_path": str(authorization_path),
         "active_stage_authorization_sha256": sha256_file(authorization_path),
         "active_stage_authorization_action": "reauthorize_stage",
-    })
-    atomic_write_json(staged_state_path(plan_dir), state)
+    }
     marker = stage_dir / "next-stage.json"
-    atomic_write_json(marker, {
+    marker_value = {
         "schema_version": 1,
         "source_cycle_id": prior_stage,
         "next_stage_id": envelope["stage_id"],
-        "next_stage_envelope_sha256": state["active_stage_envelope_sha256"],
+        "next_stage_envelope_sha256": sha256_file(source),
         "stage_report_sha256": sha256_file(report_path),
         "strong_review_sha256": sha256_file(review_path),
         "controller_authoritative": True,
-    }, immutable=True)
-    staged_append_audit(plan_dir, "next_stage_compiled", read_json(marker))
-    return {"ok": True, **read_json(marker)}
+    }
+    usage_after = staged_usage_ledger_image(envelope)
+    journal = {
+        "schema_version": 1, "phase": "PREPARED",
+        "source_cycle_id": prior_stage,
+        "next_stage_id": envelope["stage_id"],
+        "stage_envelope_path": str(source),
+        "stage_envelope_sha256": sha256_file(source),
+        "authorization_receipt_path": str(authorization_path),
+        "authorization_receipt_sha256": sha256_file(authorization_path),
+        "figure_requirements_path": (
+            str(requirements_path) if requirements_path is not None else None
+        ),
+        "figure_requirements_sha256": (
+            sha256_file(requirements_path)
+            if requirements_path is not None else None
+        ),
+        "usage_after": usage_after,
+        "usage_after_sha256": sha256_json(usage_after),
+        "state_before_sha256": sha256_json(state),
+        "state_transition": state_transition,
+        "marker_after": marker_value,
+        "marker_after_sha256": sha256_json(marker_value),
+        "prepared_at": utc_now(),
+    }
+    journal_path = journal_dir / f"{prior_stage}.json"
+    atomic_write_json(journal_path, journal)
+    return _finish_next_stage_compile_locked(plan_dir, journal_path, journal)
+
+
+def _finish_next_stage_compile_locked(
+    plan_dir: Path, journal_path: Path, journal: dict[str, Any],
+) -> dict[str, Any]:
+    source = Path(journal["stage_envelope_path"])
+    authorization_path = Path(journal["authorization_receipt_path"])
+    if (
+        sha256_file(source) != journal["stage_envelope_sha256"]
+        or sha256_file(authorization_path)
+        != journal["authorization_receipt_sha256"]
+    ):
+        raise ContractError("prepared next-stage compilation source changed")
+    source_stage_dir = staged_stage_dir(plan_dir, journal["source_cycle_id"])
+    target_dir = staged_stage_dir(plan_dir, journal["next_stage_id"])
+    requirements_raw = journal.get("figure_requirements_path")
+    if requirements_raw is not None:
+        requirements_path = Path(requirements_raw)
+        if sha256_file(requirements_path) != journal["figure_requirements_sha256"]:
+            raise ContractError("prepared figure requirements changed")
+        staged_copy_immutable(
+            requirements_path, target_dir / "figure-requirements.json",
+        )
+    staged_copy_immutable(source, target_dir / "envelope.json")
+    if os.environ.get("HARNESS_FAULT_AFTER_COMPILE_ENVELOPE") == "1":
+        os._exit(87)
+    usage_path = target_dir / "usage-ledger.json"
+    if usage_path.exists():
+        if sha256_json(read_json(usage_path)) != journal["usage_after_sha256"]:
+            raise ContractError("prepared next-stage usage image is irreconcilable")
+    else:
+        atomic_write_json(usage_path, journal["usage_after"])
+    marker_path = source_stage_dir / "next-stage.json"
+    if marker_path.exists():
+        if read_json(marker_path) != journal["marker_after"]:
+            raise ContractError("prepared next-stage marker is irreconcilable")
+    else:
+        atomic_write_json(marker_path, journal["marker_after"], immutable=True)
+    state = staged_load_state(plan_dir)
+    transition = journal["state_transition"]
+    if (
+        state["active_stage_id"] == journal["source_cycle_id"]
+        and state["state"] == "RECORDED"
+    ):
+        state.update(transition)
+        atomic_write_json(staged_state_path(plan_dir), state)
+    elif any(state.get(key) != value for key, value in transition.items()):
+        raise ContractError("prepared next-stage state is irreconcilable")
+    audit_path = staged_root(plan_dir) / "audit.jsonl"
+    audit_has_compile = audit_path.exists() and any(
+        strict_json_loads(line).get("event") == "next_stage_compiled"
+        and strict_json_loads(line).get("source_cycle_id")
+        == journal["source_cycle_id"]
+        and strict_json_loads(line).get("next_stage_id")
+        == journal["next_stage_id"]
+        for line in audit_path.read_text().splitlines()
+        if line.strip()
+    )
+    if not audit_has_compile:
+        _staged_append_audit_locked(
+            plan_dir, "next_stage_compiled", journal["marker_after"],
+        )
+    _staged_reconcile_audit_revision_locked(plan_dir)
+    journal.update({"phase": "COMMITTED", "committed_at": utc_now()})
+    atomic_write_json(journal_path, journal)
+    return {"ok": True, **journal["marker_after"]}
 
 
 def command_record_human_stage_input(args: argparse.Namespace) -> dict[str, Any]:
@@ -8609,7 +8895,7 @@ def command_record_human_stage_input(args: argparse.Namespace) -> dict[str, Any]
     }
     path = staged_root(plan_dir) / "human-inputs.jsonl"
     append_jsonl(path, record)
-    staged_append_audit(plan_dir, "human_stage_input_recorded", {
+    _staged_append_audit_locked(plan_dir, "human_stage_input_recorded", {
         **record, "silence_is_approval": False,
     })
     return {"ok": True, **record}
@@ -8670,7 +8956,7 @@ def command_release_staged_evidence(args: argparse.Namespace) -> dict[str, Any]:
         released_receipt_path = stage_dir / "released-evidence-receipt.json"
         atomic_write_json(released_receipt_path, entry, immutable=True)
         append_jsonl(staged_root(plan_dir) / "evidence-ledger.jsonl", entry)
-        staged_append_audit(plan_dir, "staged_evidence_released", {
+        _staged_append_audit_locked(plan_dir, "staged_evidence_released", {
             "stage_id": state["active_stage_id"],
             "evidence_id": entry["evidence_id"],
             "released_evidence_receipt_sha256": sha256_file(
@@ -8889,7 +9175,7 @@ def command_pause_staged_research(args: argparse.Namespace) -> dict[str, Any]:
             atomic_write_json(ledger_path, ledger)
         state["state"] = "PAUSED"
         atomic_write_json(staged_state_path(plan_dir), state)
-        staged_append_audit(plan_dir, "stage_stop_condition_applied", {
+        _staged_append_audit_locked(plan_dir, "stage_stop_condition_applied", {
             "stage_id": state["active_stage_id"], "reason": args.reason,
             "controller_authoritative": True,
         })
@@ -8933,7 +9219,7 @@ def command_reauthorize_staged_research(args: argparse.Namespace) -> dict[str, A
         state["active_stage_authorization_sha256"] = sha256_file(receipt_path)
         state["active_stage_authorization_action"] = "reauthorize_stage"
         atomic_write_json(staged_state_path(plan_dir), state)
-        staged_append_audit(plan_dir, "stage_reauthorized", {
+        _staged_append_audit_locked(plan_dir, "stage_reauthorized", {
             "stage_id": state["active_stage_id"],
             "record_id": receipt["record_id"],
         })
@@ -9071,12 +9357,51 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
             "state": "CONTRACTED", "next_stage_compiled": False,
         })
         atomic_write_json(staged_state_path(plan_dir), state)
-        staged_append_audit(plan_dir, "contract_lineage_amended", {
+        _staged_append_audit_locked(plan_dir, "contract_lineage_amended", {
             "prior_contract_version": old_contract["contract_version"],
             "contract_version": contract["contract_version"],
             "rebaseline_receipt_sha256": sha256_file(rebaseline_path),
         })
         return {"ok": True, "contract_version": contract["contract_version"]}
+
+
+def staged_locked_command(handler: Any) -> Any:
+    """Serialize one public staged mutator; handlers must use _locked helpers."""
+    def locked(args: argparse.Namespace) -> dict[str, Any]:
+        with staged_transaction_lock(Path(args.plan_dir).resolve()):
+            return handler(args)
+    return locked
+
+
+command_init_staged_research = staged_locked_command(
+    command_init_staged_research
+)
+command_preflight_staged_research = staged_locked_command(
+    command_preflight_staged_research
+)
+command_record_role_visible_state = staged_locked_command(
+    command_record_role_visible_state
+)
+command_freeze_stage_candidate = staged_locked_command(
+    command_freeze_stage_candidate
+)
+command_create_logical_gate_query = staged_locked_command(
+    command_create_logical_gate_query
+)
+command_record_stage_report = staged_locked_command(command_record_stage_report)
+command_record_strong_stage_review = staged_locked_command(
+    command_record_strong_stage_review
+)
+command_compile_next_stage = staged_locked_command(command_compile_next_stage)
+command_record_human_stage_input = staged_locked_command(
+    command_record_human_stage_input
+)
+command_classify_staged_failure = staged_locked_command(
+    command_classify_staged_failure
+)
+command_record_evaluator_rebaseline = staged_locked_command(
+    command_record_evaluator_rebaseline
+)
 
 
 def build_parser() -> argparse.ArgumentParser:

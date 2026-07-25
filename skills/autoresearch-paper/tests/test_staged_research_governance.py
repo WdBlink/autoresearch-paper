@@ -576,6 +576,22 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             args += ["--artifact", f"{path}::{role}"]
         self.invoke(*args)
 
+    def prepare_compilable_stage(self, plan: Path, suffix: str) -> dict:
+        self.initialize(plan)
+        self.preflight(plan)
+        self.authorize_fixture(plan)
+        cycle = self.run_terminal_cycle(plan, "accept")
+        report_path, worker_run_id = self.prepare_worker_report(
+            plan, cycle, suffix,
+        )
+        report = json.loads(self.invoke(
+            "record-stage-report", "--plan-dir", str(plan),
+            "--stage-report", str(report_path),
+            "--worker-run-id", worker_run_id,
+        ).stdout)
+        self.apply_strong_review(plan, Path(report["path"]))
+        return cycle
+
     def test_contract_preflight_and_cp01_bind_exactly_one_stage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = Path(td) / "plan"
@@ -999,16 +1015,31 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--codex-bin", str(self.fake_codex(recovery)),
             ]
             env = dict(os.environ)
-            env["HARNESS_FAULT_AFTER_COMBINED_GLOBAL"] = "1"
+            env["HARNESS_FAULT_AFTER_COMBINED_STAGED_CAPACITY"] = "1"
             first = subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True, env=env,
             )
-            self.assertNotEqual(first.returncode, 0)
+            self.assertEqual(first.returncode, 86)
+            recovery_root = recovery / "state" / "staged_research" / "v1"
+            prepared = json.loads(
+                (recovery_root / "capacity-journals"
+                 / "far_crash_recovery.json").read_text()
+            )
+            self.assertEqual(prepared["phase"], "PREPARED")
+            capacity_after_crash = json.loads(
+                (recovery_root / "capacity-ledger.json").read_text()
+            )
+            self.assertEqual(
+                capacity_after_crash["checkpoint_capacity"]["CP-01"]["spent"], 1,
+            )
+            self.assertFalse(
+                (recovery_root / "dispatch-reservations"
+                 / "far_crash_recovery.json").exists()
+            )
             second = subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True,
             )
             self.assertEqual(second.returncode, 0, second.stderr)
-            recovery_root = recovery / "state" / "staged_research" / "v1"
             journal = json.loads(
                 (recovery_root / "capacity-journals"
                  / "far_crash_recovery.json").read_text()
@@ -1021,6 +1052,36 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertEqual(
                 len(list((recovery_root / "dispatch-reservations").glob("*.json"))),
                 1,
+            )
+            conflict = Path(td) / "conflict"
+            self.initialize(conflict)
+            self.preflight(conflict)
+            self.create_cp01_request(conflict, "far_conflict")
+            conflict_command = [
+                sys.executable, str(RUNTIME), "send-frontier-request",
+                "--plan-dir", str(conflict), "--request-id", "far_conflict",
+                "--codex-bin", str(self.fake_codex(conflict)),
+            ]
+            crashed = subprocess.run(
+                conflict_command, cwd=ROOT, text=True, capture_output=True,
+                env=env,
+            )
+            self.assertEqual(crashed.returncode, 86)
+            conflict_capacity_path = (
+                conflict / "state" / "staged_research" / "v1"
+                / "capacity-ledger.json"
+            )
+            conflict_capacity = json.loads(conflict_capacity_path.read_text())
+            conflict_capacity["remaining_calls"] = 6
+            self.write(conflict_capacity_path, conflict_capacity)
+            conflicted = subprocess.run(
+                conflict_command, cwd=ROOT, text=True, capture_output=True,
+            )
+            self.assertNotEqual(conflicted.returncode, 0)
+            self.assertIn("irreconcilable", conflicted.stderr)
+            self.assertEqual(
+                json.loads(conflict_capacity_path.read_text())["remaining_calls"],
+                6,
             )
 
     def test_evaluator_adoption_drift_requires_rebaseline_and_owner_lineage(self) -> None:
@@ -1188,6 +1249,51 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 state["active_stage_authorization_action"], "reauthorize_stage",
             )
 
+    def test_concurrent_staged_mutators_have_unique_audit_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            commands = [
+                [
+                    sys.executable, str(RUNTIME),
+                    "record-human-stage-input", "--plan-dir", str(plan),
+                    "--input-id", f"proposal_{index}", "--kind", "proposal",
+                    "--content-sha256", digest(f"proposal:{index}"),
+                ]
+                for index in range(24)
+            ]
+            processes = [
+                subprocess.Popen(
+                    command, cwd=ROOT, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                for command in commands
+            ]
+            results = [process.communicate(timeout=30) for process in processes]
+            self.assertTrue(
+                all(process.returncode == 0 for process in processes),
+                results,
+            )
+            root = plan / "state" / "staged_research" / "v1"
+            audit = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            revisions = [item["audit_revision"] for item in audit]
+            self.assertEqual(revisions, list(range(1, 26)))
+            self.assertEqual(len(set(revisions)), 25)
+            self.assertEqual(
+                json.loads((root / "state.json").read_text())["audit_revision"],
+                25,
+            )
+            inputs = [
+                json.loads(line)
+                for line in (root / "human-inputs.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len({item["input_id"] for item in inputs}), 24)
+
     def test_visible_state_transfer_isolation_and_human_proposal_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = Path(td) / "plan"
@@ -1291,7 +1397,112 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--authorization-receipt", next_authorization,
                 "--authorized-evidence", "evidence_stage_1", ok=False,
             )
-            self.assertIn("requires a non-escalated recorded cycle", proc.stderr)
+            self.assertIn("identity conflict", proc.stderr)
+
+    def test_concurrent_and_crashed_next_stage_compile_are_exact_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "concurrent"
+            cycle = self.prepare_compilable_stage(plan, "e")
+            commands = []
+            for suffix in ("a", "b"):
+                envelope = self.envelope(
+                    f"stage_2{suffix}", source="stage_1",
+                    incumbent=cycle["resulting_incumbent_sha256"],
+                )
+                path = self.write(
+                    plan / "inputs" / f"stage-2{suffix}.json", envelope,
+                )
+                authorization = self.authorize_next_stage(plan, path)
+                commands.append([
+                    sys.executable, str(RUNTIME), "compile-next-stage",
+                    "--plan-dir", str(plan), "--stage-envelope", str(path),
+                    "--authorized-evidence", "evidence_stage_1",
+                    "--authorization-receipt", authorization,
+                ])
+            processes = [
+                subprocess.Popen(
+                    command, cwd=ROOT, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                for command in commands
+            ]
+            results = [process.communicate(timeout=30) for process in processes]
+            self.assertEqual(
+                sum(process.returncode == 0 for process in processes), 1,
+                results,
+            )
+            self.assertIn(
+                "identity conflict",
+                next(
+                    stderr for process, (_, stderr)
+                    in zip(processes, results)
+                    if process.returncode != 0
+                ),
+            )
+            root = plan / "state" / "staged_research" / "v1"
+            state = json.loads((root / "state.json").read_text())
+            winner = state["active_stage_id"]
+            loser = "stage_2b" if winner == "stage_2a" else "stage_2a"
+            self.assertIn(winner, {"stage_2a", "stage_2b"})
+            self.assertTrue((root / "stages" / winner / "envelope.json").is_file())
+            self.assertFalse((root / "stages" / loser / "envelope.json").exists())
+            marker = json.loads(
+                (root / "stages" / "stage_1" / "next-stage.json").read_text()
+            )
+            self.assertEqual(marker["next_stage_id"], winner)
+            audit = [
+                json.loads(line)
+                for line in (root / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(
+                len([item for item in audit
+                     if item["event"] == "next_stage_compiled"]),
+                1,
+            )
+
+            recovery = Path(td) / "recovery"
+            recovery_cycle = self.prepare_compilable_stage(recovery, "f")
+            envelope = self.envelope(
+                "stage_2", source="stage_1",
+                incumbent=recovery_cycle["resulting_incumbent_sha256"],
+            )
+            path = self.write(recovery / "inputs" / "stage-2.json", envelope)
+            authorization = self.authorize_next_stage(recovery, path)
+            command = [
+                sys.executable, str(RUNTIME), "compile-next-stage",
+                "--plan-dir", str(recovery), "--stage-envelope", str(path),
+                "--authorized-evidence", "evidence_stage_1",
+                "--authorization-receipt", authorization,
+            ]
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_COMPILE_ENVELOPE"] = "1"
+            crashed = subprocess.run(
+                command, cwd=ROOT, text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(crashed.returncode, 87)
+            recovery_root = recovery / "state" / "staged_research" / "v1"
+            self.assertTrue(
+                (recovery_root / "stages" / "stage_2" / "envelope.json").is_file()
+            )
+            self.assertFalse(
+                (recovery_root / "stages" / "stage_1"
+                 / "next-stage.json").exists()
+            )
+            recovered = subprocess.run(
+                command, cwd=ROOT, text=True, capture_output=True,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            journal = json.loads(
+                (recovery_root / "compile-journals" / "stage_1.json").read_text()
+            )
+            self.assertEqual(journal["phase"], "COMMITTED")
+            self.assertEqual(
+                json.loads((recovery_root / "state.json").read_text())[
+                    "active_stage_id"
+                ],
+                "stage_2",
+            )
 
     def test_figure_inventory_freezes_only_at_figure_stage(self) -> None:
         with tempfile.TemporaryDirectory() as td:

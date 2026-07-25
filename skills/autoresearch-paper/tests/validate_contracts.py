@@ -341,6 +341,8 @@ def main() -> int:
             "release-staged-evidence", "retrieve-staged-evidence",
             "replay-role-visible-state", "classify-staged-failure",
             "reauthorize-staged-research",
+            "HARNESS_FAULT_AFTER_COMBINED_STAGED_CAPACITY",
+            "compile-journals", "staged_locked_command",
             "STAGED_CP01_EVIDENCE_PROFILE", "mandatory_future_calls",
         )),
         "harness runtime is missing v0.16 staged governance commands",
@@ -359,6 +361,8 @@ def main() -> int:
         "test_combined_capacity_concurrency_and_crash_recovery",
         "test_evaluator_adoption_drift_requires_rebaseline_and_owner_lineage",
         "test_stage_stop_requires_canonical_human_reauthorization",
+        "test_concurrent_staged_mutators_have_unique_audit_revisions",
+        "test_concurrent_and_crashed_next_stage_compile_are_exact_once",
     ):
         require(
             f"def {boundary}" in staged_tests,

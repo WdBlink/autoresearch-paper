@@ -49,6 +49,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - Staged/global frontier capacity and Gate retries use locked reconciliation
   journals; adversarial regressions cover bounded concurrent and injected
   PREPARED-state recovery without claiming long-soak or production cutover.
+- One shared process lock now serializes staged audit revisions and next-stage
+  compilation. Capacity and compile journals recover injected exits at their
+  exact intermediate write boundaries without admitting a second writer.
 
 ## [0.15.0] - 2026-07-25
 
