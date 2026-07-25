@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.15.0"
+  version: "0.16.0"
 ---
 
 # Autoresearch Paper
@@ -27,11 +27,11 @@ file-backed state.
 - Never start writing from a bare PASS string. Require a validated evaluator
   verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
   also requires APPLIED CP-04 `prewriting_final_evidence`.
-- Never dispatch a MiniMax worker from its own top-level plan. CP-01 must first
-  bind the exact normalized brief, execution plan, risk budget, and figure
-  requirements to an independent Codex `gpt-5.6-sol` review at `ultra`
-  reasoning; only its validated `accept` receipt may unlock
-  `approve_execution`.
+- Never dispatch a MiniMax worker from its own plan. For a v0.16 staged plan,
+  CP-01 binds the immutable human-owned optimization contract, exactly one
+  first-stage envelope, its deterministic preflight, and named checkpoint
+  capacity to an independent strongest-policy Codex review. The review is
+  advisory; only the deterministic controller may authorize the stage.
 - Never promote a paper figure from appearance, an AI review score, or an
   unbound image file. Require the repository-owned non-empty figure inventory,
   manifest hash and path validation, and a human review receipt bound to every
@@ -65,7 +65,9 @@ task_graph = generate_plan_yaml(
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
-bind the exact controller-declared MiniMax top-level plan to CP-01 -> run gpt-5.6-sol/ultra review
+freeze the human-owned contract and exactly one first stage with init-staged-research
+run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
+run the strongest reviewer allowed by the frozen policy; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
 route routine bounded tasks through harness-runtime.py dispatch-worker
 at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent transition
@@ -75,6 +77,9 @@ initialize the canonical durable task graph and register its external trigger
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
+after a recorded stage decision: persist MiniMax report + fresh non-M3 strong review
+compile at most one next stage from the incumbent and authorized evidence
+at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
@@ -182,6 +187,7 @@ Generated plans must initialize:
 - a closed `metric_contract` input for CP-02; do not pre-create
   `state/evaluator_contract.json` (the controller freezes it after CP-02)
 - `state/failure_state.json`
+- versioned `state/staged_research/v1/` governance for new v0.16 plans
 - `control/`
 - `resource_manifest.json`
 - `last_seen.jsonl`
@@ -197,7 +203,8 @@ For `conference` and `journal-q1`, the task graph must include:
 - `T6.1 evaluate-candidate`
 - `T6.2 research-decision`
 - `T6.3 pivot-or-retry`
-- `T6.4 figure-build` after a validated KEEP decision
+- `T6.4 figure-build` after a validated KEEP decision; its authorized stage
+  freezes the exact figure inventory
 - writing and package tasks only after the research gate
 
 For `arxiv`, a clean negative-result paper may proceed only with an applied,
@@ -268,6 +275,8 @@ The repository-owned figure contract is host neutral:
   artifact-promotion, evaluator, or writing authority;
 - every promoted figure binds its source inputs, transformations, render
   command, renderer identity, source revision, outputs, and hashes;
+- exact figure requirements are frozen at the first controller-authorized
+  figure-production stage, not at initial CP-01;
 - result figures are built only after a validated KEEP decision, or after the
   applicable authenticated arxiv waiver;
 - T7 is blocked until a non-empty required-figure inventory, every bound
@@ -432,8 +441,13 @@ On completion, report:
 - `references/fault-soak-acceptance-contract.md` — seven faults, soak evidence, and bounded claims
 - `references/scientific-figure-pipeline.md` — deterministic plots, optional schematics, manifests, and promotion gate
 - `references/figure-artifact.schema.json` — machine-readable figure artifact contract
-- `references/figure-requirements.schema.json` — CP-01-frozen expected figure
-  identities and tier boundary
+- `references/figure-requirements.schema.json` — expected figure identities;
+  legacy v0.15 plans freeze them at CP-01, while v0.16 freezes them at the
+  figure stage
+- `references/staged-research.schema.json` — aggregate v1 contract, stage,
+  capacity, Gate, report, review, and evidence definitions
+- `references/role-visible-state.schema.json` — exact per-role rendered state
+  and ordered context transformations, distinct from audit history
 - `references/frontier-response.schema.json` — Codex advisory response schema
 - `references/frontier-transport-incident-2026-07-25.md` — v0.14.0 CP-01
   failure chain, v0.14.1 controls, and operator diagnosis order
@@ -450,6 +464,14 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.16.0 (2026-07-25)** — Versioned rolling-stage governance: one
+  human-owned optimization contract, one CP-01 first-stage envelope,
+  deterministic preflight and non-fungible CP capacity, one logical Gate per
+  candidate with independently budgeted retries, evidence/role-visible
+  ledgers, terminal MiniMax reports, fresh non-M3 strong review, and
+  controller compilation of at most one next stage. Exact figure inventory
+  now freezes at the authorized figure-production stage; legacy v0.15
+  receipts remain readable.
 - **v0.15.0 (2026-07-25)** — Mandatory strongest-model top-level plan review:
   the controller may declare MiniMax M3 as the initial-plan author, but CP-01 is pinned to Codex
   `gpt-5.6-sol` at `ultra`; the reviewer profile and frozen policy hash are

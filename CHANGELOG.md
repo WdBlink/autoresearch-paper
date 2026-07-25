@@ -12,6 +12,37 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.16.0] - 2026-07-25
+
+### Added
+
+- Versioned `state/staged_research/v1/` governance with immutable optimization
+  contracts, one executable stage at a time, deterministic current-stage
+  preflight, exact role-visible state, and append-only evidence/audit records.
+- Non-fungible CP-01, CP-02, and CP-04 slots plus a separate retry ledger.
+  Model dispatch fails closed when mandatory future calls cannot be preserved.
+- One logical acceptance-Gate decision per frozen candidate. Idempotent
+  transport retries keep the logical query fixed and consume independently
+  frozen attempt capacity.
+- Terminal MiniMax-M3 reports and fresh strongest-policy non-M3 review receipts
+  are required before the controller can compile at most one next stage.
+
+### Changed
+
+- CP-01 for v0.16 plans reviews the human-owned optimization contract,
+  exactly one first-stage envelope, deterministic preflight, and named
+  capacity. Legacy v0.15 evidence profiles and receipts remain valid.
+- Exact figure inventory freezes at the first authorized figure-production
+  stage. Provenance, renderer, exact-set, and human-review gates remain
+  fail-closed.
+
+### Security
+
+- Accept promotes, reject retains the incumbent, and escalate blocks. Negative
+  evidence is preserved; development evidence never becomes transfer proof.
+- Strong-model findings remain advisory. Only deterministic controller
+  receipts authorize execution, Gate application, and next-stage compilation.
+
 ## [0.15.0] - 2026-07-25
 
 ### Added

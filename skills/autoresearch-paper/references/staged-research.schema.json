@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/staged-research.schema.json",
+  "title": "Autoresearch Paper staged-research governance snapshot",
+  "description": "Versioned controller-owned state for one bounded rolling research stage. Durable-plan v1 state remains a separate compatibility contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "governance_version",
+    "plan_id",
+    "contract_version",
+    "contract_sha256",
+    "evaluation_profile_sha256",
+    "checkpoint_capacity_sha256",
+    "active_stage_id",
+    "active_stage_envelope_sha256",
+    "current_incumbent_sha256",
+    "state",
+    "audit_revision",
+    "next_stage_compiled"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "governance_version": {"type": "string", "const": "staged-research/v1"},
+    "plan_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "contract_version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evaluation_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "checkpoint_capacity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "active_stage_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "active_stage_envelope_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "current_incumbent_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "state": {
+      "type": "string",
+      "enum": [
+        "CONTRACTED",
+        "STAGE_AUTHORIZED",
+        "DEVELOPING",
+        "CANDIDATE_FROZEN",
+        "GATE_QUERIED",
+        "ACCEPTED",
+        "REJECTED",
+        "ESCALATED",
+        "RECORDED",
+        "COMPLETE",
+        "PAUSED"
+      ]
+    },
+    "audit_revision": {"type": "integer", "minimum": 0},
+    "next_stage_compiled": {"type": "boolean"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "immutableId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "optimizationContract": {
+      "type": "object",
+      "required": [
+        "schema_version", "contract_version", "owner_identity_sha256",
+        "authorization_receipt_id", "objective",
+        "development_evidence_profile_sha256",
+        "development_validator_sha256", "acceptance_evaluator_sha256",
+        "admissibility_policy_sha256", "adoption_policy_sha256",
+        "scope_policy_sha256", "permission_policy_sha256",
+        "evaluation_policy_sha256", "resource_policy_sha256",
+        "authority_policy_sha256", "per_cycle_budget_sha256",
+        "frontier_checkpoint_budget_sha256",
+        "stop_and_reauthorization_policy_sha256",
+        "external_transfer_profile_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "contract_version": {"$ref": "#/$defs/immutableId"},
+        "owner_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "authorization_receipt_id": {"$ref": "#/$defs/immutableId"},
+        "objective": {
+          "type": "object",
+          "required": ["id", "statement_sha256"],
+          "properties": {
+            "id": {"$ref": "#/$defs/immutableId"},
+            "statement_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "development_evidence_profile_sha256": {"$ref": "#/$defs/sha256"},
+        "development_validator_sha256": {"$ref": "#/$defs/sha256"},
+        "acceptance_evaluator_sha256": {"$ref": "#/$defs/sha256"},
+        "admissibility_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "adoption_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "scope_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "permission_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "evaluation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "resource_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "authority_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "per_cycle_budget_sha256": {"$ref": "#/$defs/sha256"},
+        "frontier_checkpoint_budget_sha256": {"$ref": "#/$defs/sha256"},
+        "stop_and_reauthorization_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "external_transfer_profile_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stageEnvelope": {
+      "type": "object",
+      "required": [
+        "schema_version", "stage_id", "contract_version", "source_cycle_id",
+        "incumbent_sha256", "stage_objective_sha256",
+        "authorized_evidence_refs", "allowed_intervention_sha256",
+        "entry_criteria_sha256", "exit_criteria_sha256",
+        "stage_budget_sha256", "required_report_schema_sha256",
+        "stage_budget_and_stop", "stage_kind"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "stage_id": {"$ref": "#/$defs/immutableId"},
+        "contract_version": {"$ref": "#/$defs/immutableId"},
+        "source_cycle_id": {
+          "oneOf": [{"$ref": "#/$defs/immutableId"}, {"type": "null"}]
+        },
+        "incumbent_sha256": {"$ref": "#/$defs/sha256"},
+        "stage_objective_sha256": {"$ref": "#/$defs/sha256"},
+        "authorized_evidence_refs": {
+          "type": "array", "items": {"$ref": "#/$defs/immutableId"}
+        },
+        "allowed_intervention_sha256": {"$ref": "#/$defs/sha256"},
+        "entry_criteria_sha256": {"$ref": "#/$defs/sha256"},
+        "exit_criteria_sha256": {"$ref": "#/$defs/sha256"},
+        "stage_budget_sha256": {"$ref": "#/$defs/sha256"},
+        "required_report_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "stage_kind": {
+          "enum": ["research", "figure_production", "release"]
+        },
+        "figure_requirements_sha256": {"$ref": "#/$defs/sha256"},
+        "stage_budget_and_stop": {"$ref": "#/$defs/stageBudgetAndStop"}
+      }
+    },
+    "stageBudgetAndStop": {
+      "type": "object",
+      "required": [
+        "profile_id", "time_seconds", "tool_calls", "worker_tokens",
+        "review_tokens", "retry_attempts", "evaluation_calls",
+        "stop_policy_sha256"
+      ],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/immutableId"},
+        "time_seconds": {"type": "integer", "minimum": 0},
+        "tool_calls": {"type": "integer", "minimum": 0},
+        "worker_tokens": {"type": "integer", "minimum": 0},
+        "review_tokens": {"type": "integer", "minimum": 0},
+        "retry_attempts": {"type": "integer", "minimum": 0},
+        "evaluation_calls": {"type": "integer", "minimum": 0},
+        "stop_policy_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evaluationProfile": {
+      "type": "object",
+      "required": [
+        "schema_version", "profile_id",
+        "logical_gate_query_limit_per_candidate",
+        "private_split_policy_sha256", "holdout_refresh_policy_sha256",
+        "transfer_audit_schedule_sha256", "external_suite_identity_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "profile_id": {"$ref": "#/$defs/immutableId"},
+        "logical_gate_query_limit_per_candidate": {"const": 1},
+        "private_split_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "holdout_refresh_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "transfer_audit_schedule_sha256": {"$ref": "#/$defs/sha256"},
+        "external_suite_identity_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "checkpointCapacity": {
+      "type": "object",
+      "required": [
+        "schema_version", "checkpoint_capacity", "retry_budget",
+        "remaining_calls", "mandatory_future_calls"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "checkpoint_capacity": {
+          "type": "object",
+          "required": ["CP-01", "CP-02", "CP-04"],
+          "properties": {
+            "CP-01": {"$ref": "#/$defs/checkpointSlot"},
+            "CP-02": {"$ref": "#/$defs/checkpointSlot"},
+            "CP-04": {"$ref": "#/$defs/checkpointSlot"}
+          }
+        },
+        "retry_budget": {
+          "type": "object",
+          "required": [
+            "remaining_attempts", "per_attempt_call_limit",
+            "per_attempt_token_limit"
+          ]
+        },
+        "remaining_calls": {"type": "integer", "minimum": 0},
+        "mandatory_future_calls": {"type": "integer", "minimum": 0}
+      }
+    },
+    "checkpointSlot": {
+      "type": "object",
+      "required": ["slot_id", "reserved", "spent", "transferable"],
+      "properties": {
+        "slot_id": {"$ref": "#/$defs/immutableId"},
+        "reserved": {"const": 1},
+        "spent": {"enum": [0, 1]},
+        "transferable": {"const": false}
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "required": [
+        "schema_version", "preflight_id", "stage_id",
+        "input_manifest_sha256", "validator_versions_sha256",
+        "validators", "critical_path", "failure"
+      ]
+    },
+    "stageReport": {
+      "type": "object",
+      "required": [
+        "schema_version", "stage_report_id", "stage_cycle_id",
+        "worker_identity", "role_visible_state_sha256", "candidate_sha256",
+        "evidence_refs", "development_validator_receipts",
+        "uncertainties", "proposed_next_questions"
+      ]
+    },
+    "strongReviewReceipt": {
+      "type": "object",
+      "required": [
+        "schema_version", "review_receipt_id", "review_kind",
+        "contract_version", "stage_cycle_id", "stage_report_sha256",
+        "stage_envelope_sha256", "reviewer", "role_visible_state_sha256",
+        "recommendation", "findings_sha256"
+      ]
+    },
+    "logicalGateQuery": {
+      "type": "object",
+      "required": [
+        "schema_version", "logical_gate_query_id", "stage_cycle_id",
+        "candidate_sha256", "evaluator_sha256", "idempotency_key",
+        "transport_attempts", "applied_gate_receipt_id"
+      ]
+    },
+    "evidenceLedgerEntry": {
+      "type": "object",
+      "required": [
+        "schema_version", "evidence_id", "stage_cycle_id", "decision",
+        "maturity", "environment_version", "evaluator_version",
+        "applicability", "confidence", "validation_status",
+        "provenance_sha256", "active_for_retrieval"
+      ]
+    }
+  }
+}

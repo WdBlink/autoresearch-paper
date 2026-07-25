@@ -29,6 +29,9 @@ return snippet_map
   `{PLAN_DIR}`, `{OUT_DIR}`, and `{MATERIALS}`.
 - Keep tier-specific gates in the plan templates; keep reusable worker
   prompts in the asset.
+- Generated v0.16 plans use one authorized stage at a time. Worker prompts may
+  propose next questions but cannot create executable downstream stages,
+  apply Gate decisions, or widen their role-visible evidence.
 - If a task references a missing snippet heading, stop plan generation and
   repair the template or asset before showing the preview.
 

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/role-visible-state.schema.json",
+  "title": "Role-visible staged-research state",
+  "description": "Exact rendered evidence and ordered context transformations supplied to one model role; this is distinct from the complete audit revision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "call_id",
+    "role",
+    "audit_revision",
+    "context_policy_version",
+    "visible_message_manifest_sha256",
+    "context_events",
+    "context_event_manifest_sha256",
+    "source_artifact_refs"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "call_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["worker", "reviewer", "controller-advisor"]
+    },
+    "audit_revision": {"type": "integer", "minimum": 0},
+    "context_policy_version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "visible_message_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "context_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "type",
+          "input_manifest_sha256",
+          "output_manifest_sha256"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "full_context",
+              "tool_fold",
+              "summary_compaction",
+              "scrape_compression",
+              "finalization_route",
+              "discard_all",
+              "rollback"
+            ]
+          },
+          "input_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "output_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "context_event_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source_artifact_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$"
+      }
+    }
+  }
+}

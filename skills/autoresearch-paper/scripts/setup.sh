@@ -116,6 +116,8 @@ for path in \
   "${ROOT_DIR}/references/evaluator-admission.schema.json" \
   "${ROOT_DIR}/references/figure-artifact.schema.json" \
   "${ROOT_DIR}/references/figure-requirements.schema.json" \
+  "${ROOT_DIR}/references/staged-research.schema.json" \
+  "${ROOT_DIR}/references/role-visible-state.schema.json" \
   "${ROOT_DIR}/references/scientific-figure-pipeline.md" \
   "${ROOT_DIR}/references/canonical-conformance-workflow.json" \
   "${ROOT_DIR}/references/scripts/harness-runtime.py" \

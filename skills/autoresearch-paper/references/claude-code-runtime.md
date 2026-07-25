@@ -314,14 +314,14 @@ The registry and dependent transitions are fixed:
 | CP-04 | `acceptance_dispute` | `accept` | `resolve_acceptance_dispute` |
 | CP-04 | `prewriting_final_evidence` | `accept` | `start_writing` |
 
-CP-01 is not a self-review. The controller declares MiniMax M3 as the initial
-plan author inside Claude Code, but the exact `normalized_brief`, `execution_plan`,
-`risk_budget`, and `figure_requirements` files are independently reviewed by
-the frozen `gpt-5.6-sol`/`ultra` profile. The reviewer identity and model-policy
-hash are written into the applied transition receipt and revalidated by
-`assert-transition` and every `dispatch-worker` call. Any `revise`, `block`,
-missing receipt, weaker reviewer, or artifact drift leaves
-`approve_execution` blocked.
+CP-01 is not a self-review. New v0.16 plans bind an immutable human-owned
+optimization contract, exactly one executable first-stage envelope, its
+deterministic preflight, and named checkpoint capacity. These artifacts are
+independently reviewed by the strongest Codex profile allowed by the frozen
+policy (`gpt-5.6-sol`/`ultra` in this release). The review is advisory; only
+the deterministic controller applies `approve_execution`. Legacy v0.15 plans
+retain their normalized-brief, execution-plan, risk-budget, and
+figure-requirements evidence profile.
 
 The author-family field is declared provenance, not cryptographic model
 attestation. The enforceable guarantee is that the exact frozen plan bytes are
@@ -355,14 +355,30 @@ correlation. Codex remains read-only and advisory: durable completion consumes
 the controller-issued dependent-transition receipt, never the response itself.
 The commit journal recovers an applied work-unit result without duplication.
 
+For a v0.16 staged plan:
+
 ```bash
+python3 references/scripts/harness-runtime.py init-staged-research \
+  --plan-dir PLAN --plan-id PLAN_ID \
+  --contract optimization-contract.json \
+  --stage-envelope first-stage.json \
+  --evaluation-profile evaluation-profile.json \
+  --checkpoint-capacity checkpoint-capacity.json \
+  --incumbent-sha256 INCUMBENT_SHA256
+python3 references/scripts/harness-runtime.py preflight-staged-research \
+  --plan-dir PLAN --validators validators.json \
+  --input-manifest-sha256 INPUT_SHA256 \
+  --validator-versions-sha256 VALIDATOR_SHA256 \
+  --mandatory-checkpoint CP-01 --mandatory-checkpoint CP-02 \
+  --mandatory-checkpoint CP-04
 python3 references/scripts/harness-runtime.py create-frontier-request \
   --plan-dir PLAN --plan-id PLAN_ID --checkpoint CP-01 \
-  --objective "audit plan" --decision-required approve_execution \
-  --artifact brief.md::normalized_brief \
-  --artifact execution.json::execution_plan \
-  --artifact risk.json::risk_budget \
-  --artifact figure-requirements.json::figure_requirements \
+  --objective "audit contract and first stage" \
+  --decision-required approve_execution \
+  --artifact state/staged_research/v1/contracts/CONTRACT.json::optimization_contract \
+  --artifact state/staged_research/v1/stages/STAGE/envelope.json::first_stage_envelope \
+  --artifact state/staged_research/v1/stages/STAGE/preflight.json::current_stage_preflight \
+  --artifact state/staged_research/v1/checkpoint-capacity.json::checkpoint_capacity \
   --max-input-tokens 150000 --max-output-tokens 5000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
@@ -382,7 +398,15 @@ manifest hash, model, and observed transport usage. Apply is exact-once and
 writes a transition receipt. `assert-transition` rechecks request, response,
 context, and every current artifact hash after restart. The generic
 `create-frontier-request` form remains available for non-durable gates such as
-the initial CP-01 approval.
+the initial CP-01 approval. Its evidence profile is selected by versioned
+staged state, so legacy v0.15 receipts remain readable.
+
+After a candidate is frozen, the controller creates one logical Gate query.
+Transport retries append attempt IDs under the same idempotency binding and
+consume the independent retry ledger. `accept` promotes, `reject` retains the
+incumbent, and `escalate` blocks. Every terminal decision appends evidence. A
+terminal MiniMax-M3 report and fresh strongest-policy non-M3 review must exist
+before `compile-next-stage` authorizes at most one next envelope.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
 `status=completed`, no blockers or critical findings, and evidence citations

@@ -422,9 +422,10 @@ Rules:
   score never pass this gate by themselves.
 - A result figure for a candidate without KEEP is forbidden. An arxiv
   negative-result figure requires its applied waiver receipt.
-- Read the CP-01-approved `{PLAN_DIR}/state/figure-requirements.json`. Its
-  expected figure IDs are frozen controller input, not a worker-editable
-  checklist. Conference requires at least 4; journal-q1 at least 6.
+- Read the figure-stage-authorized
+  `{PLAN_DIR}/state/figure-requirements.json`. Its expected figure IDs are
+  frozen controller input, not a worker-editable checklist. Conference
+  requires at least 4; journal-q1 at least 6.
 
 Outputs (write beneath {OUT_DIR}/figures/):
 - source data or stable references to source data

@@ -57,8 +57,9 @@ Total wall-clock target: 3–7 days.
 
 ## Differences from `conference` tier
 
-The inherited T0 figure requirement is raised to at least 6 exact figure IDs
-before CP-01 approval. T6.4 inventory must match that frozen set exactly.
+The authorized T6.4 figure-production stage freezes at least 6 exact figure
+IDs from accepted research evidence. Its inventory must match that frozen set
+exactly; initial CP-01 does not speculate about final figures.
 
 ### Stricter experiment gates
 

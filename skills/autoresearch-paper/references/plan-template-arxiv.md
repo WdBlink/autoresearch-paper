@@ -33,10 +33,11 @@ Total wall-clock target: 1–2 days.
 
 ## Task definitions
 
-Before T1, the deterministic controller writes
+Initial CP-01 freezes the optimization contract and exactly one research
+stage; it does not invent the final figure set. After accepted evidence
+authorizes the figure-production stage, the deterministic controller freezes
 `<plan-dir>/state/figure-requirements.json` with at least one exact expected
-figure ID and includes it in CP-01 approval. Figure workers cannot edit this
-file.
+figure ID. Figure workers cannot edit this file.
 
 ### T1 — literature-review
 

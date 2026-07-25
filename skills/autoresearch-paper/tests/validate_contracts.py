@@ -48,6 +48,8 @@ def main() -> int:
         "references/guardian-observation.schema.json",
         "references/evaluator-admission.schema.json",
         "references/figure-artifact.schema.json",
+        "references/staged-research.schema.json",
+        "references/role-visible-state.schema.json",
         "references/scientific-figure-pipeline.md",
         "references/scripts/validate-figure-artifacts.py",
         "references/learning-promotion-contract.md",
@@ -63,6 +65,7 @@ def main() -> int:
         "tests/test_gated_learning_promotion.py",
         "tests/test_fault_soak_acceptance.py",
         "tests/test_scientific_figure_pipeline.py",
+        "tests/test_staged_research_governance.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -279,12 +282,12 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.15.0"' in read("SKILL.md"), "SKILL.md version must be 0.15.0", errors)
+    require('version: "0.16.0"' in read("SKILL.md"), "SKILL.md version must be 0.16.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         require(
-            "Current version:** v0.15.0" in repository_readme.read_text(),
-            "README version must be 0.15.0",
+            "Current version:** v0.16.0" in repository_readme.read_text(),
+            "README version must be 0.16.0",
             errors,
         )
     require(
@@ -320,6 +323,30 @@ def main() -> int:
         "harness runtime is missing run-4 safety and reconciliation contracts",
         errors,
     )
+    require(
+        all(token in read("references/scripts/harness-runtime.py") for token in (
+            "init-staged-research", "preflight-staged-research",
+            "record-role-visible-state", "freeze-stage-candidate",
+            "create-logical-gate-query", "record-gate-transport-attempt",
+            "apply-logical-gate-decision", "record-stage-report",
+            "record-strong-stage-review", "compile-next-stage",
+            "STAGED_CP01_EVIDENCE_PROFILE", "mandatory_future_calls",
+        )),
+        "harness runtime is missing v0.16 staged governance commands",
+        errors,
+    )
+    staged_tests = read("tests/test_staged_research_governance.py")
+    for boundary in (
+        "test_contract_preflight_and_cp01_bind_exactly_one_stage",
+        "test_gate_truth_table_negative_evidence_and_escalation_block",
+        "test_gate_query_is_single_and_transport_retries_are_independent",
+        "test_minimax_report_fresh_non_m3_review_and_one_next_stage",
+        "test_figure_inventory_freezes_only_at_figure_stage",
+    ):
+        require(
+            f"def {boundary}" in staged_tests,
+            f"missing v0.16 staged governance regression {boundary}", errors,
+        )
     durable_tests = read("tests/test_durable_loop_runtime.py")
     require(
         all(name in durable_tests for name in (

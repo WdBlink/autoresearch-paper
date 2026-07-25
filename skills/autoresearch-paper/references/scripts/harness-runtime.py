@@ -89,6 +89,8 @@ DURABLE_PLAN_SCHEMA = SCRIPT_DIR.parent / "durable-plan.schema.json"
 CONTEXT_CAPSULE_SCHEMA = SCRIPT_DIR.parent / "context-capsule.schema.json"
 GUARDIAN_OBSERVATION_SCHEMA = SCRIPT_DIR.parent / "guardian-observation.schema.json"
 EVALUATOR_ADMISSION_SCHEMA = SCRIPT_DIR.parent / "evaluator-admission.schema.json"
+STAGED_RESEARCH_SCHEMA = SCRIPT_DIR.parent / "staged-research.schema.json"
+ROLE_VISIBLE_STATE_SCHEMA = SCRIPT_DIR.parent / "role-visible-state.schema.json"
 FIGURE_VALIDATOR = SCRIPT_DIR / "validate-figure-artifacts.py"
 CHECKPOINT_EVIDENCE_PROFILES = {
     ("CP-01", None): {
@@ -109,6 +111,10 @@ CHECKPOINT_EVIDENCE_PROFILES = {
         "raw_result_manifest", "baselines", "uncertainty_robustness", "figure_gate",
     },
 }
+STAGED_CP01_EVIDENCE_PROFILE = {
+    "optimization_contract", "first_stage_envelope",
+    "current_stage_preflight", "checkpoint_capacity",
+}
 DIRECTION_FIELDS = {
     "algorithm_family", "data_representation", "objective", "evaluator",
     "baseline_framing", "lineage", "candidate_sha256",
@@ -118,6 +124,12 @@ DURABLE_SCHEDULE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 DURABLE_TICK_ID_RE = re.compile(r"^tick_[a-f0-9]{64}$")
 DURABLE_CLAIM_ID_RE = re.compile(r"^claim_[a-f0-9]{64}$")
 DURABLE_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+STAGED_GOVERNANCE_VERSION = "staged-research/v1"
+STAGED_MATURITY = {
+    "idea", "screened", "full_experiment", "gate_accepted", "released",
+}
+STAGED_TERMINAL_DECISIONS = {"accept", "reject", "escalate"}
 
 
 class ContractError(RuntimeError):
@@ -311,14 +323,20 @@ def validate_top_level_plan_review_contract(
         "model": PLAN_AUDIT_MODEL,
         "reasoning_effort": PLAN_AUDIT_REASONING_EFFORT,
     }
+    kind = contract.get("kind")
+    expected_evidence_roles = (
+        sorted(STAGED_CP01_EVIDENCE_PROFILE)
+        if kind == "staged-contract-stage-review-v1"
+        else sorted(CHECKPOINT_EVIDENCE_PROFILES[("CP-01", None)])
+    )
     if (
         contract.get("schema_version") != SCHEMA_VERSION
-        or contract.get("kind") != "top-level-plan-review-v1"
+        or kind not in {
+            "top-level-plan-review-v1", "staged-contract-stage-review-v1",
+        }
         or contract.get("declared_author_model_family") != "MiniMax-M3"
         or contract.get("reviewer_profile") != expected_profile
-        or contract.get("evidence_roles") != sorted(
-            CHECKPOINT_EVIDENCE_PROFILES[("CP-01", None)]
-        )
+        or contract.get("evidence_roles") != expected_evidence_roles
         or contract.get("dependent_transition") != "approve_execution"
         or not isinstance(contract.get("model_policy_sha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", contract["model_policy_sha256"])
@@ -3132,6 +3150,7 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             })
             raise ContractError("worker delivery outcome is uncertain; inspect and explicitly reconcile")
         return {**prior, "idempotent": True}
+    staged_reserve_dispatch(plan_dir, dispatch_id=run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = json.dumps({
         "role": "bounded research worker",
@@ -5385,7 +5404,12 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             path = plan_dir / path
         manifest_items.append({"path": str(path.resolve()), "purpose": purpose if separator else "checkpoint evidence"})
     manifest = verify_manifest_items(manifest_items, base_dir=plan_dir)
-    required_roles = CHECKPOINT_EVIDENCE_PROFILES[(args.checkpoint, subtype)]
+    staged_cp01 = args.checkpoint == "CP-01" and staged_is_active(plan_dir)
+    required_roles = (
+        STAGED_CP01_EVIDENCE_PROFILE
+        if staged_cp01
+        else CHECKPOINT_EVIDENCE_PROFILES[(args.checkpoint, subtype)]
+    )
     roles = [item["purpose"] for item in manifest]
     if len(roles) != len(set(roles)):
         raise ContractError("frontier checkpoint evidence roles must be unique")
@@ -5394,7 +5418,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             f"frontier checkpoint evidence profile mismatch; missing={sorted(required_roles - set(roles))}, "
             f"extra={sorted(set(roles) - required_roles)}"
         )
-    if args.checkpoint == "CP-01":
+    if args.checkpoint == "CP-01" and not staged_cp01:
         requirements_item = next(
             item for item in manifest
             if item["purpose"] == "figure_requirements"
@@ -5404,6 +5428,34 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             Path(requirements_item["path"]),
             args.plan_id,
         )
+    if staged_cp01:
+        state = staged_load_state(plan_dir)
+        stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+        expected_paths = {
+            "optimization_contract": (
+                staged_root(plan_dir) / "contracts"
+                / f"{state['contract_version']}.json"
+            ),
+            "first_stage_envelope": stage_dir / "envelope.json",
+            "current_stage_preflight": stage_dir / "preflight.json",
+            "checkpoint_capacity": (
+                staged_root(plan_dir) / "checkpoint-capacity.json"
+            ),
+        }
+        for item in manifest:
+            expected_path = expected_paths[item["purpose"]].resolve()
+            if Path(item["path"]).resolve() != expected_path:
+                raise ContractError(
+                    f"staged CP-01 {item['purpose']} is not the canonical artifact"
+                )
+        if state["active_stage_envelope_sha256"] != sha256_file(
+            expected_paths["first_stage_envelope"]
+        ):
+            raise ContractError("staged CP-01 first-stage envelope drifted")
+        if state["contract_sha256"] != sha256_file(
+            expected_paths["optimization_contract"]
+        ):
+            raise ContractError("staged CP-01 optimization contract drifted")
     if args.checkpoint == "CP-02":
         promotion_item = next(item for item in manifest if item["purpose"] == "promotion_receipt")
         promotion_path = Path(promotion_item["path"])
@@ -5427,7 +5479,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         "objective": args.objective,
         "decision_required": args.decision_required,
         "context_manifest": manifest,
-        "evidence_profile_version": 1,
+        "evidence_profile_version": 2 if staged_cp01 else 1,
         "constraints": args.constraint,
         "budget_reservation": {"call": 1, "max_input_tokens": args.max_input_tokens, "max_output_tokens": args.max_output_tokens},
         "created_at": utc_now(),
@@ -5442,7 +5494,10 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     ):
         request["review_contract"] = {
             "schema_version": SCHEMA_VERSION,
-            "kind": "top-level-plan-review-v1",
+            "kind": (
+                "staged-contract-stage-review-v1"
+                if staged_cp01 else "top-level-plan-review-v1"
+            ),
             "declared_author_model_family": policy[
                 "top_level_plan_audit"
             ]["declared_author_model_family"],
@@ -5563,7 +5618,11 @@ def command_create_durable_request(args: argparse.Namespace) -> dict[str, Any]:
         plan_dir, Path(args.context_capsule).resolve(),
     )
     key = (args.checkpoint, args.checkpoint_subtype)
-    required_roles = CHECKPOINT_EVIDENCE_PROFILES.get(key)
+    required_roles = (
+        STAGED_CP01_EVIDENCE_PROFILE
+        if key == ("CP-01", None) and staged_is_active(plan_dir)
+        else CHECKPOINT_EVIDENCE_PROFILES.get(key)
+    )
     if required_roles is None:
         raise ContractError("checkpoint/subtype is not registered")
     manifest = capsule["input_manifest"]
@@ -6128,6 +6187,15 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             )
             raise ContractError("frontier request deadline expired during preflight")
         effective_timeout = min(float(args.timeout), remaining_seconds)
+        staged_reserve_dispatch(
+            plan_dir,
+            checkpoint=(
+                request["checkpoint"]
+                if request["checkpoint"] in {"CP-01", "CP-02", "CP-04"}
+                else None
+            ),
+            dispatch_id=args.request_id,
+        )
         ledger = reserve_budget(plan_dir, request, policy)
         if os.environ.get("HARNESS_FAULT_AFTER_FRONTIER_LEDGER") == "1":
             raise ContractError("simulated crash after frontier ledger reservation")
@@ -6324,6 +6392,13 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
         event = current.get("applied_event", {})
         if event.get("transition") != args.dependent_transition:
             raise ContractError("request was applied to a different dependent transition")
+        if staged_is_active(plan_dir) and request["checkpoint"] == "CP-01":
+            staged_authorize_first_stage(
+                plan_dir, args.request_id,
+                transition_receipt_path(
+                    plan_dir, args.dependent_transition, args.request_id,
+                ),
+            )
         return {"ok": True, "idempotent": True, **current}
     if current["state"] != "VALIDATED":
         raise ContractError(f"cannot apply advisory response from state {current['state']}")
@@ -6399,10 +6474,14 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
         if target.exists():
             prior = read_json(target)
             transition(plan_dir, args.request_id, "APPLIED", applied_event=prior)
+            if staged_is_active(plan_dir) and request["checkpoint"] == "CP-01":
+                staged_authorize_first_stage(plan_dir, args.request_id, target)
             return {"ok": True, "idempotent": True, "request_id": args.request_id, "state": "APPLIED", "event": prior}
         atomic_write_json(target, event, immutable=True)
         append_jsonl(plan_dir / "state" / "controller_transitions.jsonl", event)
         transition(plan_dir, args.request_id, "APPLIED", applied_event=event)
+    if staged_is_active(plan_dir) and request["checkpoint"] == "CP-01":
+        staged_authorize_first_stage(plan_dir, args.request_id, target)
     return {"ok": True, "request_id": args.request_id, "state": "APPLIED", "event": event}
 
 
@@ -6597,9 +6676,1091 @@ def command_expire_request(args: argparse.Namespace) -> dict[str, Any]:
         return {"ok": True, **paused}
 
 
+def staged_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "staged_research" / "v1"
+
+
+def staged_state_path(plan_dir: Path) -> Path:
+    return staged_root(plan_dir) / "state.json"
+
+
+def staged_is_active(plan_dir: Path) -> bool:
+    return staged_state_path(plan_dir).is_file()
+
+
+def staged_require_sha256(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+        raise ContractError(f"{field} must be a lowercase sha256")
+    return value
+
+
+def staged_require_id(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value)
+    ):
+        raise ContractError(f"{field} must be an immutable identifier")
+    return value
+
+
+def staged_copy_immutable(source: Path, target: Path) -> dict[str, Any]:
+    value = read_json(source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if canonical_json(read_json(target)) != canonical_json(value):
+            raise ContractError(f"immutable staged artifact collision: {target}")
+    else:
+        atomic_write_json(target, value, immutable=True)
+    return value
+
+
+def staged_append_audit(
+    plan_dir: Path, event: str, details: dict[str, Any],
+) -> dict[str, Any]:
+    state_path = staged_state_path(plan_dir)
+    state = read_json(state_path)
+    revision = state["audit_revision"] + 1
+    record = {
+        "schema_version": 1,
+        "audit_revision": revision,
+        "event": event,
+        "recorded_at": utc_now(),
+        **details,
+    }
+    append_jsonl(staged_root(plan_dir) / "audit.jsonl", record)
+    state["audit_revision"] = revision
+    atomic_write_json(state_path, state)
+    return record
+
+
+def staged_load_state(plan_dir: Path) -> dict[str, Any]:
+    state = read_json(staged_state_path(plan_dir))
+    validate_schema(state, read_json(STAGED_RESEARCH_SCHEMA))
+    return state
+
+
+def staged_stage_dir(plan_dir: Path, stage_id: str) -> Path:
+    return staged_root(plan_dir) / "stages" / stage_id
+
+
+def staged_authorize_first_stage(
+    plan_dir: Path, request_id: str, transition_path: Path,
+) -> None:
+    if not transition_path.is_file():
+        raise ContractError("staged CP-01 transition receipt is missing")
+    state = staged_load_state(plan_dir)
+    if state["state"] != "CONTRACTED":
+        return
+    state["state"] = "STAGE_AUTHORIZED"
+    atomic_write_json(staged_state_path(plan_dir), state)
+    staged_append_audit(plan_dir, "first_stage_authorized", {
+        "stage_id": state["active_stage_id"],
+        "cp01_request_id": request_id,
+        "cp01_transition_receipt_sha256": sha256_file(transition_path),
+        "review_advisory_only": True,
+        "controller_authoritative": True,
+    })
+
+
+def staged_validate_contract(contract: dict[str, Any]) -> None:
+    required = {
+        "schema_version", "contract_version", "owner_identity_sha256",
+        "authorization_receipt_id", "objective",
+        "development_evidence_profile_sha256", "acceptance_evaluator_sha256",
+        "development_validator_sha256", "admissibility_policy_sha256",
+        "adoption_policy_sha256", "scope_policy_sha256",
+        "permission_policy_sha256", "evaluation_policy_sha256",
+        "resource_policy_sha256", "authority_policy_sha256",
+        "per_cycle_budget_sha256", "frontier_checkpoint_budget_sha256",
+        "stop_and_reauthorization_policy_sha256",
+        "external_transfer_profile_sha256",
+    }
+    missing = sorted(required - set(contract))
+    if missing:
+        raise ContractError(f"optimization contract is incomplete: {missing}")
+    if contract.get("schema_version") != 1:
+        raise ContractError("optimization contract schema_version must be 1")
+    staged_require_id(contract["contract_version"], "contract_version")
+    staged_require_id(
+        contract["authorization_receipt_id"], "authorization_receipt_id",
+    )
+    for field in required - {
+        "schema_version", "contract_version", "authorization_receipt_id",
+        "objective",
+    }:
+        staged_require_sha256(contract[field], field)
+    objective = contract["objective"]
+    if not isinstance(objective, dict) or set(objective) != {"id", "statement_sha256"}:
+        raise ContractError("optimization contract objective must have id and statement_sha256")
+    staged_require_id(objective["id"], "objective.id")
+    staged_require_sha256(objective["statement_sha256"], "objective.statement_sha256")
+    if (
+        contract["development_validator_sha256"]
+        == contract["acceptance_evaluator_sha256"]
+    ):
+        raise ContractError("development validator and acceptance evaluator must be distinct")
+
+
+def staged_validate_evaluation_profile(profile: dict[str, Any]) -> None:
+    required = {
+        "schema_version", "profile_id",
+        "logical_gate_query_limit_per_candidate",
+        "private_split_policy_sha256", "holdout_refresh_policy_sha256",
+        "transfer_audit_schedule_sha256", "external_suite_identity_sha256",
+    }
+    missing = sorted(required - set(profile))
+    if missing:
+        raise ContractError(f"evaluation profile is incomplete: {missing}")
+    if (
+        profile.get("schema_version") != 1
+        or profile.get("logical_gate_query_limit_per_candidate") != 1
+    ):
+        raise ContractError("evaluation profile must permit exactly one Gate query")
+    staged_require_id(profile["profile_id"], "evaluation_profile.profile_id")
+    for field in required - {
+        "schema_version", "profile_id",
+        "logical_gate_query_limit_per_candidate",
+    }:
+        staged_require_sha256(profile[field], f"evaluation_profile.{field}")
+
+
+def staged_validate_capacity(capacity: dict[str, Any]) -> None:
+    checkpoints = capacity.get("checkpoint_capacity")
+    if not isinstance(checkpoints, dict) or set(checkpoints) != {
+        "CP-01", "CP-02", "CP-04",
+    }:
+        raise ContractError("checkpoint capacity must reserve CP-01, CP-02, and CP-04")
+    slot_ids: list[str] = []
+    for checkpoint, slot in checkpoints.items():
+        if not isinstance(slot, dict):
+            raise ContractError(f"{checkpoint} capacity must be an object")
+        if (
+            slot.get("reserved") != 1
+            or slot.get("spent") not in {0, 1}
+            or slot.get("transferable") is not False
+        ):
+            raise ContractError(f"{checkpoint} capacity must be one non-fungible slot")
+        slot_ids.append(staged_require_id(slot.get("slot_id"), f"{checkpoint}.slot_id"))
+    if len(set(slot_ids)) != 3:
+        raise ContractError("checkpoint slot identities must be distinct")
+    retry = capacity.get("retry_budget")
+    if not isinstance(retry, dict):
+        raise ContractError("independent retry_budget is required")
+    for field in (
+        "remaining_attempts", "per_attempt_call_limit",
+        "per_attempt_token_limit",
+    ):
+        require_non_negative_int(retry.get(field), f"retry_budget.{field}")
+    remaining = require_non_negative_int(
+        capacity.get("remaining_calls"), "remaining_calls",
+    )
+    mandatory = require_non_negative_int(
+        capacity.get("mandatory_future_calls"), "mandatory_future_calls",
+    )
+    unspent = sum(1 for slot in checkpoints.values() if slot["spent"] == 0)
+    if mandatory != unspent:
+        raise ContractError("mandatory_future_calls must equal unspent named slots")
+    if remaining < mandatory:
+        raise ContractError("remaining_calls < mandatory_future_calls")
+
+
+def staged_validate_envelope(
+    envelope: dict[str, Any], contract_version: str,
+    incumbent_sha256: str, *, first: bool,
+) -> None:
+    required = {
+        "schema_version", "stage_id", "contract_version", "source_cycle_id",
+        "incumbent_sha256", "stage_objective_sha256",
+        "authorized_evidence_refs", "allowed_intervention_sha256",
+        "entry_criteria_sha256", "exit_criteria_sha256",
+        "stage_budget_sha256", "required_report_schema_sha256",
+        "stage_budget_and_stop", "stage_kind",
+    }
+    missing = sorted(required - set(envelope))
+    if missing:
+        raise ContractError(f"stage envelope is incomplete: {missing}")
+    if envelope.get("schema_version") != 1:
+        raise ContractError("stage envelope schema_version must be 1")
+    if any(key in envelope for key in ("future_stages", "executable_stages", "depends_on")):
+        raise ContractError("stage envelope must not contain a speculative executable DAG")
+    staged_require_id(envelope["stage_id"], "stage_id")
+    if envelope["contract_version"] != contract_version:
+        raise ContractError("stage envelope contract_version mismatch")
+    if envelope["incumbent_sha256"] != incumbent_sha256:
+        raise ContractError("stage envelope incumbent mismatch")
+    if first and envelope["source_cycle_id"] is not None:
+        raise ContractError("first stage source_cycle_id must be null")
+    if not first:
+        staged_require_id(envelope["source_cycle_id"], "source_cycle_id")
+    if not isinstance(envelope["authorized_evidence_refs"], list):
+        raise ContractError("authorized_evidence_refs must be a list")
+    for field in (
+        "incumbent_sha256", "stage_objective_sha256",
+        "allowed_intervention_sha256", "entry_criteria_sha256",
+        "exit_criteria_sha256", "stage_budget_sha256",
+        "required_report_schema_sha256",
+    ):
+        staged_require_sha256(envelope[field], field)
+    budget = envelope["stage_budget_and_stop"]
+    budget_fields = {
+        "profile_id", "time_seconds", "tool_calls", "worker_tokens",
+        "review_tokens", "retry_attempts", "evaluation_calls",
+        "stop_policy_sha256",
+    }
+    if not isinstance(budget, dict) or not budget_fields <= set(budget):
+        raise ContractError("stage budget/stop behavior is incomplete")
+    staged_require_id(budget["profile_id"], "stage_budget_and_stop.profile_id")
+    for field in budget_fields - {"profile_id", "stop_policy_sha256"}:
+        require_non_negative_int(budget[field], f"stage_budget_and_stop.{field}")
+    staged_require_sha256(
+        budget["stop_policy_sha256"], "stage_budget_and_stop.stop_policy_sha256",
+    )
+    if envelope["stage_kind"] not in {"research", "figure_production", "release"}:
+        raise ContractError("stage_kind is invalid")
+    if envelope["stage_kind"] == "figure_production":
+        staged_require_sha256(
+            envelope.get("figure_requirements_sha256"),
+            "figure_requirements_sha256",
+        )
+
+
+def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state_path = staged_state_path(plan_dir)
+    contract_path = Path(args.contract).resolve()
+    envelope_path = Path(args.stage_envelope).resolve()
+    evaluation_path = Path(args.evaluation_profile).resolve()
+    capacity_path = Path(args.checkpoint_capacity).resolve()
+    contract = read_json(contract_path)
+    envelope = read_json(envelope_path)
+    evaluation = read_json(evaluation_path)
+    capacity = read_json(capacity_path)
+    staged_validate_contract(contract)
+    staged_validate_evaluation_profile(evaluation)
+    staged_validate_capacity(capacity)
+    staged_require_sha256(args.incumbent_sha256, "incumbent_sha256")
+    staged_validate_envelope(
+        envelope, contract["contract_version"], args.incumbent_sha256,
+        first=True,
+    )
+    if state_path.exists():
+        state = staged_load_state(plan_dir)
+        expected = {
+            "contract_sha256": sha256_file(contract_path),
+            "active_stage_envelope_sha256": sha256_file(envelope_path),
+            "evaluation_profile_sha256": sha256_file(evaluation_path),
+            "checkpoint_capacity_sha256": sha256_file(capacity_path),
+        }
+        if any(state.get(key) != value for key, value in expected.items()):
+            raise ContractError("staged research initialization collision")
+        return {"ok": True, "idempotent": True, **state}
+    root = staged_root(plan_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    contract_target = root / "contracts" / f"{contract['contract_version']}.json"
+    stage_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
+    staged_copy_immutable(contract_path, contract_target)
+    staged_copy_immutable(evaluation_path, root / "evaluation-profile.json")
+    staged_copy_immutable(capacity_path, root / "checkpoint-capacity.json")
+    staged_copy_immutable(capacity_path, root / "capacity-ledger.json")
+    staged_copy_immutable(envelope_path, stage_dir / "envelope.json")
+    state = {
+        "schema_version": 1,
+        "governance_version": STAGED_GOVERNANCE_VERSION,
+        "plan_id": args.plan_id,
+        "contract_version": contract["contract_version"],
+        "contract_sha256": sha256_file(contract_target),
+        "evaluation_profile_sha256": sha256_file(root / "evaluation-profile.json"),
+        "checkpoint_capacity_sha256": sha256_file(root / "checkpoint-capacity.json"),
+        "active_stage_id": envelope["stage_id"],
+        "active_stage_envelope_sha256": sha256_file(stage_dir / "envelope.json"),
+        "current_incumbent_sha256": args.incumbent_sha256,
+        "state": "CONTRACTED",
+        "audit_revision": 0,
+        "next_stage_compiled": False,
+    }
+    validate_schema(state, read_json(STAGED_RESEARCH_SCHEMA))
+    atomic_write_json(state_path, state)
+    event = staged_append_audit(plan_dir, "staged_research_initialized", {
+        "contract_version": contract["contract_version"],
+        "contract_sha256": state["contract_sha256"],
+        "stage_id": envelope["stage_id"],
+        "stage_envelope_sha256": state["active_stage_envelope_sha256"],
+        "evaluation_profile_sha256": state["evaluation_profile_sha256"],
+        "checkpoint_capacity_sha256": state["checkpoint_capacity_sha256"],
+        "executable_stage_count": 1,
+        "controller_authoritative": True,
+    })
+    return {
+        "ok": True, **read_json(state_path), "executable_stage_count": 1,
+        "event": event,
+    }
+
+
+def staged_preflight_payload(
+    plan_dir: Path, input_manifest_sha256: str,
+    validator_versions_sha256: str, validators: dict[str, str],
+    transitions: list[str], checkpoints: list[str],
+) -> dict[str, Any]:
+    state = staged_load_state(plan_dir)
+    capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+    capacity = read_json(capacity_path)
+    staged_validate_capacity(capacity)
+    allowed = {
+        "verdict_truth_table": {"pass"},
+        "statistical_feasibility": {"pass", "not_applicable"},
+        "training_evaluation_matrix": {"pass", "not_applicable"},
+        "conditional_state_machine": {"pass"},
+        "budget_arithmetic": {"pass"},
+        "current_stage_critical_path": {"pass"},
+    }
+    failure_map = {
+        "current_stage_critical_path": "critical_path",
+    }
+    failure = None
+    for name, states in allowed.items():
+        if validators.get(name) not in states:
+            failure = failure_map.get(name, name)
+            break
+    mandatory = [
+        name for name, slot in capacity["checkpoint_capacity"].items()
+        if slot["spent"] == 0
+    ]
+    unreachable = next((item for item in mandatory if item not in checkpoints), None)
+    if unreachable is not None:
+        failure = "critical_path"
+    if capacity["remaining_calls"] < capacity["mandatory_future_calls"]:
+        failure = "budget_arithmetic"
+    return {
+        "schema_version": 1,
+        "preflight_id": f"preflight_{state['active_stage_id']}",
+        "stage_id": state["active_stage_id"],
+        "input_manifest_sha256": staged_require_sha256(
+            input_manifest_sha256, "input_manifest_sha256",
+        ),
+        "validator_versions_sha256": staged_require_sha256(
+            validator_versions_sha256, "validator_versions_sha256",
+        ),
+        "validators": validators,
+        "critical_path": {
+            "ordered_transition_ids": transitions,
+            "mandatory_checkpoint_ids": checkpoints,
+            "unreachable_transition_id": unreachable,
+        },
+        "failure": {
+            "type": failure,
+            "evidence_sha256": (
+                sha256_json({"validators": validators, "unreachable": unreachable})
+                if failure else None
+            ),
+        },
+    }
+
+
+def command_preflight_staged_research(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    validators = read_json(Path(args.validators).resolve())
+    required = {
+        "verdict_truth_table", "statistical_feasibility",
+        "training_evaluation_matrix", "conditional_state_machine",
+        "budget_arithmetic", "current_stage_critical_path",
+    }
+    if set(validators) != required:
+        raise ContractError("staged preflight validators have an invalid closed shape")
+    payload = staged_preflight_payload(
+        plan_dir, args.input_manifest_sha256,
+        args.validator_versions_sha256, validators,
+        args.transition, args.mandatory_checkpoint,
+    )
+    if payload["failure"]["type"] is not None:
+        raise ContractError(
+            f"staged preflight failed: {payload['failure']['type']}"
+        )
+    state = staged_load_state(plan_dir)
+    target = staged_stage_dir(
+        plan_dir, state["active_stage_id"],
+    ) / "preflight.json"
+    if target.exists() and read_json(target) != payload:
+        raise ContractError("current-stage preflight changed")
+    if not target.exists():
+        atomic_write_json(target, payload, immutable=True)
+        staged_append_audit(plan_dir, "stage_preflight_passed", {
+            "stage_id": state["active_stage_id"],
+            "preflight_sha256": sha256_file(target),
+            "critical_path": payload["critical_path"],
+        })
+    return {"ok": True, "preflight_path": str(target), "preflight_sha256": sha256_file(target)}
+
+
+def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
+    state = staged_load_state(plan_dir)
+    path = staged_stage_dir(plan_dir, state["active_stage_id"]) / "preflight.json"
+    preflight = read_json(path)
+    if preflight.get("failure", {}).get("type") is not None:
+        raise ContractError("current-stage preflight is not passing")
+    if preflight.get("stage_id") != state["active_stage_id"]:
+        raise ContractError("current-stage preflight identity mismatch")
+    return preflight
+
+
+def staged_reserve_dispatch(
+    plan_dir: Path, *, checkpoint: str | None = None, dispatch_id: str,
+) -> None:
+    if not staged_is_active(plan_dir):
+        return
+    reservation_path = (
+        staged_root(plan_dir) / "dispatch-reservations" / f"{dispatch_id}.json"
+    )
+    if reservation_path.exists():
+        prior = read_json(reservation_path)
+        if prior.get("checkpoint") != checkpoint:
+            raise ContractError("staged dispatch reservation identity collision")
+        return
+    staged_require_preflight(plan_dir)
+    state = staged_load_state(plan_dir)
+    if checkpoint is None and state["state"] not in {
+        "STAGE_AUTHORIZED", "DEVELOPING",
+    }:
+        raise ContractError("worker dispatch requires controller-authorized stage")
+    root = staged_root(plan_dir)
+    path = root / "capacity-ledger.json"
+    capacity = read_json(path)
+    staged_validate_capacity(capacity)
+    if checkpoint is None:
+        if capacity["remaining_calls"] - 1 < capacity["mandatory_future_calls"]:
+            raise ContractError(
+                "dispatch blocked: remaining_calls would fall below mandatory_future_calls"
+            )
+    else:
+        slot = capacity["checkpoint_capacity"].get(checkpoint)
+        if slot is None or slot["spent"] != 0:
+            raise ContractError(f"non-fungible {checkpoint} capacity is unavailable")
+    capacity["remaining_calls"] -= 1
+    if capacity["remaining_calls"] < 0:
+        raise ContractError("dispatch blocked: no remaining calls")
+    if checkpoint is not None:
+        capacity["checkpoint_capacity"][checkpoint]["spent"] = 1
+        capacity["mandatory_future_calls"] -= 1
+    staged_validate_capacity(capacity)
+    atomic_write_json(path, capacity)
+    state = staged_load_state(plan_dir)
+    atomic_write_json(reservation_path, {
+        "schema_version": 1,
+        "dispatch_id": dispatch_id,
+        "checkpoint": checkpoint,
+        "remaining_calls": capacity["remaining_calls"],
+        "mandatory_future_calls": capacity["mandatory_future_calls"],
+        "reserved_at": utc_now(),
+    }, immutable=True)
+    staged_append_audit(plan_dir, "model_dispatch_reserved", {
+        "dispatch_id": dispatch_id,
+        "stage_id": state["active_stage_id"],
+        "checkpoint": checkpoint,
+        "remaining_calls": capacity["remaining_calls"],
+        "mandatory_future_calls": capacity["mandatory_future_calls"],
+    })
+    if checkpoint is None:
+        state = staged_load_state(plan_dir)
+        state["state"] = "DEVELOPING"
+        atomic_write_json(staged_state_path(plan_dir), state)
+
+
+def command_record_role_visible_state(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    source = Path(args.visible_state).resolve()
+    visible = read_json(source)
+    validate_schema(visible, read_json(ROLE_VISIBLE_STATE_SCHEMA))
+    if visible["audit_revision"] > state["audit_revision"]:
+        raise ContractError("role-visible state references a future audit revision")
+    if visible["context_event_manifest_sha256"] != sha256_json(visible["context_events"]):
+        raise ContractError("ordered context transformation manifest hash mismatch")
+    if visible["context_events"]:
+        for previous, current in zip(
+            visible["context_events"], visible["context_events"][1:],
+        ):
+            if (
+                previous["output_manifest_sha256"]
+                != current["input_manifest_sha256"]
+            ):
+                raise ContractError("ordered context transformations do not chain")
+        if (
+            visible["context_events"][-1]["output_manifest_sha256"]
+            != visible["visible_message_manifest_sha256"]
+        ):
+            raise ContractError("visible message manifest is not the final context output")
+    external_identity = read_json(
+        staged_root(plan_dir) / "evaluation-profile.json",
+    )["external_suite_identity_sha256"]
+    if external_identity in canonical_json(visible).decode("utf-8"):
+        raise ContractError("external transfer suite leaked into role-visible state")
+    target = staged_root(plan_dir) / "role-visible" / f"{visible['call_id']}.json"
+    staged_copy_immutable(source, target)
+    staged_append_audit(plan_dir, "role_visible_state_recorded", {
+        "call_id": visible["call_id"],
+        "role": visible["role"],
+        "role_visible_state_sha256": sha256_file(target),
+        "source_audit_revision": visible["audit_revision"],
+    })
+    return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
+
+
+def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    staged_require_preflight(plan_dir)
+    if state["state"] not in {"STAGE_AUTHORIZED", "DEVELOPING"}:
+        raise ContractError("candidate freeze requires a controller-authorized stage")
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    target = stage_dir / "candidate.json"
+    candidate_sha = staged_require_sha256(args.candidate_sha256, "candidate_sha256")
+    record = {
+        "schema_version": 1,
+        "stage_cycle_id": state["active_stage_id"],
+        "incumbent_sha256": state["current_incumbent_sha256"],
+        "candidate_sha256": candidate_sha,
+        "maturity": args.maturity,
+        "development_evidence_refs": args.development_evidence,
+        "frozen_at": utc_now(),
+    }
+    if args.maturity not in {"screened", "full_experiment"}:
+        raise ContractError("candidate maturity must be screened or full_experiment")
+    if target.exists():
+        prior = read_json(target)
+        comparable = {k: v for k, v in prior.items() if k != "frozen_at"}
+        if comparable != {k: v for k, v in record.items() if k != "frozen_at"}:
+            raise ContractError("one stage may freeze only one candidate")
+        return {"ok": True, "idempotent": True, **prior}
+    atomic_write_json(target, record, immutable=True)
+    state["state"] = "CANDIDATE_FROZEN"
+    atomic_write_json(staged_state_path(plan_dir), state)
+    staged_append_audit(plan_dir, "stage_candidate_frozen", {
+        "stage_id": state["active_stage_id"],
+        "candidate_sha256": candidate_sha,
+        "incumbent_sha256": state["current_incumbent_sha256"],
+    })
+    return {"ok": True, **record}
+
+
+def command_create_logical_gate_query(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    candidate = read_json(stage_dir / "candidate.json")
+    if args.candidate_sha256 != candidate["candidate_sha256"]:
+        raise ContractError("logical Gate query candidate mismatch")
+    contract = read_json(
+        staged_root(plan_dir) / "contracts" / f"{state['contract_version']}.json",
+    )
+    if args.evaluator_sha256 != contract["acceptance_evaluator_sha256"]:
+        raise ContractError("logical Gate query evaluator mismatch")
+    if args.requesting_role != "controller":
+        raise ContractError("Development must not query the isolated acceptance Gate")
+    query = {
+        "schema_version": 1,
+        "logical_gate_query_id": staged_require_id(
+            args.logical_gate_query_id, "logical_gate_query_id",
+        ),
+        "stage_cycle_id": state["active_stage_id"],
+        "candidate_sha256": candidate["candidate_sha256"],
+        "evaluator_sha256": args.evaluator_sha256,
+        "idempotency_key": sha256_json({
+            "stage_cycle_id": state["active_stage_id"],
+            "candidate_sha256": candidate["candidate_sha256"],
+            "evaluator_sha256": args.evaluator_sha256,
+        }),
+        "transport_attempts": [],
+        "applied_gate_receipt_id": None,
+    }
+    path = stage_dir / "gate-query.json"
+    if path.exists():
+        if read_json(path) != query:
+            raise ContractError("candidate already has a logical Gate query")
+        return {"ok": True, "idempotent": True, **query}
+    atomic_write_json(path, query)
+    state["state"] = "GATE_QUERIED"
+    atomic_write_json(staged_state_path(plan_dir), state)
+    staged_append_audit(plan_dir, "logical_gate_query_created", {
+        "stage_id": state["active_stage_id"],
+        "logical_gate_query_id": query["logical_gate_query_id"],
+        "candidate_sha256": query["candidate_sha256"],
+    })
+    return {"ok": True, **query}
+
+
+def command_record_gate_transport_attempt(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    query_path = stage_dir / "gate-query.json"
+    query = read_json(query_path)
+    if args.logical_gate_query_id != query["logical_gate_query_id"]:
+        raise ContractError("transport attempt changed the logical Gate query")
+    if query["applied_gate_receipt_id"] is not None:
+        raise ContractError("logical Gate decision is already terminal")
+    if any(
+        item["transport_attempt_id"] == args.transport_attempt_id
+        for item in query["transport_attempts"]
+    ):
+        prior = next(
+            item for item in query["transport_attempts"]
+            if item["transport_attempt_id"] == args.transport_attempt_id
+        )
+        if prior["status"] != args.status:
+            raise ContractError("transport attempt identity collision")
+        return {"ok": True, "idempotent": True, **prior}
+    capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+    capacity = read_json(capacity_path)
+    retry = capacity["retry_budget"]
+    if retry["remaining_attempts"] < 1 or retry["per_attempt_call_limit"] < 1:
+        raise ContractError("independent Gate transport retry budget exhausted")
+    retry["remaining_attempts"] -= 1
+    attempt = {
+        "transport_attempt_id": staged_require_id(
+            args.transport_attempt_id, "transport_attempt_id",
+        ),
+        "idempotency_key": query["idempotency_key"],
+        "budget_reservation_id": staged_require_id(
+            args.budget_reservation_id, "budget_reservation_id",
+        ),
+        "status": args.status,
+    }
+    query["transport_attempts"].append(attempt)
+    atomic_write_json(query_path, query)
+    atomic_write_json(capacity_path, capacity)
+    staged_append_audit(plan_dir, "gate_transport_attempt_recorded", {
+        "logical_gate_query_id": query["logical_gate_query_id"],
+        **attempt,
+    })
+    return {"ok": True, **attempt}
+
+
+def command_apply_logical_gate_decision(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    query_path = stage_dir / "gate-query.json"
+    query = read_json(query_path)
+    if args.logical_gate_query_id != query["logical_gate_query_id"]:
+        raise ContractError("Gate receipt logical query mismatch")
+    if args.decision not in STAGED_TERMINAL_DECISIONS:
+        raise ContractError("Gate decision must be accept, reject, or escalate")
+    receipt_source = Path(args.gate_receipt).resolve()
+    receipt = read_json(receipt_source)
+    required_receipt = {
+        "schema_version": 1,
+        "gate_receipt_id": args.gate_receipt_id,
+        "logical_gate_query_id": query["logical_gate_query_id"],
+        "candidate_sha256": query["candidate_sha256"],
+        "decision": args.decision,
+    }
+    if any(receipt.get(key) != value for key, value in required_receipt.items()):
+        raise ContractError("Gate receipt is not bound to the logical query and candidate")
+    if not any(item["status"] == "received" for item in query["transport_attempts"]):
+        raise ContractError("Gate decision requires a received transport attempt")
+    decision_path = stage_dir / "decision.json"
+    if query["applied_gate_receipt_id"] is not None or decision_path.exists():
+        prior = read_json(decision_path)
+        if (
+            prior.get("gate_receipt_id") == args.gate_receipt_id
+            and prior.get("decision") == args.decision
+        ):
+            return {"ok": True, "idempotent": True, **prior}
+        raise ContractError("one candidate may receive only one logical Gate decision")
+    staged_copy_immutable(receipt_source, stage_dir / "gate-receipt.json")
+    resulting = (
+        query["candidate_sha256"]
+        if args.decision == "accept"
+        else state["current_incumbent_sha256"]
+    )
+    decision = {
+        "schema_version": 1,
+        "stage_cycle_id": state["active_stage_id"],
+        "logical_gate_query_id": query["logical_gate_query_id"],
+        "gate_receipt_id": args.gate_receipt_id,
+        "decision": args.decision,
+        "prior_incumbent_sha256": state["current_incumbent_sha256"],
+        "candidate_sha256": query["candidate_sha256"],
+        "resulting_incumbent_sha256": resulting,
+        "advancement_blocked": args.decision == "escalate",
+        "controller_authoritative": True,
+        "decided_at": utc_now(),
+    }
+    atomic_write_json(decision_path, decision, immutable=True)
+    query["applied_gate_receipt_id"] = args.gate_receipt_id
+    atomic_write_json(query_path, query)
+    evidence = {
+        "schema_version": 1,
+        "evidence_id": f"evidence_{state['active_stage_id']}",
+        "stage_cycle_id": state["active_stage_id"],
+        "decision": args.decision,
+        "maturity": "gate_accepted" if args.decision == "accept" else "full_experiment",
+        "environment_version": staged_require_id(
+            args.environment_version, "environment_version",
+        ),
+        "evaluator_version": staged_require_id(
+            args.evaluator_version, "evaluator_version",
+        ),
+        "applicability": args.applicability,
+        "confidence": args.confidence,
+        "validation_status": args.validation_status,
+        "provenance_sha256": staged_require_sha256(
+            args.provenance_sha256, "provenance_sha256",
+        ),
+        "active_for_retrieval": (
+            args.decision == "accept"
+            and args.validation_status == "validated"
+            and bool(args.applicability)
+        ),
+    }
+    append_jsonl(staged_root(plan_dir) / "evidence-ledger.jsonl", evidence)
+    state["current_incumbent_sha256"] = resulting
+    state["state"] = "PAUSED" if args.decision == "escalate" else "RECORDED"
+    atomic_write_json(staged_state_path(plan_dir), state)
+    staged_append_audit(plan_dir, "logical_gate_decision_applied", {
+        **decision,
+        "evidence_id": evidence["evidence_id"],
+    })
+    return {"ok": True, **decision, "evidence": evidence}
+
+
+def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    if state["state"] not in {"RECORDED", "PAUSED"}:
+        raise ContractError("terminal stage report requires a recorded Gate decision")
+    source = Path(args.stage_report).resolve()
+    report = read_json(source)
+    required = {
+        "schema_version", "stage_report_id", "stage_cycle_id",
+        "worker_identity", "role_visible_state_sha256", "candidate_sha256",
+        "evidence_refs", "development_validator_receipts", "uncertainties",
+        "proposed_next_questions",
+    }
+    if not required <= set(report):
+        raise ContractError("stage report is incomplete")
+    if report["schema_version"] != 1 or report["stage_cycle_id"] != state["active_stage_id"]:
+        raise ContractError("stage report identity mismatch")
+    worker = report["worker_identity"]
+    if (
+        not isinstance(worker, dict)
+        or worker.get("model") != "MiniMax-M3"
+        or not worker.get("agent")
+        or not worker.get("provider")
+    ):
+        raise ContractError("terminal stage report must be produced by MiniMax-M3")
+    visible_files = list((staged_root(plan_dir) / "role-visible").glob("*.json"))
+    if not any(
+        sha256_file(path) == report["role_visible_state_sha256"]
+        and read_json(path)["role"] == "worker"
+        for path in visible_files
+    ):
+        raise ContractError("stage report lacks its exact worker-visible state")
+    candidate = read_json(
+        staged_stage_dir(plan_dir, state["active_stage_id"]) / "candidate.json",
+    )
+    if report["candidate_sha256"] != candidate["candidate_sha256"]:
+        raise ContractError("stage report candidate mismatch")
+    target = staged_stage_dir(plan_dir, state["active_stage_id"]) / "stage-report.json"
+    staged_copy_immutable(source, target)
+    staged_append_audit(plan_dir, "minimax_terminal_stage_report_recorded", {
+        "stage_id": state["active_stage_id"],
+        "stage_report_id": report["stage_report_id"],
+        "stage_report_sha256": sha256_file(target),
+    })
+    return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
+
+
+def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    source = Path(args.review_receipt).resolve()
+    review = read_json(source)
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    report_path = stage_dir / "stage-report.json"
+    report = read_json(report_path)
+    required = {
+        "schema_version", "review_receipt_id", "review_kind",
+        "contract_version", "stage_cycle_id", "stage_report_sha256",
+        "stage_envelope_sha256", "reviewer", "role_visible_state_sha256",
+        "recommendation", "findings_sha256",
+    }
+    if not required <= set(review):
+        raise ContractError("strong-review receipt is incomplete")
+    if (
+        review["schema_version"] != 1
+        or review["review_kind"] != "terminal_stage_report"
+        or review["contract_version"] != state["contract_version"]
+        or review["stage_cycle_id"] != state["active_stage_id"]
+        or review["stage_report_sha256"] != sha256_file(report_path)
+        or review["stage_envelope_sha256"] != state["active_stage_envelope_sha256"]
+    ):
+        raise ContractError("strong-review receipt binding mismatch")
+    reviewer = review["reviewer"]
+    policy = load_policy(plan_dir)
+    expected_model = policy["top_level_plan_audit"]["reviewer_model"]
+    expected_effort = policy["top_level_plan_audit"]["reasoning_effort"]
+    if (
+        not isinstance(reviewer, dict)
+        or reviewer.get("model") != expected_model
+        or reviewer.get("reasoning_effort") != expected_effort
+        or reviewer.get("model", "").startswith("MiniMax")
+        or reviewer.get("policy_sha256") != sha256_file(policy_path(plan_dir))
+    ):
+        raise ContractError("fresh review is not from the strongest frozen non-M3 policy")
+    visible_files = list((staged_root(plan_dir) / "role-visible").glob("*.json"))
+    if not any(
+        sha256_file(path) == review["role_visible_state_sha256"]
+        and read_json(path)["role"] == "reviewer"
+        for path in visible_files
+    ):
+        raise ContractError("strong review lacks its exact reviewer-visible state")
+    if review["recommendation"] not in {"accept", "revise", "block"}:
+        raise ContractError("strong-review recommendation is invalid")
+    target = stage_dir / "strong-review.json"
+    staged_copy_immutable(source, target)
+    staged_append_audit(plan_dir, "strong_stage_review_recorded", {
+        "stage_id": state["active_stage_id"],
+        "stage_report_id": report["stage_report_id"],
+        "review_receipt_id": review["review_receipt_id"],
+        "recommendation": review["recommendation"],
+        "advisory_only": True,
+        "controller_authoritative": True,
+    })
+    return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
+
+
+def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    if state["state"] != "RECORDED":
+        raise ContractError("next-stage compilation requires a non-escalated recorded cycle")
+    if state["next_stage_compiled"]:
+        raise ContractError("at most one next-stage envelope may be compiled")
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    decision = read_json(stage_dir / "decision.json")
+    report_path = stage_dir / "stage-report.json"
+    review_path = stage_dir / "strong-review.json"
+    report = read_json(report_path)
+    review = read_json(review_path)
+    if (
+        review["stage_report_sha256"] != sha256_file(report_path)
+        or review["stage_cycle_id"] != state["active_stage_id"]
+    ):
+        raise ContractError("fresh report-bound strong review is required")
+    source = Path(args.stage_envelope).resolve()
+    envelope = read_json(source)
+    staged_validate_envelope(
+        envelope, state["contract_version"],
+        decision["resulting_incumbent_sha256"], first=False,
+    )
+    if envelope["source_cycle_id"] != state["active_stage_id"]:
+        raise ContractError("next stage must cite the preceding terminal cycle")
+    if set(envelope["authorized_evidence_refs"]) - set(args.authorized_evidence):
+        raise ContractError("next stage includes unauthorized evidence")
+    if envelope["stage_kind"] == "figure_production":
+        if not args.figure_requirements:
+            raise ContractError("figure-production stage must freeze exact figure requirements")
+        requirements_path = Path(args.figure_requirements).resolve()
+        if sha256_file(requirements_path) != envelope["figure_requirements_sha256"]:
+            raise ContractError("figure-production inventory binding mismatch")
+        staged_copy_immutable(
+            requirements_path,
+            staged_stage_dir(plan_dir, envelope["stage_id"]) / "figure-requirements.json",
+        )
+    target_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
+    staged_copy_immutable(source, target_dir / "envelope.json")
+    prior_stage = state["active_stage_id"]
+    state.update({
+        "active_stage_id": envelope["stage_id"],
+        "active_stage_envelope_sha256": sha256_file(target_dir / "envelope.json"),
+        "state": "CONTRACTED",
+        "next_stage_compiled": False,
+    })
+    atomic_write_json(staged_state_path(plan_dir), state)
+    marker = stage_dir / "next-stage.json"
+    atomic_write_json(marker, {
+        "schema_version": 1,
+        "source_cycle_id": prior_stage,
+        "next_stage_id": envelope["stage_id"],
+        "next_stage_envelope_sha256": state["active_stage_envelope_sha256"],
+        "stage_report_sha256": sha256_file(report_path),
+        "strong_review_sha256": sha256_file(review_path),
+        "controller_authoritative": True,
+    }, immutable=True)
+    staged_append_audit(plan_dir, "next_stage_compiled", read_json(marker))
+    return {"ok": True, **read_json(marker)}
+
+
+def command_record_human_stage_input(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    if args.kind == "feedback" and not args.stage_report_id:
+        raise ContractError("human feedback must bind a named staged report")
+    record = {
+        "schema_version": 1,
+        "input_id": staged_require_id(args.input_id, "input_id"),
+        "kind": args.kind,
+        "stage_id": state["active_stage_id"],
+        "stage_report_id": args.stage_report_id,
+        "content_sha256": staged_require_sha256(args.content_sha256, "content_sha256"),
+        "status": "candidate_pool",
+        "authorization_created": False,
+        "recorded_at": utc_now(),
+    }
+    path = staged_root(plan_dir) / "human-inputs.jsonl"
+    append_jsonl(path, record)
+    staged_append_audit(plan_dir, "human_stage_input_recorded", {
+        **record, "silence_is_approval": False,
+    })
+    return {"ok": True, **record}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    staged_init = sub.add_parser(
+        "init-staged-research",
+        help="freeze a v1 optimization contract and exactly one first stage",
+    )
+    staged_init.add_argument("--plan-dir", required=True)
+    staged_init.add_argument("--plan-id", required=True)
+    staged_init.add_argument("--contract", required=True)
+    staged_init.add_argument("--stage-envelope", required=True)
+    staged_init.add_argument("--evaluation-profile", required=True)
+    staged_init.add_argument("--checkpoint-capacity", required=True)
+    staged_init.add_argument("--incumbent-sha256", required=True)
+    staged_init.set_defaults(handler=command_init_staged_research)
+
+    staged_preflight = sub.add_parser(
+        "preflight-staged-research",
+        help="run deterministic current-stage feasibility and capacity checks",
+    )
+    staged_preflight.add_argument("--plan-dir", required=True)
+    staged_preflight.add_argument("--validators", required=True)
+    staged_preflight.add_argument("--input-manifest-sha256", required=True)
+    staged_preflight.add_argument("--validator-versions-sha256", required=True)
+    staged_preflight.add_argument("--transition", action="append", default=[])
+    staged_preflight.add_argument(
+        "--mandatory-checkpoint", action="append", default=[],
+        choices=["CP-01", "CP-02", "CP-04"],
+    )
+    staged_preflight.set_defaults(handler=command_preflight_staged_research)
+
+    visible_state = sub.add_parser(
+        "record-role-visible-state",
+        help="persist exact rendered role state separately from audit history",
+    )
+    visible_state.add_argument("--plan-dir", required=True)
+    visible_state.add_argument("--visible-state", required=True)
+    visible_state.set_defaults(handler=command_record_role_visible_state)
+
+    staged_candidate = sub.add_parser(
+        "freeze-stage-candidate",
+        help="immutably freeze the active stage's one bounded candidate",
+    )
+    staged_candidate.add_argument("--plan-dir", required=True)
+    staged_candidate.add_argument("--candidate-sha256", required=True)
+    staged_candidate.add_argument(
+        "--maturity", required=True, choices=["screened", "full_experiment"],
+    )
+    staged_candidate.add_argument(
+        "--development-evidence", action="append", default=[],
+    )
+    staged_candidate.set_defaults(handler=command_freeze_stage_candidate)
+
+    logical_gate = sub.add_parser(
+        "create-logical-gate-query",
+        help="create the candidate's one isolated acceptance-Gate query",
+    )
+    logical_gate.add_argument("--plan-dir", required=True)
+    logical_gate.add_argument("--logical-gate-query-id", required=True)
+    logical_gate.add_argument("--candidate-sha256", required=True)
+    logical_gate.add_argument("--evaluator-sha256", required=True)
+    logical_gate.add_argument(
+        "--requesting-role", default="controller",
+        choices=["controller", "development"],
+    )
+    logical_gate.set_defaults(handler=command_create_logical_gate_query)
+
+    gate_attempt = sub.add_parser(
+        "record-gate-transport-attempt",
+        help="append an independently budgeted retry for one logical Gate query",
+    )
+    gate_attempt.add_argument("--plan-dir", required=True)
+    gate_attempt.add_argument("--logical-gate-query-id", required=True)
+    gate_attempt.add_argument("--transport-attempt-id", required=True)
+    gate_attempt.add_argument("--budget-reservation-id", required=True)
+    gate_attempt.add_argument(
+        "--status", required=True,
+        choices=["sent", "uncertain", "received", "invalid"],
+    )
+    gate_attempt.set_defaults(handler=command_record_gate_transport_attempt)
+
+    gate_decision = sub.add_parser(
+        "apply-logical-gate-decision",
+        help="apply exactly one controller-owned accept/reject/escalate transition",
+    )
+    gate_decision.add_argument("--plan-dir", required=True)
+    gate_decision.add_argument("--logical-gate-query-id", required=True)
+    gate_decision.add_argument("--gate-receipt", required=True)
+    gate_decision.add_argument("--gate-receipt-id", required=True)
+    gate_decision.add_argument(
+        "--decision", required=True, choices=sorted(STAGED_TERMINAL_DECISIONS),
+    )
+    gate_decision.add_argument("--environment-version", required=True)
+    gate_decision.add_argument("--evaluator-version", required=True)
+    gate_decision.add_argument("--applicability", action="append", default=[])
+    gate_decision.add_argument(
+        "--confidence", required=True, choices=["low", "medium", "high"],
+    )
+    gate_decision.add_argument(
+        "--validation-status", required=True,
+        choices=["unvalidated", "validated", "stale", "retired"],
+    )
+    gate_decision.add_argument("--provenance-sha256", required=True)
+    gate_decision.set_defaults(handler=command_apply_logical_gate_decision)
+
+    stage_report = sub.add_parser(
+        "record-stage-report",
+        help="persist a terminal MiniMax-M3 report for the active stage",
+    )
+    stage_report.add_argument("--plan-dir", required=True)
+    stage_report.add_argument("--stage-report", required=True)
+    stage_report.set_defaults(handler=command_record_stage_report)
+
+    strong_review = sub.add_parser(
+        "record-strong-stage-review",
+        help="persist a fresh report-bound strongest-policy non-M3 review",
+    )
+    strong_review.add_argument("--plan-dir", required=True)
+    strong_review.add_argument("--review-receipt", required=True)
+    strong_review.set_defaults(handler=command_record_strong_stage_review)
+
+    compile_stage = sub.add_parser(
+        "compile-next-stage",
+        help="controller-compile at most one next envelope from recorded evidence",
+    )
+    compile_stage.add_argument("--plan-dir", required=True)
+    compile_stage.add_argument("--stage-envelope", required=True)
+    compile_stage.add_argument(
+        "--authorized-evidence", action="append", default=[],
+    )
+    compile_stage.add_argument("--figure-requirements")
+    compile_stage.set_defaults(handler=command_compile_next_stage)
+
+    human_stage = sub.add_parser(
+        "record-human-stage-input",
+        help="record proposals or report-bound feedback without synthesizing authority",
+    )
+    human_stage.add_argument("--plan-dir", required=True)
+    human_stage.add_argument("--input-id", required=True)
+    human_stage.add_argument(
+        "--kind", required=True, choices=["proposal", "feedback"],
+    )
+    human_stage.add_argument("--stage-report-id")
+    human_stage.add_argument("--content-sha256", required=True)
+    human_stage.set_defaults(handler=command_record_human_stage_input)
 
     init = sub.add_parser("init-policy", help="freeze Claude/MiniMax and Codex budgets for a plan")
     init.add_argument("--plan-dir", required=True)

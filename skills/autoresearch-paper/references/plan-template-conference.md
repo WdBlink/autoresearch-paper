@@ -81,7 +81,9 @@ Total wall-clock target: 1–2 weeks.
     figure ID set, with at least 4 conference figures.
   - initialized `progress.json`, `directions_tried.json`,
     `candidate_registry.jsonl`, `scoreboard.tsv`, and `failure_state.json`.
-- **gate**: CP-01 binds `figure-requirements.json` before workers run; CP-02
+- **gate**: CP-01 binds the optimization contract, first-stage envelope,
+  deterministic preflight, and named capacity. The authorized T6.4
+  figure-production stage later freezes `figure-requirements.json`; CP-02
   audits `metric_contract.json` as the sole primary metric,
   operator, and threshold source before T3 can propose a method. Later changes require a
   human override in `control/override_requested.json`.
