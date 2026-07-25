@@ -107,11 +107,14 @@ python3 references/scripts/validate-figure-artifacts.py \
   --requirements <plan-dir>/state/figure-requirements.json
 ```
 
-The inventory must exactly match the CP-01-approved expected figure ID set and
-bind each manifest by SHA-256. Exit `0` returns a JSON `PASS` result with the
+For v0.16 rolling-stage plans, the inventory must exactly match the expected
+figure ID set frozen when the controller authorizes the figure-production
+stage, and it must bind each manifest by SHA-256. Legacy v0.15 plans retain
+their historical CP-01 timing. Exit `0` returns a JSON `PASS` result with the
 requirements, inventory, manifest, and verified artifact hashes. The
-controller then stores an immutable figure-gate receipt bound to the CP-01
-approval. Exit `2` returns a typed JSON failure on stderr. Any failure blocks
+controller then stores an immutable figure-gate receipt bound to that
+authorized requirements set. Exit `2` returns a typed JSON failure on stderr.
+Any failure blocks
 figure promotion and therefore T7/T10. Fix the source, rerender, update the
 hashes from the new bytes, and obtain a fresh human review whose
 `reviewed_outputs` exactly bind every current output; never weaken the

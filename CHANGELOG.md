@@ -26,6 +26,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
   frozen attempt capacity.
 - Terminal MiniMax-M3 reports and fresh strongest-policy non-M3 review receipts
   are required before the controller can compile at most one next stage.
+- Canonical owner authorization and reauthorization receipts, evaluator and
+  adoption-policy rebaseline receipts, per-stage resource ledgers, bounded
+  evidence maturity/retrieval, and replayable role-visible manifests.
 
 ### Changed
 
@@ -34,7 +37,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
   capacity. Legacy v0.15 evidence profiles and receipts remain valid.
 - Exact figure inventory freezes at the first authorized figure-production
   stage. Provenance, renderer, exact-set, and human-review gates remain
-  fail-closed.
+  fail-closed; legacy v0.15 CP-01 figure receipts keep their historical
+  interpretation.
 
 ### Security
 
@@ -42,6 +46,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
   evidence is preserved; development evidence never becomes transfer proof.
 - Strong-model findings remain advisory. Only deterministic controller
   receipts authorize execution, Gate application, and next-stage compilation.
+- Staged/global frontier capacity and Gate retries use locked reconciliation
+  journals; adversarial regressions cover bounded concurrent and injected
+  PREPARED-state recovery without claiming long-soak or production cutover.
 
 ## [0.15.0] - 2026-07-25
 

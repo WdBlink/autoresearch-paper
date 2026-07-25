@@ -364,13 +364,10 @@ python3 references/scripts/harness-runtime.py init-staged-research \
   --stage-envelope first-stage.json \
   --evaluation-profile evaluation-profile.json \
   --checkpoint-capacity checkpoint-capacity.json \
+  --authorization-receipt state/human_actions/applied/OWNER_AUTH.json \
   --incumbent-sha256 INCUMBENT_SHA256
 python3 references/scripts/harness-runtime.py preflight-staged-research \
-  --plan-dir PLAN --validators validators.json \
-  --input-manifest-sha256 INPUT_SHA256 \
-  --validator-versions-sha256 VALIDATOR_SHA256 \
-  --mandatory-checkpoint CP-01 --mandatory-checkpoint CP-02 \
-  --mandatory-checkpoint CP-04
+  --plan-dir PLAN --preflight-inputs raw-preflight-evidence.json
 python3 references/scripts/harness-runtime.py create-frontier-request \
   --plan-dir PLAN --plan-id PLAN_ID --checkpoint CP-01 \
   --objective "audit contract and first stage" \
@@ -392,6 +389,13 @@ python3 references/scripts/harness-runtime.py apply-frontier-response \
 python3 references/scripts/harness-runtime.py assert-transition \
   --plan-dir PLAN --plan-id PLAN_ID --transition approve_execution
 ```
+
+The owner receipt must be a canonical applied `authorize_contract` action
+binding the contract version/hash and first-stage ID/envelope hash.
+`raw-preflight-evidence.json` contains only the truth table, statistical
+design, train/evaluation matrix, conditional state machine, and current-stage
+critical path. It cannot contain caller-authored pass/fail/not-applicable
+labels; versioned Controller calculators derive and hash every verdict.
 
 Responses bind plan ID, checkpoint, subtype, request hash, canonical context
 manifest hash, model, and observed transport usage. Apply is exact-once and

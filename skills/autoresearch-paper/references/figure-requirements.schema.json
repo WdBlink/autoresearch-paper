@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://autoresearch-paper.local/schemas/figure-requirements.schema.json",
   "title": "Frozen plan figure requirements",
-  "description": "Controller-owned pre-writing figure identity set approved at CP-01.",
+  "description": "Controller-owned pre-writing figure identity set frozen at the first authorized figure-production stage; legacy v0.15 plans may carry a CP-01-approved set.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "plan_id", "tier", "expected_figure_ids"],

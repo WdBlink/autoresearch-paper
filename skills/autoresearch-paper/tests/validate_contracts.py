@@ -285,9 +285,16 @@ def main() -> int:
     require('version: "0.16.0"' in read("SKILL.md"), "SKILL.md version must be 0.16.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
+        repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.16.0" in repository_readme.read_text(),
+            "Current version:** v0.16.0" in repository_readme_text,
             "README version must be 0.16.0",
+            errors,
+        )
+        require(
+            "Figure Gate | CP-01 freezes expected IDs" not in repository_readme_text
+            and "authorized figure-production stage" in repository_readme_text,
+            "README must describe v0.16 figure freeze at the authorized figure-production stage",
             errors,
         )
     require(
@@ -330,6 +337,10 @@ def main() -> int:
             "create-logical-gate-query", "record-gate-transport-attempt",
             "apply-logical-gate-decision", "record-stage-report",
             "record-strong-stage-review", "compile-next-stage",
+            "record-evaluator-rebaseline", "amend-staged-contract",
+            "release-staged-evidence", "retrieve-staged-evidence",
+            "replay-role-visible-state", "classify-staged-failure",
+            "reauthorize-staged-research",
             "STAGED_CP01_EVIDENCE_PROFILE", "mandatory_future_calls",
         )),
         "harness runtime is missing v0.16 staged governance commands",
@@ -342,11 +353,33 @@ def main() -> int:
         "test_gate_query_is_single_and_transport_retries_are_independent",
         "test_minimax_report_fresh_non_m3_review_and_one_next_stage",
         "test_figure_inventory_freezes_only_at_figure_stage",
+        "test_preflight_rejects_self_attestation_zero_budget_and_hash_drift",
+        "test_gate_crash_recovery_is_exact_once_and_maturity_skip_fails",
+        "test_forged_worker_identity_and_role_visible_source_drift_fail",
+        "test_combined_capacity_concurrency_and_crash_recovery",
+        "test_evaluator_adoption_drift_requires_rebaseline_and_owner_lineage",
+        "test_stage_stop_requires_canonical_human_reauthorization",
     ):
         require(
             f"def {boundary}" in staged_tests,
             f"missing v0.16 staged governance regression {boundary}", errors,
         )
+    require(
+        "first authorized figure-production stage"
+        in read("references/figure-requirements.schema.json")
+        and "Legacy v0.15 plans retain"
+        in read("references/scientific-figure-pipeline.md"),
+        "figure requirements documentation has stale CP-01 timing",
+        errors,
+    )
+    require(
+        "--preflight-inputs raw-preflight-evidence.json"
+        in read("references/claude-code-runtime.md")
+        and "--validators validators.json"
+        not in read("references/claude-code-runtime.md"),
+        "staged runtime documentation still permits caller-authored preflight verdicts",
+        errors,
+    )
     durable_tests = read("tests/test_durable_loop_runtime.py")
     require(
         all(name in durable_tests for name in (

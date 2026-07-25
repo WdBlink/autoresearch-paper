@@ -14,7 +14,9 @@
     "visible_message_manifest_sha256",
     "context_events",
     "context_event_manifest_sha256",
-    "source_artifact_refs"
+    "source_artifact_refs",
+    "source_artifact_sha256",
+    "canonical_call_manifest"
   ],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
@@ -85,6 +87,14 @@
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$"
       }
-    }
+    },
+    "source_artifact_sha256": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "canonical_call_manifest": {"type": "object"}
   }
 }

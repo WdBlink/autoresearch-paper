@@ -13,7 +13,9 @@
     "action": {
       "enum": [
         "pause", "resume", "stop", "cancel_worker", "waive_acceptance",
-        "override_acceptance", "cleanup_resource", "authorize_evaluator_change"
+        "override_acceptance", "cleanup_resource", "authorize_evaluator_change",
+        "authorize_contract", "reauthorize_stage", "authorize_rebaseline",
+        "release_evidence"
       ]
     },
     "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},

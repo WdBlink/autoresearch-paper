@@ -13,6 +13,12 @@
     "contract_sha256",
     "evaluation_profile_sha256",
     "checkpoint_capacity_sha256",
+    "owner_authorization_sha256",
+    "owner_authorization_path",
+    "owner_authorization_action",
+    "active_stage_authorization_path",
+    "active_stage_authorization_sha256",
+    "active_stage_authorization_action",
     "active_stage_id",
     "active_stage_envelope_sha256",
     "current_incumbent_sha256",
@@ -31,6 +37,17 @@
     "contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "evaluation_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "checkpoint_capacity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "owner_authorization_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "owner_authorization_path": {"type": "string", "minLength": 1},
+    "owner_authorization_action": {
+      "type": "string", "enum": ["authorize_contract", "authorize_rebaseline"]
+    },
+    "active_stage_authorization_path": {"type": "string", "minLength": 1},
+    "active_stage_authorization_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "active_stage_authorization_action": {
+      "type": "string",
+      "enum": ["authorize_contract", "reauthorize_stage", "authorize_rebaseline"]
+    },
     "active_stage_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -67,6 +84,7 @@
     },
     "optimizationContract": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "schema_version", "contract_version", "owner_identity_sha256",
         "authorization_receipt_id", "objective",
@@ -87,6 +105,7 @@
         "authorization_receipt_id": {"$ref": "#/$defs/immutableId"},
         "objective": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["id", "statement_sha256"],
           "properties": {
             "id": {"$ref": "#/$defs/immutableId"},
@@ -111,6 +130,7 @@
     },
     "stageEnvelope": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "schema_version", "stage_id", "contract_version", "source_cycle_id",
         "incumbent_sha256", "stage_objective_sha256",
@@ -145,6 +165,7 @@
     },
     "stageBudgetAndStop": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "profile_id", "time_seconds", "tool_calls", "worker_tokens",
         "review_tokens", "retry_attempts", "evaluation_calls",
@@ -163,11 +184,14 @@
     },
     "evaluationProfile": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "schema_version", "profile_id",
         "logical_gate_query_limit_per_candidate",
         "private_split_policy_sha256", "holdout_refresh_policy_sha256",
-        "transfer_audit_schedule_sha256", "external_suite_identity_sha256"
+        "transfer_audit_schedule_sha256", "external_suite_identity_sha256",
+        "gate_metric", "gate_operator", "gate_threshold",
+        "gate_escalation_margin"
       ],
       "properties": {
         "schema_version": {"const": 1},
@@ -176,11 +200,16 @@
         "private_split_policy_sha256": {"$ref": "#/$defs/sha256"},
         "holdout_refresh_policy_sha256": {"$ref": "#/$defs/sha256"},
         "transfer_audit_schedule_sha256": {"$ref": "#/$defs/sha256"},
-        "external_suite_identity_sha256": {"$ref": "#/$defs/sha256"}
+        "external_suite_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "gate_metric": {"$ref": "#/$defs/immutableId"},
+        "gate_operator": {"enum": ["ge", "le"]},
+        "gate_threshold": {"type": "number"},
+        "gate_escalation_margin": {"type": "number", "minimum": 0}
       }
     },
     "checkpointCapacity": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "schema_version", "checkpoint_capacity", "retry_budget",
         "remaining_calls", "mandatory_future_calls"
@@ -189,6 +218,7 @@
         "schema_version": {"const": 1},
         "checkpoint_capacity": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["CP-01", "CP-02", "CP-04"],
           "properties": {
             "CP-01": {"$ref": "#/$defs/checkpointSlot"},
@@ -198,10 +228,16 @@
         },
         "retry_budget": {
           "type": "object",
+          "additionalProperties": false,
           "required": [
             "remaining_attempts", "per_attempt_call_limit",
             "per_attempt_token_limit"
-          ]
+          ],
+          "properties": {
+            "remaining_attempts": {"type": "integer", "minimum": 0},
+            "per_attempt_call_limit": {"type": "integer", "minimum": 0},
+            "per_attempt_token_limit": {"type": "integer", "minimum": 0}
+          }
         },
         "remaining_calls": {"type": "integer", "minimum": 0},
         "mandatory_future_calls": {"type": "integer", "minimum": 0}
@@ -209,6 +245,7 @@
     },
     "checkpointSlot": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["slot_id", "reserved", "spent", "transferable"],
       "properties": {
         "slot_id": {"$ref": "#/$defs/immutableId"},

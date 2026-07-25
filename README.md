@@ -275,7 +275,7 @@ During a run:
 | Frontier audit | reserve budget, send a registered checkpoint to Codex, validate, then record controller consumption |
 | Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
 | Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
-| Figure Gate | CP-01 freezes expected IDs; T6.4 binds exact manifests, outputs, and human reviews |
+| Figure Gate | v0.16 freezes expected IDs only when the controller authorizes the figure-production stage; T6.4 binds exact manifests, outputs, and human reviews (legacy v0.15 CP-01 receipts retain their historical timing) |
 | Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
 | Cleanup | stop reports residuals; each deletion consumes a scoped receipt |
 
