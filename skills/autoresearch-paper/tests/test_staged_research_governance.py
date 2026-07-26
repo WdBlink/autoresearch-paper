@@ -354,6 +354,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "sha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
             }],
         })
+        promotion.chmod(0o444)
         self.write(run_dir / "promotion-journal.json", {
             "schema_version": 1, "phase": "COMMITTED",
             "worker_run_id": run_id,
@@ -575,15 +576,16 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             {
                 "schema_version": 1, "run_id": f"evr_gate_{decision}",
                 "purpose": "candidate", "plan_id": "plan_staged",
-                "evaluator_path": str(evaluator_path),
+                "evaluator_path": str(evaluator_path.resolve()),
                 "evaluator_sha256": hashlib.sha256(evaluator_path.read_bytes()).hexdigest(),
-                "evidence_path": str(evidence_path),
+                "evidence_path": str(evidence_path.resolve()),
                 "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
                 "candidate_path": stage_candidate["candidate_path"],
                 "candidate_sha256": candidate_sha,
                 "metric": "score", "value": value, "exit_code": 0,
             },
         )
+        execution_path.chmod(0o444)
         transport_args = [
             "record-gate-transport-attempt", "--plan-dir", str(plan),
             "--logical-gate-query-id", f"gate_{decision}",
@@ -893,15 +895,16 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     {
                         "schema_version": 1, "run_id": f"evr_retry_{index}",
                         "purpose": "candidate", "plan_id": "plan_staged",
-                        "evaluator_path": str(evaluator_path),
+                        "evaluator_path": str(evaluator_path.resolve()),
                         "evaluator_sha256": hashlib.sha256(evaluator_path.read_bytes()).hexdigest(),
-                        "evidence_path": str(evidence_path),
+                        "evidence_path": str(evidence_path.resolve()),
                         "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
                         "candidate_path": stage_candidate["candidate_path"],
                         "candidate_sha256": candidate, "metric": "score",
                         "value": 0.8, "exit_code": 0,
                     },
                 )
+                execution_path.chmod(0o444)
                 self.invoke(
                     "record-gate-transport-attempt", "--plan-dir", str(plan),
                     "--logical-gate-query-id", "gate_1",
@@ -1138,12 +1141,67 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 plan / "inputs" / "released-stage-2.json", envelope,
             )
             authorization = self.authorize_next_stage(plan, envelope_path)
-            self.invoke(
+            compile_args = (
                 "compile-next-stage", "--plan-dir", str(plan),
                 "--stage-envelope", str(envelope_path),
                 "--authorized-evidence", "evidence_stage_1",
                 "--authorization-receipt", authorization,
             )
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_COMPILE_ENVELOPE"] = "1"
+            self.assertEqual(
+                self.invoke(*compile_args, ok=False, env=env).returncode, 87,
+            )
+            audit_path = root / "audit.jsonl"
+            query_path = stage_dir / "gate-query.json"
+            maturity_path = stage_dir / "evidence-maturity.json"
+            originals = {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in (audit_path, query_path, maturity_path)
+            }
+            for name, mutate in (
+                ("gate", lambda: query_path.unlink()),
+                ("release_audit", lambda: audit_path.write_text("".join(
+                    line + "\n" for line in audit_path.read_text().splitlines()
+                    if json.loads(line).get("event") != "staged_evidence_released"
+                ))),
+                ("release_maturity", lambda: (
+                    maturity_path.chmod(0o600),
+                    self.write(maturity_path, {
+                        **json.loads(maturity_path.read_text()),
+                        "transitions": [
+                            *json.loads(maturity_path.read_text())["transitions"][:-1],
+                            {**json.loads(maturity_path.read_text())["transitions"][-1],
+                             "recorded_at": "drifted"},
+                        ],
+                    }),
+                    maturity_path.chmod(0o444),
+                )),
+            ):
+                with self.subTest(released_drift=name):
+                    for path, (content, mode) in originals.items():
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        if path.exists():
+                            path.chmod(0o600)
+                        path.write_bytes(content)
+                        path.chmod(mode)
+                    mutate()
+                    snapshot = {
+                        str(path.relative_to(root)): path.read_bytes()
+                        for path in root.rglob("*") if path.is_file()
+                    }
+                    self.invoke(*compile_args, ok=False)
+                    self.assertEqual(snapshot, {
+                        str(path.relative_to(root)): path.read_bytes()
+                        for path in root.rglob("*") if path.is_file()
+                    })
+            for path, (content, mode) in originals.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    path.chmod(0o600)
+                path.write_bytes(content)
+                path.chmod(mode)
+            self.invoke(*compile_args)
             journal = json.loads(
                 (root / "compile-journals" / "stage_1.json").read_text()
             )
@@ -1343,6 +1401,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     path.chmod(0o600)
                     path.write_bytes(value)
                 receipt_path.chmod(0o444)
+                maturity_path.chmod(0o444)
 
             ledger_path.write_text("")
             self.assertIn("ledger", reject_without_projection(canonical))
@@ -1359,7 +1418,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertIn("audit", reject_without_projection(canonical))
             restore()
             receipt_path.chmod(0o600)
-            self.assertIn("mutable", reject_without_projection(canonical))
+            self.assertIn("mode", reject_without_projection(canonical))
             restore()
 
             mutation_cases = {
@@ -1405,6 +1464,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 maturity = json.loads(json.dumps(original_maturity))
                 maturity["transitions"] = maturity["transitions"][:length]
                 maturity["current_maturity"] = maturity_name
+                maturity_path.chmod(0o600)
                 self.write(maturity_path, maturity)
                 reject_without_projection(canonical)
                 restore()
@@ -1414,6 +1474,212 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertIn("duplicated", reject_without_projection(canonical))
             duplicate.unlink()
             duplicate.parent.rmdir()
+
+    def test_complete_compile_provenance_chain_rejects_fresh_and_recovery_drift(self) -> None:
+        for prepared in (False, True):
+            with self.subTest(prepared=prepared), tempfile.TemporaryDirectory() as td:
+                plan = Path(td) / "plan"
+                cycle = self.prepare_compilable_stage(
+                    plan, "a" if prepared else "b",
+                )
+                root = plan / "state" / "staged_research" / "v1"
+                stage = root / "stages" / "stage_1"
+                envelope = self.envelope(
+                    "stage_2", source="stage_1",
+                    incumbent=cycle["resulting_incumbent_sha256"],
+                )
+                envelope_path = self.write(
+                    plan / "inputs" / "provenance-stage-2.json", envelope,
+                )
+                authorization = self.authorize_next_stage(plan, envelope_path)
+                args = [
+                    "compile-next-stage", "--plan-dir", str(plan),
+                    "--stage-envelope", str(envelope_path),
+                    "--authorized-evidence", "evidence_stage_1",
+                    "--authorization-receipt", authorization,
+                ]
+                if prepared:
+                    env = dict(os.environ)
+                    env["HARNESS_FAULT_AFTER_COMPILE_ENVELOPE"] = "1"
+                    self.assertEqual(
+                        self.invoke(*args, ok=False, env=env).returncode, 87,
+                    )
+                decision_path = stage / "decision.json"
+                decision = json.loads(decision_path.read_text())
+                execution_path = Path(
+                    decision["evaluator_execution_receipt_path"]
+                )
+                execution = json.loads(execution_path.read_text())
+                execution_copy = self.write(
+                    plan / "inputs" / "execution-copy.json", execution,
+                )
+                execution_copy.chmod(0o444)
+                candidate_path = stage / "candidate.json"
+                candidate = json.loads(candidate_path.read_text())
+                promotion_path = Path(candidate["promotion_receipt_path"])
+                promotion = json.loads(promotion_path.read_text())
+                run_dir = promotion_path.parent
+                query_path = stage / "gate-query.json"
+                query = json.loads(query_path.read_text())
+                attempt_path = (
+                    stage / "gate-attempt-journals"
+                    / f"{query['transport_attempts'][0]['transport_attempt_id']}.json"
+                )
+                maturity_path = stage / "evidence-maturity.json"
+                ledger_path = root / "evidence-ledger.jsonl"
+                audit_path = root / "audit.jsonl"
+
+                def alter_json(path: Path, key: str, value: object) -> None:
+                    body = json.loads(path.read_text())
+                    body[key] = value
+                    path.chmod(0o600)
+                    self.write(path, body)
+                    path.chmod(0o444 if path in {
+                        execution_path, candidate_path, promotion_path,
+                        decision_path, maturity_path,
+                    } else 0o600)
+
+                def alter_transition(index: int, key: str, value: object) -> None:
+                    body = json.loads(maturity_path.read_text())
+                    body["transitions"][index][key] = value
+                    maturity_path.chmod(0o600)
+                    self.write(maturity_path, body)
+                    maturity_path.chmod(0o444)
+
+                def alter_bytes(path: Path) -> None:
+                    path.chmod(0o600)
+                    path.write_bytes(b"drifted")
+
+                originals = {
+                    path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                    for path in {
+                        execution_path, Path(execution["evaluator_path"]),
+                        candidate_path, Path(candidate["candidate_path"]),
+                        promotion_path, run_dir / "status.json",
+                        run_dir / "promotion-journal.json", query_path,
+                        attempt_path, decision_path, maturity_path,
+                        ledger_path, audit_path,
+                    }
+                }
+
+                def restore() -> None:
+                    for path, (content, mode) in originals.items():
+                        if path.is_symlink():
+                            path.unlink()
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.chmod(0o600) if path.exists() else None
+                        path.write_bytes(content)
+                        path.chmod(mode)
+
+                def append_duplicate(path: Path, event: str | None = None) -> None:
+                    lines = path.read_text().splitlines()
+                    selected = next(
+                        line for line in lines
+                        if event is None or json.loads(line).get("event") == event
+                    )
+                    path.write_text(path.read_text() + selected + "\n")
+
+                def remove_line(path: Path, event: str | None = None) -> None:
+                    lines = path.read_text().splitlines()
+                    removed = False
+                    kept = []
+                    for line in lines:
+                        match = event is None or json.loads(line).get("event") == event
+                        if match and not removed:
+                            removed = True
+                        else:
+                            kept.append(line)
+                    path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+                def symlink_execution() -> None:
+                    execution_path.chmod(0o600)
+                    execution_path.unlink()
+                    execution_path.symlink_to(execution_copy)
+
+                cases = [
+                    ("execution_mode", lambda: execution_path.chmod(0o600)),
+                    ("execution_symlink", symlink_execution),
+                    ("execution_path", lambda: alter_json(
+                        decision_path, "evaluator_execution_receipt_path",
+                        str(execution_copy),
+                    )),
+                    ("execution_plan", lambda: alter_json(
+                        execution_path, "plan_id", "plan_forged",
+                    )),
+                    ("execution_content", lambda: alter_json(
+                        execution_path, "completed_at", "drifted",
+                    )),
+                    ("referenced_bytes", lambda: alter_bytes(Path(
+                        execution["evaluator_path"]
+                    ))),
+                    ("candidate_record", lambda: alter_json(
+                        candidate_path, "frozen_at", "drifted",
+                    )),
+                    ("candidate_record_mode", lambda: candidate_path.chmod(0o600)),
+                    ("candidate_bytes", lambda: alter_bytes(Path(
+                        candidate["candidate_path"]
+                    ))),
+                    ("worker_status", lambda: alter_json(
+                        run_dir / "status.json", "worker_model", "forged",
+                    )),
+                    ("promotion_receipt", lambda: alter_json(
+                        promotion_path, "plan_id", "plan_forged",
+                    )),
+                    ("promotion_mode", lambda: promotion_path.chmod(0o600)),
+                    ("promotion_journal", lambda: alter_json(
+                        run_dir / "promotion-journal.json", "phase", "PREPARED",
+                    )),
+                    ("gate_query", lambda: alter_json(
+                        query_path, "idempotency_key", digest("drifted-query"),
+                    )),
+                    ("missing_gate_query", query_path.unlink),
+                    ("attempt_journal", lambda: alter_json(
+                        attempt_path, "phase", "PREPARED",
+                    )),
+                    ("missing_attempt_journal", attempt_path.unlink),
+                    ("decision", lambda: alter_json(
+                        decision_path, "decided_at", "drifted",
+                    )),
+                    ("decision_mode", lambda: decision_path.chmod(0o600)),
+                    ("maturity_authority", lambda: alter_transition(
+                        1, "authority", "promotion:forged",
+                    )),
+                    ("maturity_timestamp", lambda: alter_transition(
+                        0, "recorded_at", "drifted",
+                    )),
+                    ("maturity_content", lambda: alter_transition(
+                        2, "extra", "drifted",
+                    )),
+                    ("maturity_mode", lambda: maturity_path.chmod(0o600)),
+                    ("missing_ledger", lambda: remove_line(ledger_path)),
+                    ("duplicate_ledger", lambda: append_duplicate(ledger_path)),
+                    ("missing_terminal_audit", lambda: remove_line(
+                        audit_path, "logical_gate_decision_applied",
+                    )),
+                    ("duplicate_terminal_audit", lambda: append_duplicate(
+                        audit_path, "logical_gate_decision_applied",
+                    )),
+                ]
+                for name, mutate in cases:
+                    with self.subTest(case=name):
+                        restore()
+                        mutate()
+                        snapshot = {
+                            str(path.relative_to(root)): (
+                                path.read_bytes(), path.stat().st_mode & 0o777,
+                            )
+                            for path in root.rglob("*") if path.is_file()
+                        }
+                        self.invoke(*args, ok=False)
+                        self.assertEqual(snapshot, {
+                            str(path.relative_to(root)): (
+                                path.read_bytes(), path.stat().st_mode & 0o777,
+                            )
+                            for path in root.rglob("*") if path.is_file()
+                        })
+                restore()
+                completed = json.loads(self.invoke(*args).stdout)
+                self.assertEqual(completed["next_stage_id"], "stage_2")
 
     def test_forged_worker_identity_and_role_visible_source_drift_fail(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1818,21 +2084,22 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 {
                     "schema_version": 1, "run_id": "evr_rebaseline_v2",
                     "purpose": "calibration", "plan_id": "plan_staged",
-                    "evaluator_path": str(new_evaluator),
+                    "evaluator_path": str(new_evaluator.resolve()),
                     "evaluator_sha256": hashlib.sha256(
                         new_evaluator.read_bytes()
                     ).hexdigest(),
-                    "evidence_path": str(calibration_evidence),
+                    "evidence_path": str(calibration_evidence.resolve()),
                     "evidence_sha256": hashlib.sha256(
                         calibration_evidence.read_bytes()
                     ).hexdigest(),
-                    "candidate_path": str(candidate),
+                    "candidate_path": str(candidate.resolve()),
                     "candidate_sha256": hashlib.sha256(
                         candidate.read_bytes()
                     ).hexdigest(),
                     "metric": "score", "value": 0.75, "exit_code": 0,
                 },
             )
+            calibration_path.chmod(0o444)
             forged = self.write(
                 plan / "inputs" / "forged-rebaseline.json",
                 {"record_id": "har_rebaseline_v2",
@@ -2244,7 +2511,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 command, cwd=ROOT, text=True, capture_output=True,
             )
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("identity conflict", rejected.stderr)
+            self.assertIn("audit", rejected.stderr)
             self.assertEqual(
                 {
                     str(item.relative_to(recovery_root)): item.read_bytes()

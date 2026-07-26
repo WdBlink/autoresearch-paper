@@ -1068,13 +1068,40 @@ def command_run_evaluator(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def load_evaluator_run(plan_dir: Path, path: Path) -> dict[str, Any]:
+    plan_dir = plan_dir.resolve()
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o777 != 0o444
+    ):
+        raise ContractError(
+            "evaluator execution receipt must be canonical immutable 0444"
+        )
     run = read_json(path)
     canonical = plan_dir / "state" / "evaluator_runs" / f"{run.get('run_id', '')}.json"
-    if path.resolve() != canonical.resolve() or run.get("plan_id") != plan_identity(plan_dir):
+    if (
+        path != canonical
+        or run.get("plan_id") != plan_identity(plan_dir)
+        or not isinstance(run.get("run_id"), str)
+        or canonical.name != f"{run['run_id']}.json"
+    ):
         raise ContractError("evaluator execution receipt is not canonical for this plan")
     for field in ("evaluator", "evidence", "candidate"):
-        artifact = Path(run[f"{field}_path"])
-        if sha256_file(artifact) != run[f"{field}_sha256"]:
+        artifact_value = run.get(f"{field}_path")
+        artifact = Path(artifact_value) if isinstance(artifact_value, str) else Path()
+        try:
+            artifact.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(
+                f"evaluator execution {field} path is not canonical"
+            ) from exc
+        if (
+            not artifact.is_absolute()
+            or artifact.is_symlink()
+            or not artifact.is_file()
+            or sha256_file(artifact) != run.get(f"{field}_sha256")
+        ):
             raise ContractError(f"evaluator execution {field} hash changed")
     if run.get("exit_code") != 0:
         raise ContractError("evaluator execution did not complete successfully")
@@ -8657,7 +8684,7 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
         ):
             transitions.append({
                 "maturity": maturity_name, "authority": authority,
-                "recorded_at": utc_now(),
+                "recorded_at": record["frozen_at"],
             })
         atomic_write_json(maturity_path, {
             "schema_version": 1,
@@ -9008,7 +9035,7 @@ def _finish_gate_decision_transaction(
             maturity["transitions"].append({
                 "maturity": "gate_accepted",
                 "authority": authority,
-                "recorded_at": utc_now(),
+                "recorded_at": decision["decided_at"],
             })
         elif (
             maturity["current_maturity"] != "gate_accepted"
@@ -9020,7 +9047,7 @@ def _finish_gate_decision_transaction(
         ):
             raise ContractError("Gate maturity transaction cannot be reconciled")
         maturity["current_maturity"] = "gate_accepted"
-        atomic_write_json(maturity_path, maturity)
+        atomic_write_json(maturity_path, maturity, immutable=True)
     evidence = {
         "schema_version": 1,
         "evidence_id": f"evidence_{state['active_stage_id']}",
@@ -9274,6 +9301,273 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
+def staged_canonical_file(
+    path: Path, canonical: Path, label: str, *, immutable: bool = False,
+) -> dict[str, Any]:
+    if (
+        path != canonical
+        or path.is_symlink()
+        or not path.is_file()
+        or (immutable and path.stat().st_mode & 0o777 != 0o444)
+    ):
+        raise ContractError(f"canonical {label} path or mode changed")
+    return {"path": str(path), "sha256": sha256_file(path)}
+
+
+def staged_exact_audit(
+    audit: list[dict[str, Any]], event: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = {"schema_version", "audit_revision", "event", "recorded_at"}
+    matches = [
+        record for record in audit
+        if set(record) == metadata | set(payload)
+        and record.get("schema_version") == 1
+        and record.get("event") == event
+        and all(record.get(key) == value for key, value in payload.items())
+    ]
+    if len(matches) != 1:
+        raise ContractError(f"compile evidence lacks one exact {event} audit")
+    return matches[0]
+
+
+def staged_resolve_candidate_chain(
+    plan_dir: Path, stage_dir: Path, candidate: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_path = stage_dir / "candidate.json"
+    candidate_binding = staged_canonical_file(
+        candidate_path, candidate_path, "candidate record", immutable=True,
+    )
+    required = {
+        "schema_version", "stage_cycle_id", "incumbent_sha256",
+        "candidate_sha256", "candidate_path", "maturity",
+        "development_evidence_refs", "promotion_receipt_path",
+        "promotion_receipt_sha256", "frozen_at",
+    }
+    if (
+        set(candidate) != required
+        or candidate.get("schema_version") != 1
+        or candidate.get("stage_cycle_id") != stage_dir.name
+        or candidate.get("maturity") != "full_experiment"
+    ):
+        raise ContractError("canonical candidate record changed")
+    frozen_path = stage_dir / "candidate-artifact"
+    frozen_binding = staged_canonical_file(
+        Path(candidate["candidate_path"]), frozen_path,
+        "frozen candidate", immutable=True,
+    )
+    if frozen_binding["sha256"] != candidate["candidate_sha256"]:
+        raise ContractError("frozen candidate bytes changed")
+    promotion_path = Path(candidate["promotion_receipt_path"])
+    promotion = read_json(promotion_path)
+    run_id = promotion.get("worker_run_id", "")
+    run_dir = worker_run_dir(plan_dir, run_id)
+    promotion_binding = staged_canonical_file(
+        promotion_path, run_dir / "promotion-receipt.json",
+        "candidate promotion receipt", immutable=True,
+    )
+    status_path = run_dir / "status.json"
+    journal_path = run_dir / "promotion-journal.json"
+    status_binding = staged_canonical_file(
+        status_path, status_path, "candidate worker status",
+    )
+    journal_binding = staged_canonical_file(
+        journal_path, journal_path, "candidate promotion journal",
+    )
+    status = read_json(status_path)
+    journal = read_json(journal_path)
+    contract_path = Path(status.get("contract_path", ""))
+    result_path = Path(status.get("result_path", ""))
+    contract_binding = staged_canonical_file(
+        contract_path, contract_path, "candidate worker contract",
+    )
+    result_binding = staged_canonical_file(
+        result_path, result_path, "candidate worker result",
+    )
+    policy_path = plan_dir / "state" / "model_policy.json"
+    artifacts = [
+        item for item in promotion.get("artifacts", [])
+        if item.get("artifact_id") == "candidate"
+        and item.get("sha256") == candidate["candidate_sha256"]
+    ]
+    promoted_source_binding = None
+    if len(artifacts) == 1:
+        promoted_source = Path(artifacts[0].get("path", ""))
+        promoted_source_binding = staged_canonical_file(
+            promoted_source, promoted_source, "promoted candidate source",
+        )
+    if (
+        candidate["promotion_receipt_sha256"] != promotion_binding["sha256"]
+        or candidate["development_evidence_refs"] != [f"promotion:{run_id}"]
+        or status.get("run_id") != run_id
+        or status.get("status") != "COMPLETED"
+        or status.get("worker_model") != load_policy(plan_dir)["worker_model"]
+        or status.get("contract_sha256") != contract_binding["sha256"]
+        or status.get("result_sha256") != result_binding["sha256"]
+        or status.get("model_policy_sha256") != sha256_file(policy_path)
+        or promotion.get("plan_id") != plan_identity(plan_dir)
+        or promotion.get("contract_sha256") != status.get("contract_sha256")
+        or promotion.get("result_sha256") != status.get("result_sha256")
+        or len(artifacts) != 1
+        or promoted_source_binding["sha256"] != candidate["candidate_sha256"]
+        or journal.get("phase") != "COMMITTED"
+        or journal.get("worker_run_id") != run_id
+        or journal.get("receipt_sha256") != promotion_binding["sha256"]
+    ):
+        raise ContractError("canonical candidate promotion chain changed")
+    return {
+        "candidate_record": candidate_binding,
+        "frozen_candidate": frozen_binding,
+        "worker_status": status_binding,
+        "worker_contract": contract_binding,
+        "worker_result": result_binding,
+        "promotion_receipt": promotion_binding,
+        "promotion_journal": journal_binding,
+        "promoted_candidate_source": promoted_source_binding,
+        "worker_run_id": run_id,
+        "frozen_at": candidate["frozen_at"],
+    }
+
+
+def staged_resolve_gate_chain(
+    plan_dir: Path,
+    stage_dir: Path,
+    evidence_id: str,
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    contract: dict[str, Any],
+    audit: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    decision_path = stage_dir / "decision.json"
+    decision_binding = staged_canonical_file(
+        decision_path, decision_path, "Gate decision", immutable=True,
+    )
+    decision_fields = {
+        "schema_version", "stage_cycle_id", "logical_gate_query_id",
+        "gate_receipt_id", "decision", "prior_incumbent_sha256",
+        "candidate_sha256", "resulting_incumbent_sha256",
+        "advancement_blocked", "evaluator_execution_receipt_path",
+        "evaluator_execution_receipt_sha256", "controller_authoritative",
+        "decided_at",
+    }
+    if (
+        set(decision) != decision_fields
+        or decision.get("schema_version") != 1
+        or decision.get("controller_authoritative") is not True
+        or decision.get("stage_cycle_id") != stage_dir.name
+        or decision.get("candidate_sha256") != candidate["candidate_sha256"]
+    ):
+        raise ContractError("canonical Gate decision changed")
+    execution_path = Path(decision["evaluator_execution_receipt_path"])
+    run = load_evaluator_run(plan_dir, execution_path)
+    if (
+        sha256_file(execution_path)
+        != decision["evaluator_execution_receipt_sha256"]
+        or run.get("run_id") != decision["gate_receipt_id"]
+        or run.get("purpose") != "candidate"
+        or run.get("candidate_path") != candidate["candidate_path"]
+        or run.get("candidate_sha256") != candidate["candidate_sha256"]
+        or run.get("evaluator_sha256")
+        != contract["acceptance_evaluator_sha256"]
+    ):
+        raise ContractError("canonical evaluator execution lineage changed")
+    query_path = stage_dir / "gate-query.json"
+    query_binding = staged_canonical_file(
+        query_path, query_path, "logical Gate query",
+    )
+    query = read_json(query_path)
+    query_fields = {
+        "schema_version", "logical_gate_query_id", "stage_cycle_id",
+        "candidate_sha256", "evaluator_sha256", "idempotency_key",
+        "transport_attempts", "applied_gate_receipt_id",
+    }
+    if (
+        set(query) != query_fields
+        or query.get("schema_version") != 1
+        or query.get("logical_gate_query_id")
+        != decision["logical_gate_query_id"]
+        or query.get("stage_cycle_id") != stage_dir.name
+        or query.get("candidate_sha256") != candidate["candidate_sha256"]
+        or query.get("evaluator_sha256")
+        != contract["acceptance_evaluator_sha256"]
+        or query.get("applied_gate_receipt_id") != run["run_id"]
+        or not isinstance(query.get("transport_attempts"), list)
+    ):
+        raise ContractError("canonical logical Gate query changed")
+    attempts = [
+        item for item in query["transport_attempts"]
+        if item.get("status") == "received"
+        and item.get("execution_receipt_path") == str(execution_path)
+        and item.get("execution_receipt_sha256")
+        == decision["evaluator_execution_receipt_sha256"]
+        and item.get("evaluator_run_id") == run["run_id"]
+        and item.get("idempotency_key") == query["idempotency_key"]
+    ]
+    if len(attempts) != 1:
+        raise ContractError("Gate evidence lacks one canonical received attempt")
+    attempt = attempts[0]
+    attempt_fields = {
+        "transport_attempt_id", "idempotency_key", "budget_reservation_id",
+        "status", "execution_receipt_path", "execution_receipt_sha256",
+        "evaluator_run_id",
+    }
+    if set(attempt) != attempt_fields:
+        raise ContractError("canonical Gate transport attempt changed")
+    attempt_journal_path = (
+        stage_dir / "gate-attempt-journals"
+        / f"{attempt['transport_attempt_id']}.json"
+    )
+    attempt_journal_binding = staged_canonical_file(
+        attempt_journal_path, attempt_journal_path, "Gate attempt journal",
+    )
+    attempt_journal = read_json(attempt_journal_path)
+    if (
+        attempt_journal.get("phase") != "COMMITTED"
+        or attempt_journal.get("logical_gate_query_id")
+        != query["logical_gate_query_id"]
+        or attempt_journal.get("attempt") != attempt
+    ):
+        raise ContractError("canonical Gate attempt journal changed")
+    decision_journal_path = stage_dir / "gate-decision-journal.json"
+    decision_journal_binding = staged_canonical_file(
+        decision_journal_path, decision_journal_path,
+        "Gate decision journal",
+    )
+    decision_journal = read_json(decision_journal_path)
+    if (
+        decision_journal.get("phase") != "COMMITTED"
+        or decision_journal.get("decision") != decision
+        or decision_journal.get("decision_sha256")
+        != decision_binding["sha256"]
+    ):
+        raise ContractError("canonical Gate decision journal changed")
+    attempt_audit = staged_exact_audit(
+        audit, "gate_transport_attempt_recorded",
+        {"logical_gate_query_id": query["logical_gate_query_id"], **attempt},
+    )
+    terminal_audit = staged_exact_audit(
+        audit, "logical_gate_decision_applied",
+        {**decision, "evidence_id": evidence_id},
+    )
+    execution = {
+        "receipt": {"path": str(execution_path), "sha256": sha256_file(execution_path)},
+        "run_id": run["run_id"], "plan_id": run["plan_id"],
+        "evaluator": {"path": run["evaluator_path"], "sha256": run["evaluator_sha256"]},
+        "evidence": {"path": run["evidence_path"], "sha256": run["evidence_sha256"]},
+        "candidate": {"path": run["candidate_path"], "sha256": run["candidate_sha256"]},
+    }
+    gate = {
+        "query": query_binding,
+        "attempt_journal": attempt_journal_binding,
+        "attempt_audit_revision": attempt_audit["audit_revision"],
+        "attempt_audit_sha256": sha256_json(attempt_audit),
+        "decision": decision_binding,
+        "decision_journal": decision_journal_binding,
+        "terminal_audit_revision": terminal_audit["audit_revision"],
+        "terminal_audit_sha256": sha256_json(terminal_audit),
+    }
+    return gate, execution, run
+
+
 def staged_resolve_compile_evidence(
     plan_dir: Path,
     envelope: dict[str, Any],
@@ -9325,9 +9619,14 @@ def staged_resolve_compile_evidence(
             )
         stage_id = next(iter(stage_ids))
         stage_dir = staged_stage_dir(plan_dir, stage_id)
-        candidate = read_json(stage_dir / "candidate.json")
-        decision = read_json(stage_dir / "decision.json")
+        candidate_path = stage_dir / "candidate.json"
+        decision_path = stage_dir / "decision.json"
+        candidate = read_json(candidate_path)
+        decision = read_json(decision_path)
         maturity_path = stage_dir / "evidence-maturity.json"
+        maturity_binding = staged_canonical_file(
+            maturity_path, maturity_path, "evidence maturity", immutable=True,
+        )
         maturity = read_json(maturity_path)
         staged_validate_evidence_maturity(
             maturity, candidate["candidate_sha256"],
@@ -9340,15 +9639,83 @@ def staged_resolve_compile_evidence(
             != candidate["candidate_sha256"]
         ):
             raise ContractError("compile evidence stage binding changed")
-        source_envelope = read_json(stage_dir / "envelope.json")
+        source_envelope_path = stage_dir / "envelope.json"
+        source_envelope_binding = staged_canonical_file(
+            source_envelope_path, source_envelope_path,
+            "source stage envelope", immutable=True,
+        )
+        source_envelope = read_json(source_envelope_path)
         if source_envelope.get("contract_version") != state["contract_version"]:
             raise ContractError("compile evidence contract lineage is stale")
+        candidate_chain = staged_resolve_candidate_chain(
+            plan_dir, stage_dir, candidate,
+        )
+        gate_chain, execution_chain, execution = staged_resolve_gate_chain(
+            plan_dir, stage_dir, evidence_id, candidate, decision,
+            contract, audit,
+        )
+        expected_initial = [
+            {"maturity": name, "authority": authority,
+             "recorded_at": candidate["frozen_at"]}
+            for name, authority in (
+                ("idea", "candidate_pool"),
+                ("screened", f"promotion:{candidate_chain['worker_run_id']}"),
+                ("full_experiment", f"promotion:{candidate_chain['worker_run_id']}"),
+            )
+        ]
+        if maturity["transitions"][:3] != expected_initial:
+            raise ContractError("canonical candidate maturity authority changed")
+        expected_transitions = list(expected_initial)
+        if decision["decision"] == "accept":
+            expected_transitions.append({
+                "maturity": "gate_accepted",
+                "authority": f"evaluator_run:{execution['run_id']}",
+                "recorded_at": decision["decided_at"],
+            })
         current_maturity = maturity["current_maturity"]
+        release_chain: dict[str, Any] | None = None
         if current_maturity == "released":
             receipt_path = stage_dir / "released-evidence-receipt.json"
             classification = "released_reusable"
             expected_applicability = ["released under current contract lineage"]
-            audit_event = "staged_evidence_released"
+            released_transition = maturity["transitions"][-1]
+            authority = released_transition.get("authority", "")
+            record_id = authority.removeprefix("human:")
+            release_authorization_path = (
+                plan_dir / "state" / "human_actions" / "applied"
+                / f"{record_id}.json"
+            )
+            release_authorization_binding = staged_canonical_file(
+                release_authorization_path, release_authorization_path,
+                "release authorization receipt", immutable=True,
+            )
+            release_authorization = validate_applied_action_receipt(
+                plan_dir, release_authorization_path, "release_evidence",
+            )
+            cp04_request_id = released_transition.get("cp04_request_id")
+            cp04 = check_transition_receipt(
+                plan_dir, plan_identity(plan_dir), "start_writing",
+                cp04_request_id,
+            )
+            cp04_path = transition_receipt_path(
+                plan_dir, "start_writing", cp04["request_id"],
+            )
+            cp04_binding = staged_canonical_file(
+                cp04_path, cp04_path, "CP-04 transition receipt",
+                immutable=True,
+            )
+            expected_transitions.append({
+                "maturity": "released", "authority": f"human:{record_id}",
+                "cp04_request_id": cp04["request_id"],
+                "recorded_at": release_authorization["applied_at"],
+            })
+            if (
+                release_authorization.get("details", {}).get("evidence_id")
+                != evidence_id
+                or release_authorization.get("details", {}).get("binding_sha256")
+                != candidate["candidate_sha256"]
+            ):
+                raise ContractError("canonical evidence release authority changed")
         else:
             receipt_path = stage_dir / "evidence-receipt.json"
             classification = (
@@ -9359,16 +9726,13 @@ def staged_resolve_compile_evidence(
             expected_applicability = [
                 "same frozen evaluation profile and environment"
             ]
-            audit_event = "logical_gate_decision_applied"
-        if (
-            receipt_path not in receipt_candidates
-            or not receipt_path.is_file()
-            or receipt_path.is_symlink()
-            or receipt_path.stat().st_mode & 0o222
-        ):
-            raise ContractError(
-                "compile evidence maturity receipt is missing or mutable"
-            )
+        if maturity["transitions"] != expected_transitions:
+            raise ContractError("canonical evidence maturity history changed")
+        if receipt_path not in receipt_candidates:
+            raise ContractError("compile evidence maturity receipt is missing")
+        receipt_binding = staged_canonical_file(
+            receipt_path, receipt_path, "evidence receipt", immutable=True,
+        )
         receipt = read_json(receipt_path)
         receipt_fields = {
             "schema_version", "evidence_id", "stage_cycle_id", "decision",
@@ -9410,23 +9774,6 @@ def staged_resolve_compile_evidence(
                 raise ContractError(
                     "negative evidence requires explicit owner context authority"
                 )
-        execution_path = Path(
-            decision.get("evaluator_execution_receipt_path", "")
-        )
-        if (
-            not execution_path.is_file()
-            or sha256_file(execution_path)
-            != decision.get("evaluator_execution_receipt_sha256")
-        ):
-            raise ContractError("compile evidence evaluator provenance changed")
-        execution = read_json(execution_path)
-        if (
-            execution.get("evaluator_sha256")
-            != contract["acceptance_evaluator_sha256"]
-            or execution.get("candidate_sha256")
-            != candidate["candidate_sha256"]
-        ):
-            raise ContractError("compile evidence evaluator lineage changed")
         expected_provenance = (
             sha256_file(maturity_path)
             if current_maturity == "released"
@@ -9437,41 +9784,69 @@ def staged_resolve_compile_evidence(
         ledger_matches = [record for record in ledger if record == receipt]
         if len(ledger_matches) != 1:
             raise ContractError("compile evidence lacks one exact ledger record")
-        if audit_event == "logical_gate_decision_applied":
-            audit_matches = [
-                record for record in audit
-                if record.get("event") == audit_event
-                and record.get("evidence_id") == evidence_id
-                and record.get("stage_cycle_id") == stage_id
-                and record.get("decision") == decision["decision"]
-                and record.get("evaluator_execution_receipt_sha256")
-                == decision["evaluator_execution_receipt_sha256"]
-            ]
-        else:
-            audit_matches = [
-                record for record in audit
-                if record.get("event") == audit_event
-                and record.get("evidence_id") == evidence_id
-                and record.get("stage_id") == stage_id
-                and record.get("released_evidence_receipt_sha256")
-                == sha256_file(receipt_path)
-            ]
-        if len(audit_matches) != 1:
-            raise ContractError("compile evidence lacks one canonical audit binding")
+        gate_receipt_path = stage_dir / "evidence-receipt.json"
+        gate_receipt_binding = staged_canonical_file(
+            gate_receipt_path, gate_receipt_path,
+            "terminal Gate evidence receipt", immutable=True,
+        )
+        gate_receipt = read_json(gate_receipt_path)
+        gate_ledger_matches = [record for record in ledger if record == gate_receipt]
+        if (
+            len(gate_ledger_matches) != 1
+            or set(gate_receipt) != receipt_fields
+            or gate_receipt.get("schema_version") != 1
+            or gate_receipt.get("evidence_id") != evidence_id
+            or gate_receipt.get("stage_cycle_id") != stage_id
+            or gate_receipt.get("decision") != decision["decision"]
+            or gate_receipt.get("maturity")
+            != ("gate_accepted" if decision["decision"] == "accept" else "full_experiment")
+            or gate_receipt.get("provenance_sha256")
+            != decision["evaluator_execution_receipt_sha256"]
+            or gate_receipt.get("validation_status") != "validated"
+            or gate_receipt.get("environment_version") != profile["profile_id"]
+            or gate_receipt.get("evaluator_version")
+            != contract["acceptance_evaluator_sha256"]
+            or gate_receipt.get("applicability")
+            != ["same frozen evaluation profile and environment"]
+            or gate_receipt.get("confidence") != "high"
+            or gate_receipt.get("active_for_retrieval")
+            is not (decision["decision"] == "accept")
+        ):
+            raise ContractError("canonical terminal Gate ledger changed")
+        audit_binding = {
+            "revision": gate_chain["terminal_audit_revision"],
+            "sha256": gate_chain["terminal_audit_sha256"],
+        }
+        if current_maturity == "released":
+            release_audit = staged_exact_audit(
+                audit, "staged_evidence_released", {
+                    "evidence_id": evidence_id, "stage_id": stage_id,
+                    "released_evidence_receipt_sha256": receipt_binding["sha256"],
+                },
+            )
+            release_chain = {
+                "authorization": {
+                    **release_authorization_binding,
+                },
+                "cp04_receipt": cp04_binding,
+                "receipt": receipt_binding,
+                "ledger_record_sha256": sha256_json(ledger_matches[0]),
+                "audit_revision": release_audit["audit_revision"],
+                "audit_sha256": sha256_json(release_audit),
+            }
         if external_identity in canonical_json({
-            "receipt": receipt,
-            "ledger": ledger_matches[0],
-            "audit": audit_matches[0],
+            "receipt": receipt, "gate_receipt": gate_receipt,
+            "ledger": ledger_matches[0], "gate_chain": gate_chain,
         }).decode("utf-8"):
             raise ContractError("external transfer evidence is not compilable")
         bindings.append({
             "evidence_id": evidence_id,
             "stage_id": stage_id,
-            "receipt_path": str(receipt_path),
-            "receipt_sha256": sha256_file(receipt_path),
+            "receipt_path": receipt_binding["path"],
+            "receipt_sha256": receipt_binding["sha256"],
             "ledger_record_sha256": sha256_json(ledger_matches[0]),
-            "audit_revision": audit_matches[0]["audit_revision"],
-            "audit_record_sha256": sha256_json(audit_matches[0]),
+            "audit_revision": audit_binding["revision"],
+            "audit_record_sha256": audit_binding["sha256"],
             "classification": classification,
             "decision": decision["decision"],
             "maturity": current_maturity,
@@ -9480,7 +9855,19 @@ def staged_resolve_compile_evidence(
             "environment_version": receipt["environment_version"],
             "evaluator_version": receipt["evaluator_version"],
             "contract_version": state["contract_version"],
+            "contract_sha256": state["contract_sha256"],
+            "evaluation_profile_sha256": state["evaluation_profile_sha256"],
             "provenance_sha256": expected_provenance,
+            "source_envelope": source_envelope_binding,
+            "candidate_chain": candidate_chain,
+            "execution_chain": execution_chain,
+            "gate_chain": gate_chain,
+            "maturity_record": maturity_binding,
+            "terminal_gate_receipt": gate_receipt_binding,
+            "terminal_gate_ledger_record_sha256": sha256_json(
+                gate_ledger_matches[0]
+            ),
+            "release_chain": release_chain,
         })
     return bindings
 
@@ -9834,10 +10221,10 @@ def command_release_staged_evidence(args: argparse.Namespace) -> dict[str, Any]:
         }
         if maturity.get("current_maturity") == "gate_accepted":
             maturity["transitions"].append({
-                **release_transition, "recorded_at": utc_now(),
+                **release_transition, "recorded_at": receipt["applied_at"],
             })
             maturity["current_maturity"] = "released"
-            atomic_write_json(maturity_path, maturity)
+            atomic_write_json(maturity_path, maturity, immutable=True)
             _staged_fault_after_artifact("evidence_release")
         elif maturity.get("current_maturity") == "released":
             last = maturity["transitions"][-1]
