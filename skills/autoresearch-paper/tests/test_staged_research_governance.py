@@ -344,6 +344,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
             "model_policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         })
+        (run_dir / "status.json").chmod(0o444)
         promotion = self.write(run_dir / "promotion-receipt.json", {
             "schema_version": 1, "plan_id": "plan_staged",
             "worker_run_id": run_id,
@@ -360,6 +361,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "worker_run_id": run_id,
             "receipt_sha256": hashlib.sha256(promotion.read_bytes()).hexdigest(),
         })
+        (run_dir / "promotion-journal.json").chmod(0o444)
         return promotion
 
     def prepare_worker_report(
@@ -612,6 +614,21 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         proc = self.invoke(
             *decision_args,
         )
+        stage_dir = (
+            plan / "state" / "staged_research" / "v1" / "stages"
+            / "stage_1"
+        )
+        terminal_authority = (
+            promotion.parent / "status.json",
+            promotion.parent / "promotion-journal.json",
+            stage_dir / "gate-query.json",
+            stage_dir / "gate-attempt-journals" / f"attempt_{decision}.json",
+            stage_dir / "gate-decision-journal.json",
+        )
+        self.assertTrue(all(
+            path.stat().st_mode & 0o777 == 0o444
+            for path in terminal_authority
+        ))
         return json.loads(proc.stdout)
 
     def create_cp01_request(self, plan: Path, request_id: str) -> None:
@@ -1525,6 +1542,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     stage / "gate-attempt-journals"
                     / f"{query['transport_attempts'][0]['transport_attempt_id']}.json"
                 )
+                decision_journal_path = stage / "gate-decision-journal.json"
                 maturity_path = stage / "evidence-maturity.json"
                 ledger_path = root / "evidence-ledger.jsonl"
                 audit_path = root / "audit.jsonl"
@@ -1557,7 +1575,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                         candidate_path, Path(candidate["candidate_path"]),
                         promotion_path, run_dir / "status.json",
                         run_dir / "promotion-journal.json", query_path,
-                        attempt_path, decision_path, maturity_path,
+                        attempt_path, decision_journal_path, decision_path,
+                        maturity_path,
                         ledger_path, audit_path,
                     }
                 }
@@ -1570,6 +1589,17 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                         path.chmod(0o600) if path.exists() else None
                         path.write_bytes(content)
                         path.chmod(mode)
+
+                def projection() -> dict[str, tuple[bytes, int]]:
+                    paths = {
+                        path for path in root.rglob("*") if path.is_file()
+                    } | set(originals)
+                    return {
+                        str(path): (
+                            path.read_bytes(), path.lstat().st_mode & 0o777,
+                        )
+                        for path in paths if path.exists() or path.is_symlink()
+                    }
 
                 def append_duplicate(path: Path, event: str | None = None) -> None:
                     lines = path.read_text().splitlines()
@@ -1660,23 +1690,30 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                         audit_path, "logical_gate_decision_applied",
                     )),
                 ]
+                terminal_authorities = {
+                    "worker_status": run_dir / "status.json",
+                    "promotion_journal": run_dir / "promotion-journal.json",
+                    "gate_query": query_path,
+                    "attempt_journal": attempt_path,
+                    "decision_journal": decision_journal_path,
+                }
+                self.assertTrue(all(
+                    path.stat().st_mode & 0o777 == 0o444
+                    for path in terminal_authorities.values()
+                ))
+                cases += [
+                    (f"{name}_mode_{mode:o}",
+                     lambda path=path, mode=mode: path.chmod(mode))
+                    for name, path in terminal_authorities.items()
+                    for mode in (0o644, 0o600, 0o666)
+                ]
                 for name, mutate in cases:
                     with self.subTest(case=name):
                         restore()
                         mutate()
-                        snapshot = {
-                            str(path.relative_to(root)): (
-                                path.read_bytes(), path.stat().st_mode & 0o777,
-                            )
-                            for path in root.rglob("*") if path.is_file()
-                        }
+                        snapshot = projection()
                         self.invoke(*args, ok=False)
-                        self.assertEqual(snapshot, {
-                            str(path.relative_to(root)): (
-                                path.read_bytes(), path.stat().st_mode & 0o777,
-                            )
-                            for path in root.rglob("*") if path.is_file()
-                        })
+                        self.assertEqual(snapshot, projection())
                 restore()
                 completed = json.loads(self.invoke(*args).stdout)
                 self.assertEqual(completed["next_stage_id"], "stage_2")
@@ -1696,6 +1733,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             status_path = promotion.parent / "status.json"
             status = json.loads(status_path.read_text())
             status["worker_model"] = "gpt-5.6-sol"
+            status_path.chmod(0o600)
             self.write(status_path, status)
             proc = self.invoke(
                 "freeze-stage-candidate", "--plan-dir", str(plan),

@@ -431,6 +431,7 @@ class ClaudeCutoverE2E(unittest.TestCase):
                     drifted["artifact_outputs"][0]["path"] = str(
                         plan / "artifacts" / "intermediate" / "sibling" / "evaluator.json"
                     )
+                status_path.chmod(0o600)
                 status_path.write_text(json.dumps(drifted))
                 drift_rejected = subprocess.run([
                     sys.executable, str(RUNTIME), "promote-worker-artifacts", "--plan-dir", str(plan),

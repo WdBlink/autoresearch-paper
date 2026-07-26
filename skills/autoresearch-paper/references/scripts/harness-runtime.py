@@ -783,12 +783,15 @@ def update_worker_status(
         current_state = current.get("status")
         if current_state == "CANCELLED" and desired != "CANCELLED":
             return current
+        if current_state == "COMPLETED" and desired == "COMPLETED":
+            path.chmod(0o444)
+            return current
         if current_state in {"COMPLETED", "FAILED"} and desired != current_state:
             raise ContractError(f"worker terminal status is monotonic: {current_state}")
         current.update(updates)
         current["status"] = desired
         current["updated_at"] = utc_now()
-        atomic_write_json(path, current)
+        atomic_write_json(path, current, immutable=desired == "COMPLETED")
         return current
 
 
@@ -3356,6 +3359,9 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
         journal = None
     if journal and journal.get("phase") == "COMMITTED":
         receipt_path = run_dir / "promotion-receipt.json"
+        if journal.get("receipt_sha256") != sha256_file(receipt_path):
+            raise ContractError("committed promotion receipt changed")
+        journal_path.chmod(0o444)
         return {"ok": True, "idempotent": True, "promotion_receipt": str(receipt_path), **read_json(receipt_path)}
     if journal is None:
         # Preflight the complete destination set before creating any destination.
@@ -3447,7 +3453,7 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
     target = run_dir / "promotion-receipt.json"
     atomic_write_json(target, receipt, immutable=True)
     journal.update({"phase": "COMMITTED", "committed_at": utc_now(), "receipt_sha256": sha256_file(target)})
-    atomic_write_json(journal_path, journal)
+    atomic_write_json(journal_path, journal, immutable=True)
     return {"ok": True, "promotion_receipt": str(target), **receipt}
 
 
@@ -8841,7 +8847,11 @@ def command_record_gate_transport_attempt(args: argparse.Namespace) -> dict[str,
                     "capacity_after_sha256": sha256_file(capacity_path),
                     "recovered_at": utc_now(),
                 })
-                atomic_write_json(journal_path, journal)
+                atomic_write_json(journal_path, journal, immutable=True)
+            elif journal.get("phase") != "COMMITTED":
+                raise ContractError("Gate attempt journal is not terminal")
+            else:
+                journal_path.chmod(0o444)
             audit_path = staged_root(plan_dir) / "audit.jsonl"
             audit_has_attempt = False
             if audit_path.exists():
@@ -8908,7 +8918,7 @@ def command_record_gate_transport_attempt(args: argparse.Namespace) -> dict[str,
             "capacity_after_sha256": sha256_file(capacity_path),
             "committed_at": utc_now(),
         })
-        atomic_write_json(journal_path, journal)
+        atomic_write_json(journal_path, journal, immutable=True)
         _staged_append_audit_locked(plan_dir, "gate_transport_attempt_recorded", {
             "logical_gate_query_id": query["logical_gate_query_id"],
             **attempt,
@@ -9097,13 +9107,19 @@ def _finish_gate_decision_transaction(
         })
     journal_path = stage_dir / "gate-decision-journal.json"
     journal = read_json(journal_path)
-    journal.update({
-        "phase": "COMMITTED", "decision_sha256": sha256_file(decision_path),
-        "committed_at": journal.get("committed_at", utc_now()),
-    })
-    if recovered:
-        journal["recovered_at"] = utc_now()
-    atomic_write_json(journal_path, journal)
+    if journal.get("phase") == "COMMITTED":
+        if journal.get("decision_sha256") != sha256_file(decision_path):
+            raise ContractError("committed Gate decision journal changed")
+        journal_path.chmod(0o444)
+    else:
+        journal.update({
+            "phase": "COMMITTED", "decision_sha256": sha256_file(decision_path),
+            "committed_at": utc_now(),
+        })
+        if recovered:
+            journal["recovered_at"] = utc_now()
+        atomic_write_json(journal_path, journal, immutable=True)
+    query_path.chmod(0o444)
     return {
         "ok": True, "idempotent": recovered,
         **decision, "evidence": evidence,
@@ -9368,10 +9384,11 @@ def staged_resolve_candidate_chain(
     status_path = run_dir / "status.json"
     journal_path = run_dir / "promotion-journal.json"
     status_binding = staged_canonical_file(
-        status_path, status_path, "candidate worker status",
+        status_path, status_path, "candidate worker status", immutable=True,
     )
     journal_binding = staged_canonical_file(
         journal_path, journal_path, "candidate promotion journal",
+        immutable=True,
     )
     status = read_json(status_path)
     journal = read_json(journal_path)
@@ -9472,7 +9489,7 @@ def staged_resolve_gate_chain(
         raise ContractError("canonical evaluator execution lineage changed")
     query_path = stage_dir / "gate-query.json"
     query_binding = staged_canonical_file(
-        query_path, query_path, "logical Gate query",
+        query_path, query_path, "logical Gate query", immutable=True,
     )
     query = read_json(query_path)
     query_fields = {
@@ -9518,6 +9535,7 @@ def staged_resolve_gate_chain(
     )
     attempt_journal_binding = staged_canonical_file(
         attempt_journal_path, attempt_journal_path, "Gate attempt journal",
+        immutable=True,
     )
     attempt_journal = read_json(attempt_journal_path)
     if (
@@ -9530,7 +9548,7 @@ def staged_resolve_gate_chain(
     decision_journal_path = stage_dir / "gate-decision-journal.json"
     decision_journal_binding = staged_canonical_file(
         decision_journal_path, decision_journal_path,
-        "Gate decision journal",
+        "Gate decision journal", immutable=True,
     )
     decision_journal = read_json(decision_journal_path)
     if (
