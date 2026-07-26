@@ -252,8 +252,8 @@ class ProductionTransportTests(unittest.TestCase):
                 "--attempt", "1",
                 "--objective", "wrong profile",
                 "--decision-required", "approve_execution",
-                "--max-input-tokens", "1000",
-                "--max-output-tokens", "500",
+                "--max-input-tokens", "150000",
+                "--max-output-tokens", "5000",
                 "--request-id", "far_wrong_profile",
                 check=False,
             )
@@ -269,8 +269,8 @@ class ProductionTransportTests(unittest.TestCase):
                 "--objective", "Resolve the bounded evidence dispute.",
                 "--decision-required", "resolve_acceptance_dispute",
                 "--constraint", "advisory only",
-                "--max-input-tokens", "1000",
-                "--max-output-tokens", "500",
+                "--max-input-tokens", "150000",
+                "--max-output-tokens", "5000",
                 "--request-id", "far_durable_dispute",
             ).stdout)
             request = json.loads(Path(created["request_path"]).read_text())

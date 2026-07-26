@@ -12,6 +12,41 @@ within the Harness contract:
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.16.1] - 2026-07-26
+
+### Fixed
+
+- Structurally valid `block`/`revise` frontier advice, including critical
+  findings, is retained as validated advisory evidence. An `accept` that still
+  contains blockers or critical findings is now a distinct semantic failure;
+  controller-observed budget overruns and malformed responses remain separately
+  classified and never refund a launched call.
+- A `0/0` transport usage event is charged at the full frozen reservation
+  instead of being treated as free. New ChatGPT policies freeze a conservative
+  `150000` input / `5000` output per-request floor and reject smaller
+  reservations before login preflight, budget reservation, or transport launch.
+- Signed `authorize_frontier_capacity` receipts add positive future-only call,
+  input, and output capacity through an exact-once global/staged/usage journal.
+  Grants bind plan, policy, active stage and envelope, and all current ledger
+  hashes; they cannot refund or rewrite a launched request.
+- New stage envelopes bind reviewer-required controller material through a
+  plan-relative `{id,path,sha256,purpose}` manifest, including the stop policy.
+  Legacy v0.16 envelopes remain readable and idempotently replayable.
+- `STAGE-REVIEW` creation now fails fast unless the active stage has a canonical
+  terminal Gate decision and immutable stage report, with an explicit route to
+  CP-01 `approve_execution` for initial stages.
+
+### Security
+
+- Durable frontier commits remain limited to requests prebound to a context
+  capsule. Canonical terminal staged reviews persist through
+  `record-strong-stage-review`; apply-time capsule synthesis remains forbidden.
+- Capacity top-ups are append-only, signed, replay-safe, crash recoverable, and
+  preserve non-transferable CP-01/CP-02/CP-04 slots and
+  `remaining_calls >= mandatory_future_calls`.
+- This patch is bounded deterministic recovery work. It does not claim 24h,
+  7x24, production, distributed, or full-cutover acceptance.
+
 ## [0.16.0] - 2026-07-25
 
 ### Added

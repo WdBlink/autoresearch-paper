@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.16.0"
+  version: "0.16.1"
 ---
 
 # Autoresearch Paper
@@ -32,6 +32,14 @@ file-backed state.
   first-stage envelope, its deterministic preflight, and named checkpoint
   capacity to an independent strongest-policy Codex review. The review is
   advisory; only the deterministic controller may authorize the stage.
+- Never create a new staged envelope without the exact plan-relative,
+  content-addressed `review_material_manifest` for objective, intervention,
+  entry/exit, budget, report schema, and stop policy. Legacy v0.16 envelopes
+  without it are read/replay-only.
+- Never treat `usage: {0,0}` as free or refund a launched frontier call.
+  Preserve valid negative advice; reject `accept` with blockers/critical
+  findings. Extra capacity requires a signed future-only
+  `authorize_frontier_capacity` receipt.
 - Never promote a paper figure from appearance, an AI review score, or an
   unbound image file. Require the repository-owned non-empty figure inventory,
   manifest hash and path validation, and a human review receipt bound to every
@@ -76,8 +84,8 @@ schedule and run deterministic file-backed patrol through harness-runtime.py
 initialize the canonical durable task graph and register its external trigger
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
-for Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
-after a recorded stage decision: persist MiniMax report + fresh non-M3 strong review
+for capsule-bound Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
+after a recorded stage decision: persist MiniMax report; create terminal STAGE-REVIEW -> send -> validate -> apply -> record-strong-stage-review
 compile at most one next stage from the incumbent and authorized evidence
 at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
@@ -464,6 +472,11 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.16.1 (2026-07-26)** — Field-recovery patch: typed negative frontier
+  advice, conservative unknown-usage charging, ChatGPT reservation floors,
+  signed prospective capacity top-ups, content-addressed stage review
+  material, and fail-fast CP-01/STAGE-REVIEW routing. Launched charges,
+  immutable provenance, and bounded acceptance claims remain unchanged.
 - **v0.16.0 (2026-07-25)** — Versioned rolling-stage governance: one
   human-owned optimization contract, one CP-01 first-stage envelope,
   deterministic preflight and non-fungible CP capacity, one logical Gate per

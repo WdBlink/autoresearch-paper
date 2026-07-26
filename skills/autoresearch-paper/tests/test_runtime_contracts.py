@@ -82,8 +82,8 @@ class RuntimeContracts(unittest.TestCase):
             "--worker-max-budget-usd", "0.25",
             "--frontier-model", "gpt-frontier-test",
             "--max-frontier-calls", "2",
-            "--max-frontier-input-tokens", "2000",
-            "--max-frontier-output-tokens", "1000",
+            "--max-frontier-input-tokens", "400000",
+            "--max-frontier-output-tokens", "20000",
         )
 
     def human_key(self, tmp: Path, content: bytes = b"k" * 32) -> Path:
@@ -133,6 +133,7 @@ class RuntimeContracts(unittest.TestCase):
             "request = json.loads(prompt[prompt.index('{'):])\n"
             "import hashlib\n"
             "canonical = json.dumps(request['context_manifest'], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()\n"
+            "critical = os.environ.get('CODEX_TEST_CRITICAL') == '1'\n"
             "response = {\n"
             "  'schema_version': 1, 'request_id': request['request_id'],\n"
             "  'plan_id': request['plan_id'], 'checkpoint': request['checkpoint'],\n"
@@ -140,15 +141,15 @@ class RuntimeContracts(unittest.TestCase):
             "  'request_sha256': hashlib.sha256(json.dumps(request, indent=2, sort_keys=True).encode() + b'\\n').hexdigest(),\n"
             "  'context_manifest_sha256': hashlib.sha256(canonical).hexdigest(),\n"
             "  'status': 'completed', 'response_kind': {'CP-01':'plan_audit','CP-02':'evaluator_audit','CP-03':'pivot_advice','CP-04':'evidence_audit'}[request['checkpoint']],\n"
-            "  'recommendation': 'accept',\n"
-            "  'findings': [],\n"
+            "  'recommendation': os.environ.get('CODEX_TEST_RECOMMENDATION', 'accept'),\n"
+            "  'findings': ([{'severity':'critical','claim':'bounded blocker','evidence':[request['context_manifest'][0]['path']]}] if critical else []),\n"
             "  'proposed_actions': [{'action': 'add baseline', 'rationale': 'comparison required'}],\n"
-            "  'assumptions': [], 'blockers': [], 'model_id': 'untrusted-model-claim',\n"
+            "  'assumptions': [], 'blockers': (['cannot proceed'] if critical else []), 'model_id': 'untrusted-model-claim',\n"
             "  'usage': {'input_tokens': 0, 'output_tokens': 0},\n"
             "  'completed_at': '2026-07-17T00:00:00Z'\n"
             "}\n"
             "json.dump(response, open(out, 'w'))\n"
-            "print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 321, 'output_tokens': 123}}))\n"
+            "print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': int(os.environ.get('CODEX_TEST_USAGE_INPUT','321')), 'output_tokens': int(os.environ.get('CODEX_TEST_USAGE_OUTPUT','123'))}}))\n"
         )
         executable.chmod(0o755)
         return executable
@@ -189,7 +190,7 @@ class RuntimeContracts(unittest.TestCase):
         args = [
             "create-frontier-request", "--plan-dir", str(plan), "--plan-id", plan_id,
             "--checkpoint", "CP-01", "--objective", "audit", "--decision-required", "approve_execution",
-            "--max-input-tokens", "1000", "--max-output-tokens", "500", "--request-id", request_id,
+            "--max-input-tokens", "150000", "--max-output-tokens", "5000", "--request-id", request_id,
         ]
         for role, path in self.evidence_profile(
             plan, "CP-01", plan_id=plan_id
@@ -309,7 +310,7 @@ class RuntimeContracts(unittest.TestCase):
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_bridge",
                 "--checkpoint", "CP-01", "--objective", "Audit the initial research plan.",
                 "--decision-required", "approve_execution", "--constraint", "do not mutate lifecycle state",
-                "--max-input-tokens", "1000", "--max-output-tokens", "250", "--request-id", "far_test_request",
+                "--max-input-tokens", "150000", "--max-output-tokens", "5000", "--request-id", "far_test_request",
             ]
             for role, path in profile.items():
                 create_args += ["--artifact", f"{path}::{role}"]
@@ -375,6 +376,91 @@ class RuntimeContracts(unittest.TestCase):
             self.assertFalse(json.loads(transitions[0])["lifecycle_mutation"])
             ledger = json.loads((plan / "state" / "frontier" / "budget.json").read_text())
             self.assertEqual(ledger["reserved_calls"], 1)
+
+    def test_frontier_negative_advice_usage_fallback_and_semantic_split(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for request_id, recommendation, critical, usage, expected in (
+                ("far_valid_block", "block", "1", "321", "VALIDATED"),
+                ("far_accept_critical", "accept", "1", "321", "PAUSED"),
+                ("far_zero_usage", "accept", "0", "0", "VALIDATED"),
+                ("far_usage_overrun", "accept", "0", "150001", "PAUSED"),
+            ):
+                plan = self.make_plan(tmp / request_id)
+                self.init_model_policy(plan)
+                self.harness(*self.cp01_create_args(plan, plan.name, request_id))
+                codex = self.fake_codex(tmp / request_id)
+                run(
+                    [
+                        sys.executable, "references/scripts/harness-runtime.py",
+                        "send-frontier-request", "--plan-dir", str(plan),
+                        "--request-id", request_id, "--codex-bin", str(codex),
+                    ],
+                    env={
+                        "CODEX_TEST_RECOMMENDATION": recommendation,
+                        "CODEX_TEST_CRITICAL": critical,
+                        "CODEX_TEST_USAGE_INPUT": usage,
+                        "CODEX_TEST_USAGE_OUTPUT": "0" if usage == "0" else "123",
+                    },
+                )
+                validated = self.harness(
+                    "validate-frontier-response", "--plan-dir", str(plan),
+                    "--request-id", request_id, check=expected == "VALIDATED",
+                )
+                status = json.loads(
+                    (plan / "state" / "frontier" / "requests" / request_id
+                     / "status.json").read_text()
+                )
+                self.assertEqual(status["state"], expected)
+                if request_id == "far_valid_block":
+                    blocked = self.harness(
+                        "apply-frontier-response", "--plan-dir", str(plan),
+                        "--request-id", request_id,
+                        "--dependent-transition", "approve_execution",
+                        "--controller-note", "negative advice retained",
+                        check=False,
+                    )
+                    self.assertIn("leaves dependent transition blocked", blocked.stderr)
+                elif request_id == "far_accept_critical":
+                    self.assertNotEqual(validated.returncode, 0)
+                    self.assertEqual(
+                        status["failure"], "response_semantic_inconsistency",
+                    )
+                elif request_id == "far_usage_overrun":
+                    self.assertNotEqual(validated.returncode, 0)
+                    self.assertEqual(status["failure"], "response_budget_overrun")
+                else:
+                    response = json.loads(
+                        (plan / "state" / "frontier" / "requests" / request_id
+                         / "response.json").read_text()
+                    )
+                    self.assertEqual(response["usage"], {
+                        "input_tokens": 150000, "output_tokens": 5000,
+                    })
+                    self.assertEqual(
+                        status["usage_accounting"]["authority"],
+                        "conservative_reservation_fallback",
+                    )
+
+    def test_chatgpt_usage_floor_rejects_before_preflight_or_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            args = self.cp01_create_args(plan, "plan_floor", "far_floor")
+            args[args.index("150000")] = "149999"
+            self.harness(*args)
+            failed = self.harness(
+                "send-frontier-request", "--plan-dir", str(plan),
+                "--request-id", "far_floor", "--codex-bin", str(self.fake_codex(tmp)),
+                check=False,
+            )
+            self.assertIn("below the frozen ChatGPT usage floor", failed.stderr)
+            request_root = (
+                plan / "state" / "frontier" / "requests" / "far_floor"
+            )
+            self.assertFalse((request_root / "preflight.json").exists())
+            self.assertFalse((plan / "state" / "frontier" / "budget.json").exists())
 
     def test_frontier_preflight_and_https_route_precede_budget(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -584,8 +670,8 @@ class RuntimeContracts(unittest.TestCase):
                 "--worker-max-budget-usd", "0.25",
                 "--frontier-model", "MiniMax-M3",
                 "--max-frontier-calls", "2",
-                "--max-frontier-input-tokens", "2000",
-                "--max-frontier-output-tokens", "1000",
+                "--max-frontier-input-tokens", "400000",
+                "--max-frontier-output-tokens", "20000",
             )
             policy_path = plan / "state" / "model_policy.json"
             policy_path.chmod(0o644)
@@ -622,8 +708,8 @@ class RuntimeContracts(unittest.TestCase):
                 "--worker-max-budget-usd", "0.25",
                 "--frontier-model", "MiniMax-M3",
                 "--max-frontier-calls", "2",
-                "--max-frontier-input-tokens", "2000",
-                "--max-frontier-output-tokens", "1000",
+                "--max-frontier-input-tokens", "400000",
+                "--max-frontier-output-tokens", "20000",
             )
             self.harness(
                 *self.cp01_create_args(
@@ -1144,8 +1230,8 @@ class RuntimeContracts(unittest.TestCase):
                 "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_dispute",
                 "--checkpoint", "CP-04", "--checkpoint-subtype", "acceptance_dispute",
                 "--objective", "resolve evidence dispute", "--decision-required", "resolve_acceptance_dispute",
-                "--max-input-tokens", "1000",
-                "--max-output-tokens", "500", "--request-id", "far_test_request",
+                "--max-input-tokens", "150000",
+                "--max-output-tokens", "5000", "--request-id", "far_test_request",
             ]
             for role, path in profile.items():
                 args += ["--artifact", f"{path}::{role}"]

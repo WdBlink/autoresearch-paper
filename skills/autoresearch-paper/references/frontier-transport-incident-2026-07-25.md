@@ -77,3 +77,41 @@ Inspect, in order:
 
 Do not summarize all failures as “network timeout” when durable transport or
 preflight evidence identifies a deterministic rejection.
+
+## v0.16 field follow-up
+
+The Fixed-Win Visual Guidance field run later exposed three different classes
+that must not be collapsed into this transport incident:
+
+- a structurally valid negative audit is usable advisory evidence, even when
+  it contains critical findings; only an `accept` with unresolved blockers or
+  critical findings is semantically inconsistent;
+- model-authored `usage: {0,0}` inside the response is never authoritative,
+  while an observed terminal transport event of `0/0` is conservatively
+  charged at the complete frozen reservation; and
+- an initial staged plan must use CP-01 `approve_execution`. `STAGE-REVIEW` is
+  terminal-only and persists through `record-strong-stage-review`, not through
+  a newly synthesized durable context capsule.
+
+The field report claimed 12 calls, 10 blocks, two accepts, and two transport
+faults. Artifact-level re-audit corrected that ledger to 14 reservations,
+eight final canonical blocks, one final canonical accept, and five transport
+faults, with one `response_invalid` that overlaps the canonical accept. The
+purported second accept was only an early `agent_message` from a transport
+whose final durable response was `block`; it is not a second accepted result.
+These are incident counts, not a controlled acceptance profile.
+
+In the final reported round, the response object's model-authored usage was
+`0/0`, but the canonical Codex transport event recorded `74370` input and
+`2740` output tokens. That input exceeded the request's frozen `18000`
+reservation, so the controller was
+correct to refuse application and keep the launched charge. The defect was the
+generic `response_invalid` classification and an unrealistic preflight
+reservation—not a refundable zero-cost response. The same run also attempted
+`STAGE-REVIEW` while the stage was still initial/contracted; that route must be
+CP-01 first, regardless of the content of the supplied evidence bundle.
+
+v0.16.1 also adds signed positive capacity for future request IDs. This is not
+a refund mechanism: the grant binds current policy, stage/envelope, and all
+three ledgers, then rolls them forward through an exact-once journal. Existing
+launched charges and historical field ledgers are not rewritten.

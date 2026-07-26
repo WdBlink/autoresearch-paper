@@ -54,6 +54,14 @@ and tool context, then count the prefix again across tool turns. On the local
 v0.14.1 acceptance environment a small CP-01 audit used 79k–130k input tokens.
 Reserve at least 150k input tokens per ChatGPT frontier request and 600k for
 the default four-call plan unless a fresh measured profile justifies less.
+New v0.16.1 policies freeze this measured envelope as
+`chatgpt-frontier-v1`: each ChatGPT request must reserve at least 150k input
+and 5k output tokens. The 150k floor covers the measured 79k–130k range with
+bounded headroom; it is not inferred from the latest request's artifact bytes.
+The send path rejects a smaller reservation before login preflight, budget
+reservation, or transport launch. If the controller-observed terminal event is
+exactly `0/0`, the request is charged its full reservation and records
+`conservative_reservation_fallback`; zero is never treated as free usage.
 The runtime disables optional plugins, apps, web search, multi-agent, and goals,
 but Codex CLI 0.144.6 still discovers user skills. Cached-token discounts do
 not change the controller's conservative token accounting.
@@ -109,7 +117,8 @@ evidence; worker output never advances the task graph directly.
 
 Allowed actions are `pause`, `resume`, `stop`, `cancel_worker`,
 `waive_acceptance`, `override_acceptance`, `cleanup_resource`, and
-proposal-only `authorize_evaluator_change`.
+proposal-only `authorize_evaluator_change`. Staged plans also support
+`authorize_frontier_capacity`, a positive future-only capacity grant.
 
 ```bash
 python3 references/scripts/harness-runtime.py create-human-action \
@@ -117,6 +126,15 @@ python3 references/scripts/harness-runtime.py create-human-action \
   --key-file KEY --expires-in 300
 python3 references/scripts/harness-runtime.py apply-human-action \
   --plan-dir PLAN --record RECORD --key-file KEY --expected-action pause
+
+python3 references/scripts/harness-runtime.py create-human-action \
+  --plan-dir PLAN --plan-id PLAN_ID --action authorize_frontier_capacity \
+  --key-file KEY --expires-in 300 \
+  --add-frontier-calls 1 --add-frontier-input-tokens 150000 \
+  --add-frontier-output-tokens 5000
+python3 references/scripts/harness-runtime.py apply-human-action \
+  --plan-dir PLAN --record RECORD --key-file KEY \
+  --expected-action authorize_frontier_capacity --operation-id op_64_HEX
 ```
 
 The signed payload contains only schema version, record ID, plan ID, action,
@@ -130,6 +148,13 @@ the committed mutation returns the same receipt idempotently; an unbound replay
 or a fresh operation ID is rejected. The same inner-journal binding applies to
 owned cleanup. Downstream gates consume immutable applied receipts
 present in the audit, never pending signed records.
+
+Capacity grants bind the immutable model policy, current active stage and
+envelope, and the exact global budget, staged capacity, and active-stage usage
+ledger hashes. A PREPARED/COMMITTED journal rolls all three projections
+forward exactly once. The grant only raises future capacity: it cannot name,
+refund, validate, or rewrite a launched request, cannot move CP-01/CP-02/CP-04
+slots, and cannot violate `remaining_calls >= mandatory_future_calls`.
 
 ## Gated Learning
 
@@ -392,6 +417,15 @@ python3 references/scripts/harness-runtime.py assert-transition \
 
 The owner receipt must be a canonical applied `authorize_contract` action
 binding the contract version/hash and first-stage ID/envelope hash.
+Every newly initialized or compiled stage must also carry a closed
+`review_material_manifest`. Each entry is
+`{id,path,sha256,purpose}`; `path` is canonical and relative to the plan,
+cannot traverse a symlink, and must name a mode-0444 controller material.
+Purposes exactly bind stage objective, allowed intervention, entry/exit
+criteria, stage budget, required report schema, and stop policy (plus figure
+requirements for a figure-production stage). Legacy v0.16 envelopes without
+the manifest remain readable and idempotently replayable, but cannot be used
+to create a new stage.
 `raw-preflight-evidence.json` contains only the truth table, statistical
 design, train/evaluation matrix, conditional state machine, and current-stage
 critical path. It cannot contain caller-authored pass/fail/not-applicable
@@ -413,8 +447,11 @@ terminal MiniMax-M3 report and fresh strongest-policy non-M3 review must exist
 before `compile-next-stage` authorizes at most one next envelope.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
-`status=completed`, no blockers or critical findings, and evidence citations
-bound to the frozen manifest. A per-request send claim permits one transport;
+`status=completed` and evidence citations bound to the frozen manifest.
+`block`/`revise` advice may retain blockers and critical findings as valid
+advisory evidence; `accept` with either is a semantic inconsistency and cannot
+unlock a transition. Observed over-budget usage and malformed responses have
+separate PAUSED classifications. A per-request send claim permits one transport;
 `SENT`/`WAITING` reconcile from durable raw response and event files without
 redelivery. Malformed raw output becomes `INVALID` then `PAUSED`. `PAUSED` and
 `EXPIRED` requests are never redelivered. A retry uses a new request ID,
@@ -436,6 +473,16 @@ the request becomes `PAUSED`, and a retry requires a new request ID. Never edit
 `budget.json` by hand. The transport timeout must be 1..86400 seconds and is
 capped by the request's remaining frozen deadline. Upgrade-exhausted v0.14.0
 plans must restart from a newly frozen plan.
+
+There are two intentionally separate persistence paths. A frontier request
+created from a durable context capsule may use
+`commit-durable-frontier-result` after its registered controller transition.
+A terminal `STAGE-REVIEW` is not a durable work-unit commit: it must bind the
+canonical active contract, envelope, and immutable terminal stage report, then
+persist through `record-strong-stage-review`. Creating `STAGE-REVIEW` while a
+stage is still `CONTRACTED` fails before reservation and directs the operator
+to CP-01 `approve_execution`. No command synthesizes or attaches a context
+capsule after request creation.
 
 ```bash
 python3 references/scripts/harness-runtime.py expire-frontier-request \

@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.16.0
+- **Current version:** v0.16.1
 - **Stability:** Production for personal use, early for shared plans
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -44,6 +44,9 @@ start writing.
   the deterministic controller remains authoritative. Each candidate gets one
   logical isolated Gate decision; terminal MiniMax reports receive fresh
   non-M3 review before at most one next stage is compiled.
+  v0.16.1 adds content-addressed review material, typed negative frontier
+  advice, conservative unknown-usage charging, fail-fast stage-review routing,
+  and signed prospective capacity grants without refunding launched calls.
   The measured soak in this
   release is intentionally short, so 24h/7×24/full-cutover stability is not
   claimed.
@@ -170,7 +173,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.16.0 with a full bundle refresh so the
+Upgrade copied installations to v0.16.1 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -375,6 +378,10 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.16.1** — field recovery for frontier response/usage classification,
+  a measured ChatGPT reservation floor, signed append-only capacity top-ups,
+  content-addressed stage material, and deterministic CP-01/STAGE-REVIEW
+  routing. No launched-call refund or apply-time capsule synthesis is added.
 - **v0.16.0** — bounded rolling stages, exact role-visible-state records,
   non-fungible CP-01/02/04 capacity, separately budgeted Gate transport
   retries, accept/reject/escalate evidence, fresh terminal strong review, and
@@ -439,7 +446,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.16.0}
+  version = {0.16.1}
 }
 ```
 
@@ -451,7 +458,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.16.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.16.1-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

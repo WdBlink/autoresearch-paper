@@ -70,8 +70,8 @@ class ClaudeCutoverE2E(unittest.TestCase):
         self.runtime(
             "init-policy", "--plan-dir", str(plan), "--worker-model", "MiniMax-M3-e2e",
             "--worker-max-budget-usd", "0.1", "--frontier-model", "gpt-frontier-e2e",
-            "--max-frontier-calls", "7", "--max-frontier-input-tokens", "40000",
-            "--max-frontier-output-tokens", "3000",
+            "--max-frontier-calls", "7", "--max-frontier-input-tokens", "1050000",
+            "--max-frontier-output-tokens", "35000",
         )
 
         intermediate = plan / "artifacts" / "intermediate" / "make-evaluator"
@@ -693,7 +693,7 @@ class ClaudeCutoverE2E(unittest.TestCase):
             args = [
                 "create-frontier-request","--plan-dir",str(plan),"--plan-id","plan_e2e","--checkpoint","CP-03",
                 "--attempt","2","--objective","second structural pivot","--decision-required","authorize_structural_pivot",
-                "--max-input-tokens","15000","--max-output-tokens","500","--request-id","far_canonical_cp03_cycle2",
+                "--max-input-tokens","150000","--max-output-tokens","5000","--request-id","far_canonical_cp03_cycle2",
                 "--artifact",f"{plan/'state'/'failure_state.json'}::failure_state",
                 "--artifact",f"{plan/'state'/'failure_state.json'}::direction_registry",
                 "--artifact",f"{proposal}::pivot_proposal",
@@ -907,7 +907,7 @@ class ClaudeCutoverE2E(unittest.TestCase):
                     "create-frontier-request", "--plan-dir", str(plan), "--plan-id", "plan_e2e",
                     "--checkpoint", "CP-04", "--checkpoint-subtype", "prewriting_final_evidence",
                     "--objective", "audit final evidence", "--decision-required", "start_writing",
-                    "--max-input-tokens", "5000", "--max-output-tokens", "500", "--request-id", request_id,
+                    "--max-input-tokens", "150000", "--max-output-tokens", "5000", "--request-id", request_id,
                 ]
                 for role, path in roles.items(): argv.extend(["--artifact", f"{path}::{role}"])
                 self.runtime(*argv)

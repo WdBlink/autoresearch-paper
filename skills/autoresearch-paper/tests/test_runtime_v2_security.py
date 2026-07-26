@@ -28,7 +28,7 @@ class RuntimeV2Security(unittest.TestCase):
         (plan / "resource_manifest.json").write_text(json.dumps({
             "schema_version":1,"plan_id":plan_id,"plan_dir":str(plan),"status":"running","resources":[],
             "agents":[],"sessions":[],"crons":[],"hooks":[],"launchd":[],"local_processes":[],"remote_processes":[],"locks":[]}))
-        self.call("init-policy","--plan-dir",str(plan),"--worker-model","MiniMax-M3-test","--worker-max-budget-usd","0.1","--frontier-model","frontier-test","--max-frontier-calls","4","--max-frontier-input-tokens","20000","--max-frontier-output-tokens","2000")
+        self.call("init-policy","--plan-dir",str(plan),"--worker-model","MiniMax-M3-test","--worker-max-budget-usd","0.1","--frontier-model","frontier-test","--max-frontier-calls","4","--max-frontier-input-tokens","600000","--max-frontier-output-tokens","20000")
         return plan
 
     def cp01(self, plan: Path) -> dict[str, Path]:
@@ -65,7 +65,7 @@ class RuntimeV2Security(unittest.TestCase):
         return target
 
     def create_cp01(self, plan: Path, request_id: str) -> None:
-        args=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-01","--objective","audit","--decision-required","approve_execution","--max-input-tokens","5000","--max-output-tokens","500","--request-id",request_id]
+        args=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-01","--objective","audit","--decision-required","approve_execution","--max-input-tokens","150000","--max-output-tokens","5000","--request-id",request_id]
         for role,path in self.cp01(plan).items(): args += ["--artifact",f"{path}::{role}"]
         self.call(*args)
 
@@ -112,8 +112,8 @@ class RuntimeV2Security(unittest.TestCase):
                     "--checkpoint", "CP-01",
                     "--objective", "audit",
                     "--decision-required", "approve_execution",
-                    "--max-input-tokens", "5000",
-                    "--max-output-tokens", "500",
+                    "--max-input-tokens", "150000",
+                    "--max-output-tokens", "5000",
                     "--request-id", "far_invalid_figure_requirements",
                 ]
                 for role, path in profile.items():
@@ -260,7 +260,7 @@ class RuntimeV2Security(unittest.TestCase):
             evidence={"dispute_record":resolution}
             for role in ("evaluator_contract","evaluator_verdict","candidate"):
                 p=plan/f"{role}.json"; p.write_text("{}"); evidence[role]=p
-            args=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-04","--checkpoint-subtype","acceptance_dispute","--objective","resolve","--decision-required","resolve_acceptance_dispute","--max-input-tokens","5000","--max-output-tokens","500","--request-id","far_dispute"]
+            args=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-04","--checkpoint-subtype","acceptance_dispute","--objective","resolve","--decision-required","resolve_acceptance_dispute","--max-input-tokens","150000","--max-output-tokens","5000","--request-id","far_dispute"]
             for role,path in evidence.items(): args += ["--artifact",f"{path}::{role}"]
             self.call(*args); codex=self.fake_codex(root)
             self.call("send-frontier-request","--plan-dir",str(plan),"--request-id","far_dispute","--codex-bin",str(codex)); self.call("validate-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute")
@@ -269,7 +269,7 @@ class RuntimeV2Security(unittest.TestCase):
             self.assertTrue(applied["ok"])
             replay=json.loads(self.call("resolve-acceptance-dispute","--plan-dir",str(plan),"--resolution",str(resolution)).stdout)
             self.assertTrue(replay["idempotent"])
-            args2=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-04","--checkpoint-subtype","acceptance_dispute","--objective","resolve again","--decision-required","resolve_acceptance_dispute","--max-input-tokens","5000","--max-output-tokens","500","--request-id","far_dispute_again"]
+            args2=["create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,"--checkpoint","CP-04","--checkpoint-subtype","acceptance_dispute","--objective","resolve again","--decision-required","resolve_acceptance_dispute","--max-input-tokens","150000","--max-output-tokens","5000","--request-id","far_dispute_again"]
             for role,path in evidence.items(): args2 += ["--artifact",f"{path}::{role}"]
             self.call(*args2); self.call("send-frontier-request","--plan-dir",str(plan),"--request-id","far_dispute_again","--codex-bin",str(codex)); self.call("validate-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute_again")
             self.call("apply-frontier-response","--plan-dir",str(plan),"--request-id","far_dispute_again","--dependent-transition","resolve_acceptance_dispute","--controller-note","accepted again")
@@ -328,14 +328,14 @@ class RuntimeV2Security(unittest.TestCase):
                 "create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,
                 "--checkpoint","CP-01","--objective","audit","--decision-required","approve_execution",
                 *sum((["--artifact",f"{path}::{role}"] for role,path in self.cp01(plan).items()),[]),
-                "--max-input-tokens","5000","--max-output-tokens","500","--request-id",request_id,
+                "--max-input-tokens","150000","--max-output-tokens","5000","--request-id",request_id,
             )
             self.assertTrue(json.loads(same.stdout)["idempotent"])
             collision=self.call(
                 "create-frontier-request","--plan-dir",str(plan),"--plan-id",plan.name,
                 "--checkpoint","CP-01","--objective","different audit","--decision-required","approve_execution",
                 *sum((["--artifact",f"{path}::{role}"] for role,path in self.cp01(plan).items()),[]),
-                "--max-input-tokens","5000","--max-output-tokens","500","--request-id",request_id,
+                "--max-input-tokens","150000","--max-output-tokens","5000","--request-id",request_id,
                 check=False,
             )
             self.assertEqual(collision.returncode,2)

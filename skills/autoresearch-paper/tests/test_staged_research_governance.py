@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -100,6 +101,65 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         return proc
 
     def write(self, path: Path, value: object) -> Path:
+        if isinstance(value, dict) and {
+            "stage_id", "stage_objective_sha256", "stage_budget_and_stop",
+            "required_report_schema_sha256",
+        }.issubset(value):
+            plan = path.parent
+            cursor = path.parent
+            while cursor.parent != cursor:
+                if (cursor / "resource_manifest.json").exists():
+                    plan = cursor
+                    break
+                cursor = cursor.parent
+            materials_root = plan / "control" / "review-materials" / value["stage_id"]
+            digest_targets = {
+                "stage_objective": (value, "stage_objective_sha256"),
+                "allowed_intervention": (value, "allowed_intervention_sha256"),
+                "entry_criteria": (value, "entry_criteria_sha256"),
+                "exit_criteria": (value, "exit_criteria_sha256"),
+                "stage_budget": (value, "stage_budget_sha256"),
+                "required_report_schema": (value, "required_report_schema_sha256"),
+                "stop_policy": (
+                    value["stage_budget_and_stop"], "stop_policy_sha256",
+                ),
+            }
+            manifest = []
+            for purpose, (container, field) in digest_targets.items():
+                material = materials_root / f"{purpose}.txt"
+                material.parent.mkdir(parents=True, exist_ok=True)
+                if material.exists():
+                    material.chmod(0o644)
+                material.write_text(f"{value['stage_id']}:{purpose}")
+                material.chmod(0o444)
+                container[field] = hashlib.sha256(material.read_bytes()).hexdigest()
+                manifest.append({
+                    "id": f"material_{value['stage_id']}_{purpose}",
+                    "path": str(material.relative_to(plan)),
+                    "sha256": container[field],
+                    "purpose": purpose,
+                })
+            if value.get("stage_kind") == "figure_production":
+                expected = value.get("figure_requirements_sha256")
+                candidate = next((
+                    item for item in plan.rglob("*.json")
+                    if item != path and item.is_file() and not item.is_symlink()
+                    and hashlib.sha256(item.read_bytes()).hexdigest() == expected
+                ), None)
+                if candidate is None:
+                    candidate = materials_root / "figure_requirements.json"
+                    candidate.write_text('{"figures":[]}')
+                candidate.chmod(0o444)
+                value["figure_requirements_sha256"] = hashlib.sha256(
+                    candidate.read_bytes()
+                ).hexdigest()
+                manifest.append({
+                    "id": f"material_{value['stage_id']}_figure_requirements",
+                    "path": str(candidate.relative_to(plan)),
+                    "sha256": value["figure_requirements_sha256"],
+                    "purpose": "figure_requirements",
+                })
+            value["review_material_manifest"] = manifest
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
         return path
@@ -189,7 +249,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "time_seconds": 3600,
                 "tool_calls": 20,
                 "worker_tokens": 20000,
-                "review_tokens": 8000,
+                "review_tokens": 30000,
                 "retry_attempts": 3,
                 "evaluation_calls": 1,
                 "stop_policy_sha256": digest(
@@ -207,8 +267,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--frontier-model", "gpt-5.6-sol",
             "--frontier-reasoning-effort", "ultra",
             "--max-frontier-calls", "8",
-            "--max-frontier-input-tokens", "100000",
-            "--max-frontier-output-tokens", "50000",
+            "--max-frontier-input-tokens", "1600000",
+            "--max-frontier-output-tokens", "100000",
         )
 
     def initialize(
@@ -559,7 +619,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--plan-id", "plan_staged", "--checkpoint", "STAGE-REVIEW",
             "--objective", "review terminal stage report",
             "--decision-required", "record_stage_review",
-            "--max-input-tokens", "10000", "--max-output-tokens", "2000",
+            "--max-input-tokens", "150000", "--max-output-tokens", "5000",
             "--request-id", "far_stage_review",
         ]
         for role, path in artifacts.items():
@@ -724,7 +784,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--plan-id", "plan_staged", "--checkpoint", "CP-01",
             "--objective", "audit staged contract",
             "--decision-required", "approve_execution",
-            "--max-input-tokens", "10000", "--max-output-tokens", "2000",
+            "--max-input-tokens", "150000", "--max-output-tokens", "5000",
             "--request-id", request_id,
         ]
         for role, path in artifacts.items():
@@ -767,7 +827,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--plan-id", "plan_staged", "--checkpoint", "CP-01",
                 "--objective", "audit contract and first stage",
                 "--decision-required", "approve_execution",
-                "--max-input-tokens", "10000", "--max-output-tokens", "2000",
+                "--max-input-tokens", "150000", "--max-output-tokens", "5000",
                 "--request-id", "far_staged_cp01",
             ]
             for role, path in artifacts.items():
@@ -862,6 +922,327 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--incumbent-sha256", digest("incumbent"), ok=False,
             )
             self.assertIn("forbidden fields", proc.stderr)
+
+    def test_capacity_topup_is_prospective_exact_once_and_crash_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            key = plan / "owner.key"
+            root = plan / "state" / "staged_research" / "v1"
+            before_capacity = json.loads((root / "capacity-ledger.json").read_text())
+            before_usage = json.loads(
+                (root / "stages" / "stage_1" / "usage-ledger.json").read_text()
+            )
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--action",
+                "authorize_frontier_capacity", "--key-file", str(key),
+                "--expires-in", "3600", "--record-id", "har_capacity_1",
+                "--add-frontier-calls", "2",
+                "--add-frontier-input-tokens", "300000",
+                "--add-frontier-output-tokens", "10000",
+                "--reason", "bounded prospective recovery",
+            ).stdout)
+            created_record = json.loads(Path(created["record_path"]).read_text())
+            self.assertEqual(
+                created_record["details"]["active_stage_envelope_sha256"],
+                json.loads((root / "state.json").read_text())[
+                    "active_stage_envelope_sha256"
+                ],
+            )
+            operation_id = "op_" + "a" * 64
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_CAPACITY_TOPUP_GLOBAL"] = "1"
+            crashed = self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_frontier_capacity",
+                "--operation-id", operation_id, ok=False, env=env,
+            )
+            self.assertEqual(crashed.returncode, 91)
+            applied = json.loads(self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_frontier_capacity",
+                "--operation-id", operation_id,
+            ).stdout)
+            self.assertTrue(applied["recovered"])
+            global_budget = json.loads(
+                (plan / "state" / "frontier" / "budget.json").read_text()
+            )
+            capacity = json.loads((root / "capacity-ledger.json").read_text())
+            usage = json.loads(
+                (root / "stages" / "stage_1" / "usage-ledger.json").read_text()
+            )
+            self.assertEqual(global_budget["authorized_capacity"], {
+                "calls": 2, "input_tokens": 300000,
+                "output_tokens": 10000,
+            })
+            self.assertEqual(
+                capacity["remaining_calls"], before_capacity["remaining_calls"] + 2,
+            )
+            self.assertEqual(
+                usage["limits"]["review_tokens"],
+                before_usage["limits"]["review_tokens"] + 10000,
+            )
+            replay = json.loads(self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_frontier_capacity",
+                "--operation-id", operation_id,
+            ).stdout)
+            self.assertTrue(replay["operation_reconciled"])
+            self.assertEqual(
+                json.loads((root / "capacity-ledger.json").read_text()), capacity,
+            )
+            audit = [json.loads(line) for line in (root / "audit.jsonl").read_text().splitlines() if line.strip()]
+            self.assertEqual(sum(
+                item.get("event") == "frontier_capacity_authorized"
+                and item.get("record_id") == "har_capacity_1"
+                for item in audit
+            ), 1)
+
+    def test_new_stage_materials_stage_review_route_and_legacy_reinit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            canonical = root / "stages" / "stage_1" / "envelope.json"
+            envelope = json.loads(canonical.read_text())
+            self.assertIn("stop_policy", {
+                item["purpose"] for item in envelope["review_material_manifest"]
+            })
+            misuse = self.invoke(
+                "create-frontier-request", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--checkpoint", "STAGE-REVIEW",
+                "--objective", "incorrect initial review",
+                "--decision-required", "record_stage_review",
+                "--max-input-tokens", "150000", "--max-output-tokens", "5000",
+                ok=False,
+            )
+            self.assertIn("Create CP-01 and apply approve_execution first", misuse.stderr)
+
+            legacy = dict(envelope)
+            legacy.pop("review_material_manifest")
+            canonical.chmod(0o644)
+            canonical.write_text(json.dumps(legacy, sort_keys=True, indent=2) + "\n")
+            canonical.chmod(0o444)
+            state_path = root / "state.json"
+            state = json.loads(state_path.read_text())
+            state["active_stage_envelope_sha256"] = hashlib.sha256(canonical.read_bytes()).hexdigest()
+            applied_path = Path(state["owner_authorization_path"])
+            applied = json.loads(applied_path.read_text())
+            source_record_path = Path(applied["source_record_path"])
+            source_record = json.loads(source_record_path.read_text())
+            source_record["details"]["stage_envelope_sha256"] = state[
+                "active_stage_envelope_sha256"
+            ]
+            unsigned = {
+                key: value for key, value in source_record.items()
+                if key != "signature"
+            }
+            source_record["signature"] = hmac.new(
+                b"x" * 32,
+                json.dumps(
+                    unsigned, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            source_record_path.chmod(0o644)
+            source_record_path.write_text(
+                json.dumps(source_record, sort_keys=True, indent=2) + "\n"
+            )
+            source_record_path.chmod(0o444)
+            applied["details"]["stage_envelope_sha256"] = state[
+                "active_stage_envelope_sha256"
+            ]
+            applied["record_sha256"] = hashlib.sha256(
+                source_record_path.read_bytes()
+            ).hexdigest()
+            applied_path.chmod(0o644)
+            applied_path.write_text(json.dumps(applied, sort_keys=True, indent=2) + "\n")
+            applied_path.chmod(0o444)
+            action_audit = plan / "state" / "human_action_audit.jsonl"
+            action_audit.write_text(json.dumps(applied, sort_keys=True) + "\n")
+            receipt_sha = hashlib.sha256(applied_path.read_bytes()).hexdigest()
+            state["owner_authorization_sha256"] = receipt_sha
+            state["active_stage_authorization_sha256"] = receipt_sha
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            staged_audit_path = root / "audit.jsonl"
+            staged_audit = [
+                json.loads(line) for line in staged_audit_path.read_text().splitlines()
+                if line.strip()
+            ]
+            for record in staged_audit:
+                if record.get("event") == "staged_research_initialized":
+                    record["stage_envelope_sha256"] = state[
+                        "active_stage_envelope_sha256"
+                    ]
+            staged_audit_path.write_text(
+                "".join(json.dumps(item, sort_keys=True) + "\n" for item in staged_audit)
+            )
+            source = plan / "inputs" / "stage.json"
+            source.write_text(json.dumps(legacy, sort_keys=True, indent=2) + "\n")
+            reapplied = self.invoke(
+                "init-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged",
+                "--contract", str(plan / "inputs" / "contract.json"),
+                "--stage-envelope", str(source),
+                "--evaluation-profile", str(plan / "inputs" / "evaluation.json"),
+                "--checkpoint-capacity", str(plan / "inputs" / "capacity.json"),
+                "--authorization-receipt", state["owner_authorization_path"],
+                "--incumbent-sha256", digest("incumbent"),
+            )
+            self.assertTrue(json.loads(reapplied.stdout)["idempotent"])
+
+    def test_capacity_topup_rejects_ledger_drift_and_concurrent_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            mismatch = base / "mismatch"
+            self.initialize(mismatch)
+            key = mismatch / "owner.key"
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(mismatch),
+                "--plan-id", "plan_staged", "--action",
+                "authorize_frontier_capacity", "--key-file", str(key),
+                "--expires-in", "3600", "--record-id", "har_capacity_drift",
+                "--add-frontier-calls", "1",
+                "--add-frontier-input-tokens", "150000",
+                "--add-frontier-output-tokens", "5000",
+            ).stdout)
+            capacity_path = (
+                mismatch / "state" / "staged_research" / "v1"
+                / "capacity-ledger.json"
+            )
+            capacity = json.loads(capacity_path.read_text())
+            capacity["remaining_calls"] += 1
+            capacity_path.chmod(0o644)
+            capacity_path.write_text(json.dumps(capacity, sort_keys=True, indent=2) + "\n")
+            failed = self.invoke(
+                "apply-human-action", "--plan-dir", str(mismatch),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_frontier_capacity", ok=False,
+            )
+            self.assertIn("ledger binding changed", failed.stderr)
+            self.assertFalse(
+                (mismatch / "state" / "frontier" / "budget.json").exists()
+            )
+
+            envelope_mismatch = base / "envelope-mismatch"
+            self.initialize(envelope_mismatch)
+            key = envelope_mismatch / "owner.key"
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(envelope_mismatch),
+                "--plan-id", "plan_staged", "--action",
+                "authorize_frontier_capacity", "--key-file", str(key),
+                "--expires-in", "3600", "--record-id", "har_capacity_envelope",
+                "--add-frontier-calls", "1",
+                "--add-frontier-input-tokens", "150000",
+                "--add-frontier-output-tokens", "5000",
+            ).stdout)
+            record_path = Path(created["record_path"])
+            record = json.loads(record_path.read_text())
+            record["details"]["active_stage_envelope_sha256"] = "0" * 64
+            unsigned = {key: value for key, value in record.items() if key != "signature"}
+            record["signature"] = hmac.new(
+                b"x" * 32,
+                json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False, allow_nan=False).encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            record_path.chmod(0o644)
+            record_path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+            record_path.chmod(0o444)
+            failed = self.invoke(
+                "apply-human-action", "--plan-dir", str(envelope_mismatch),
+                "--record", str(record_path), "--key-file", str(key),
+                "--expected-action", "authorize_frontier_capacity", ok=False,
+            )
+            self.assertIn("active stage or envelope changed", failed.stderr)
+            self.assertFalse(
+                (envelope_mismatch / "state" / "frontier" / "budget.json").exists()
+            )
+
+            concurrent = base / "concurrent"
+            self.initialize(concurrent)
+            key = concurrent / "owner.key"
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(concurrent),
+                "--plan-id", "plan_staged", "--action",
+                "authorize_frontier_capacity", "--key-file", str(key),
+                "--expires-in", "3600", "--record-id", "har_capacity_concurrent",
+                "--add-frontier-calls", "1",
+                "--add-frontier-input-tokens", "150000",
+                "--add-frontier-output-tokens", "5000",
+            ).stdout)
+            command = [
+                sys.executable, str(RUNTIME), "apply-human-action",
+                "--plan-dir", str(concurrent), "--record", created["record_path"],
+                "--key-file", str(key), "--expected-action",
+                "authorize_frontier_capacity", "--operation-id", "op_" + "b" * 64,
+            ]
+            processes = [
+                subprocess.Popen(command, cwd=ROOT, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for _ in range(2)
+            ]
+            results = [process.communicate() + (process.returncode,) for process in processes]
+            self.assertEqual([item[2] for item in results], [0, 0], results)
+            root = concurrent / "state" / "staged_research" / "v1"
+            capacity = json.loads((root / "capacity-ledger.json").read_text())
+            self.assertEqual(capacity["authorized_additions"]["calls"], 1)
+            audit = [json.loads(line) for line in (root / "audit.jsonl").read_text().splitlines() if line.strip()]
+            self.assertEqual(sum(
+                item.get("event") == "frontier_capacity_authorized"
+                for item in audit
+            ), 1)
+
+    def test_review_material_path_escape_and_live_drift_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            escape = base / "escape"
+            escape.mkdir()
+            self.write(escape / "resource_manifest.json", {
+                "schema_version": 1, "plan_id": "plan_staged", "resources": [],
+            })
+            envelope = self.envelope()
+            envelope_path = self.write(escape / "inputs" / "stage.json", envelope)
+            envelope["review_material_manifest"][0]["path"] = "../outside.txt"
+            envelope_path.write_text(json.dumps(envelope, sort_keys=True, indent=2) + "\n")
+            failed = self.invoke(
+                "init-staged-research", "--plan-dir", str(escape),
+                "--plan-id", "plan_staged",
+                "--contract", str(self.write(escape / "inputs" / "contract.json", self.contract())),
+                "--stage-envelope", str(envelope_path),
+                "--evaluation-profile", str(self.write(escape / "inputs" / "evaluation.json", self.evaluation_profile())),
+                "--checkpoint-capacity", str(self.write(escape / "inputs" / "capacity.json", self.capacity())),
+                "--authorization-receipt", str(escape / "missing.json"),
+                "--incumbent-sha256", digest("incumbent"), ok=False,
+            )
+            self.assertIn("canonical and plan-relative", failed.stderr)
+
+            drift = base / "drift"
+            self.initialize(drift)
+            canonical = (
+                drift / "state" / "staged_research" / "v1"
+                / "stages" / "stage_1" / "envelope.json"
+            )
+            material = drift / json.loads(canonical.read_text())[
+                "review_material_manifest"
+            ][0]["path"]
+            material.chmod(0o644)
+            material.write_text("drifted")
+            failed = self.invoke(
+                "preflight-staged-research", "--plan-dir", str(drift),
+                "--preflight-inputs", str(self.write(
+                    drift / "inputs" / "preflight.json", self.raw_preflight(),
+                )), ok=False,
+            )
+            self.assertTrue(
+                "immutable mode 0444" in failed.stderr
+                or "content hash mismatch" in failed.stderr
+            )
 
     def test_preflight_rejects_self_attestation_zero_budget_and_hash_drift(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1151,7 +1532,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--checkpoint-subtype", "prewriting_final_evidence",
                 "--objective", "audit released staged evidence",
                 "--decision-required", "start_writing",
-                "--max-input-tokens", "10000", "--max-output-tokens", "2000",
+                "--max-input-tokens", "150000", "--max-output-tokens", "5000",
                 "--request-id", request_id,
             ]
             for role, path in roles.items():
@@ -2781,6 +3162,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             with_alternate[
                 with_alternate.index(str(inventory))
             ] = str(alternate)
+            inventory.chmod(0o644)
             inventory.write_text('{"changed":true}\n')
             drift_commands = (
                 without_figure,
@@ -2793,7 +3175,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertNotEqual(rejected.returncode, 0)
-                self.assertIn("identity conflict", rejected.stderr)
+                self.assertTrue(
+                    "identity conflict" in rejected.stderr
+                    or "review material" in rejected.stderr
+                )
                 self.assertEqual(
                     {
                         str(item.relative_to(figure_root)): item.read_bytes()
@@ -2802,6 +3187,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     frozen_figure_projection,
                 )
             inventory.write_bytes(original_inventory)
+            inventory.chmod(0o444)
             recovered = subprocess.run(
                 figure_command, cwd=ROOT, text=True, capture_output=True,
             )

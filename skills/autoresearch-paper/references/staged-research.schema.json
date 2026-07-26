@@ -151,6 +151,10 @@
         "authorized_evidence_refs": {
           "type": "array", "items": {"$ref": "#/$defs/immutableId"}
         },
+        "review_material_manifest": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/reviewMaterial"}
+        },
         "allowed_intervention_sha256": {"$ref": "#/$defs/sha256"},
         "entry_criteria_sha256": {"$ref": "#/$defs/sha256"},
         "exit_criteria_sha256": {"$ref": "#/$defs/sha256"},
@@ -180,6 +184,17 @@
         "retry_attempts": {"type": "integer", "minimum": 0},
         "evaluation_calls": {"type": "integer", "minimum": 0},
         "stop_policy_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "reviewMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256", "purpose"],
+      "properties": {
+        "id": {"$ref": "#/$defs/immutableId"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 512}
       }
     },
     "evaluationProfile": {
@@ -240,7 +255,16 @@
           }
         },
         "remaining_calls": {"type": "integer", "minimum": 0},
-        "mandatory_future_calls": {"type": "integer", "minimum": 0}
+        "mandatory_future_calls": {"type": "integer", "minimum": 0},
+        "capacity_authorization_ids": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^har_[A-Za-z0-9_-]+$"}
+        },
+        "authorized_additions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["calls"],
+          "properties": {"calls": {"type": "integer", "minimum": 0}}
+        }
       }
     },
     "checkpointSlot": {

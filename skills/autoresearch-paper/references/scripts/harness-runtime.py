@@ -61,7 +61,7 @@ HUMAN_ACTIONS = {
     "pause", "resume", "stop", "cancel_worker", "waive_acceptance",
     "override_acceptance", "cleanup_resource", "authorize_evaluator_change",
     "authorize_contract", "reauthorize_stage", "authorize_rebaseline",
-    "release_evidence",
+    "release_evidence", "authorize_frontier_capacity",
 }
 INTEGRITY_FAILURE_CLASSES = {"goal_drift", "evaluator_integrity"}
 FAILURE_CLASSES = {
@@ -164,10 +164,23 @@ STAGED_EVIDENCE_RECEIPT_FIELDS = {
     "applicability", "confidence", "validation_status",
     "provenance_sha256", "active_for_retrieval",
 } | STAGED_GATE_ANCHOR_FIELDS
+CHATGPT_USAGE_FLOOR = {
+    "profile_id": "chatgpt-frontier-v1",
+    "min_input_tokens": 150000,
+    "min_output_tokens": 5000,
+}
 
 
 class ContractError(RuntimeError):
     """A runtime or data contract was violated."""
+
+
+class FrontierBudgetOverrunError(ContractError):
+    """Controller-observed transport usage exceeded the frozen reservation."""
+
+
+class FrontierSemanticResponseError(ContractError):
+    """A structurally valid response contains an impossible gate verdict."""
 
 
 def reject_json_constant(value: str) -> None:
@@ -336,6 +349,9 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
         raise ContractError("frontier_escalation must be enabled and frozen")
     for field in ("max_calls", "max_input_tokens", "max_output_tokens"):
         require_non_negative_int(escalation.get(field), f"frontier_escalation.{field}")
+    usage_profile = policy.get("frontier_usage_profile")
+    if usage_profile is not None and usage_profile != CHATGPT_USAGE_FLOOR:
+        raise ContractError("frontier_usage_profile has an invalid frozen shape")
     worker_budget = policy.get("worker_max_budget_usd")
     require_finite_number(worker_budget, "worker_max_budget_usd")
     if worker_budget <= 0:
@@ -753,6 +769,57 @@ def command_create_human_action(args: argparse.Namespace) -> dict[str, Any]:
             "learning_proposal_sha256": sha256_file(proposal_path),
             "learning_target_kind": "evaluator",
         })
+    if args.action == "authorize_frontier_capacity":
+        additions = {
+            "calls": require_non_negative_int(
+                args.add_frontier_calls, "add_frontier_calls",
+            ),
+            "input_tokens": require_non_negative_int(
+                args.add_frontier_input_tokens,
+                "add_frontier_input_tokens",
+            ),
+            "output_tokens": require_non_negative_int(
+                args.add_frontier_output_tokens,
+                "add_frontier_output_tokens",
+            ),
+        }
+        if any(value <= 0 for value in additions.values()):
+            raise ContractError(
+                "frontier capacity additions must all be positive"
+            )
+        if not staged_is_active(plan_dir):
+            raise ContractError(
+                "frontier capacity authorization requires active staged research"
+            )
+        state = staged_load_state(plan_dir)
+        global_path = frontier_root(plan_dir) / "budget.json"
+        capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
+        usage_path = (
+            staged_stage_dir(plan_dir, state["active_stage_id"])
+            / "usage-ledger.json"
+        )
+        global_image = (
+            read_json(global_path) if global_path.exists()
+            else empty_frontier_budget_image()
+        )
+        capacity = read_json(capacity_path)
+        staged_validate_capacity(capacity)
+        usage = read_json(usage_path)
+        details.update({
+            "scope": "prospective_frontier_request_ids",
+            "policy_sha256": sha256_file(policy_path(plan_dir)),
+            "active_stage_id": state["active_stage_id"],
+            "active_stage_envelope_sha256": state[
+                "active_stage_envelope_sha256"
+            ],
+            "global_budget_path": str(global_path),
+            "global_budget_sha256": sha256_json(global_image),
+            "staged_capacity_path": str(capacity_path),
+            "staged_capacity_sha256": sha256_json(capacity),
+            "stage_usage_path": str(usage_path),
+            "stage_usage_sha256": sha256_json(usage),
+            "additions": additions,
+        })
     payload = {
         "schema_version": 1,
         "record_id": record_id,
@@ -825,6 +892,205 @@ def update_worker_status(
         current["updated_at"] = utc_now()
         atomic_write_json(path, current, immutable=desired == "COMPLETED")
         return current
+
+
+def apply_frontier_capacity_authorization(
+    plan_dir: Path, record: dict[str, Any],
+) -> dict[str, Any]:
+    """Roll a signed, additive staged capacity grant forward exactly once."""
+    details = record["details"]
+    required = {
+        "scope", "policy_sha256", "active_stage_id",
+        "active_stage_envelope_sha256",
+        "global_budget_path", "global_budget_sha256",
+        "staged_capacity_path", "staged_capacity_sha256",
+        "stage_usage_path", "stage_usage_sha256", "additions",
+    }
+    if not required.issubset(details):
+        raise ContractError("frontier capacity authorization is incomplete")
+    if (
+        details["scope"] != "prospective_frontier_request_ids"
+        or details["policy_sha256"] != sha256_file(policy_path(plan_dir))
+    ):
+        raise ContractError("frontier capacity policy binding mismatch")
+    additions = details["additions"]
+    if (
+        not isinstance(additions, dict)
+        or set(additions) != {"calls", "input_tokens", "output_tokens"}
+    ):
+        raise ContractError("frontier capacity additions have an invalid shape")
+    for field, value in additions.items():
+        if require_non_negative_int(value, f"capacity additions.{field}") <= 0:
+            raise ContractError("frontier capacity additions must all be positive")
+    if not staged_is_active(plan_dir):
+        raise ContractError("frontier capacity authorization lost staged state")
+    journal_path = (
+        staged_root(plan_dir) / "capacity-topup-journals"
+        / f"{record['record_id']}.json"
+    )
+    with staged_transaction_lock(plan_dir):
+        with budget_lock(plan_dir):
+            state = staged_load_state(plan_dir)
+            if (
+                state["active_stage_id"] != details["active_stage_id"]
+                or state["active_stage_envelope_sha256"]
+                != details["active_stage_envelope_sha256"]
+            ):
+                raise ContractError(
+                    "frontier capacity active stage or envelope changed"
+                )
+            global_path = Path(details["global_budget_path"])
+            capacity_path = Path(details["staged_capacity_path"])
+            usage_path = Path(details["stage_usage_path"])
+            expected_paths = {
+                "global": frontier_root(plan_dir) / "budget.json",
+                "staged": staged_root(plan_dir) / "capacity-ledger.json",
+                "usage": (
+                    staged_stage_dir(plan_dir, state["active_stage_id"])
+                    / "usage-ledger.json"
+                ),
+            }
+            if any(
+                path.resolve() != expected_paths[label].resolve()
+                for label, path in (
+                    ("global", global_path),
+                    ("staged", capacity_path),
+                    ("usage", usage_path),
+                )
+            ):
+                raise ContractError("frontier capacity ledger path mismatch")
+            if journal_path.exists():
+                journal = read_json(journal_path)
+                if (
+                    journal.get("record_id") != record["record_id"]
+                    or journal.get("record_sha256") != sha256_json(record)
+                ):
+                    raise ContractError("frontier capacity journal correlation mismatch")
+            else:
+                global_before = (
+                    read_json(global_path) if global_path.exists()
+                    else empty_frontier_budget_image()
+                )
+                capacity_before = read_json(capacity_path)
+                usage_before = read_json(usage_path)
+                staged_validate_capacity(capacity_before)
+                expected_hashes = {
+                    "global": details["global_budget_sha256"],
+                    "staged": details["staged_capacity_sha256"],
+                    "usage": details["stage_usage_sha256"],
+                }
+                current = {
+                    "global": global_before,
+                    "staged": capacity_before,
+                    "usage": usage_before,
+                }
+                if any(
+                    sha256_json(current[label]) != expected_hashes[label]
+                    for label in current
+                ):
+                    raise ContractError(
+                        "frontier capacity authorization ledger binding changed"
+                    )
+                global_after = json.loads(json.dumps(global_before))
+                prior_global_additions = global_after.setdefault(
+                    "authorized_capacity", {
+                        "calls": 0, "input_tokens": 0, "output_tokens": 0,
+                    },
+                )
+                authorization_ids = global_after.setdefault(
+                    "capacity_authorization_ids", [],
+                )
+                if record["record_id"] in authorization_ids:
+                    raise ContractError(
+                        "frontier capacity exists without its top-up journal"
+                    )
+                for field in additions:
+                    prior_global_additions[field] += additions[field]
+                authorization_ids.append(record["record_id"])
+                global_after["updated_at"] = utc_now()
+
+                capacity_after = json.loads(json.dumps(capacity_before))
+                capacity_after["remaining_calls"] += additions["calls"]
+                capacity_after.setdefault("capacity_authorization_ids", []).append(
+                    record["record_id"]
+                )
+                capacity_after.setdefault("authorized_additions", {"calls": 0})[
+                    "calls"
+                ] += additions["calls"]
+                staged_validate_capacity(capacity_after)
+
+                usage_after = json.loads(json.dumps(usage_before))
+                usage_after["limits"]["review_tokens"] += additions[
+                    "output_tokens"
+                ]
+                usage_after.setdefault("capacity_authorization_ids", []).append(
+                    record["record_id"]
+                )
+                usage_after.setdefault(
+                    "authorized_additions", {"review_tokens": 0},
+                )["review_tokens"] += additions["output_tokens"]
+                usage_after["updated_at"] = utc_now()
+
+                def images(before: Any, after: Any) -> dict[str, Any]:
+                    return {
+                        "before": before, "before_sha256": sha256_json(before),
+                        "after": after, "after_sha256": sha256_json(after),
+                    }
+
+                journal = {
+                    "schema_version": 1, "phase": "PREPARED",
+                    "record_id": record["record_id"],
+                    "record_sha256": sha256_json(record),
+                    "additions": additions,
+                    "global": images(global_before, global_after),
+                    "staged": images(capacity_before, capacity_after),
+                    "usage": images(usage_before, usage_after),
+                    "prepared_at": utc_now(),
+                }
+                atomic_write_json(journal_path, journal)
+
+            for label, path in (
+                ("global", global_path),
+                ("usage", usage_path),
+                ("staged", capacity_path),
+            ):
+                image = journal[label]
+                current_value = (
+                    read_json(path) if path.exists()
+                    else empty_frontier_budget_image()
+                )
+                current_hash = sha256_json(current_value)
+                if current_hash == image["before_sha256"]:
+                    atomic_write_json(path, image["after"])
+                elif current_hash != image["after_sha256"]:
+                    raise ContractError(
+                        f"frontier capacity {label} ledger is irreconcilable"
+                    )
+                if os.environ.get(
+                    f"HARNESS_FAULT_AFTER_CAPACITY_TOPUP_{label.upper()}"
+                ) == "1":
+                    os._exit(91)
+            _staged_ensure_audit_once_locked(
+                plan_dir, "frontier_capacity_authorized",
+                {"record_id": record["record_id"]},
+                {
+                    "additions": additions,
+                    "prospective_only": True,
+                    "global_after_sha256": journal["global"]["after_sha256"],
+                    "staged_after_sha256": journal["staged"]["after_sha256"],
+                    "usage_after_sha256": journal["usage"]["after_sha256"],
+                },
+            )
+            journal.update({
+                "phase": "COMMITTED",
+                "committed_at": journal.get("committed_at", utc_now()),
+            })
+            atomic_write_json(journal_path, journal)
+            return {
+                "journal_path": str(journal_path),
+                "journal_sha256": sha256_file(journal_path),
+                "additions": additions,
+            }
 
 
 def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
@@ -986,6 +1252,10 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
             update_worker_status(plan_dir, run_id, "CANCELLED", {
                 "completed_at": receipt["applied_at"], "authority_record_id": record["record_id"],
             })
+        elif action == "authorize_frontier_capacity":
+            receipt["capacity_topup"] = apply_frontier_capacity_authorization(
+                plan_dir, record,
+            )
         canonical = Path(receipt["receipt_path"])
         if not canonical.exists():
             atomic_write_json(canonical, receipt, immutable=True)
@@ -2948,6 +3218,7 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
         "frontier_model": args.frontier_model,
         "frontier_reasoning_effort": args.frontier_reasoning_effort,
         "frontier_transport": args.frontier_transport,
+        "frontier_usage_profile": dict(CHATGPT_USAGE_FLOOR),
         "top_level_plan_audit": {
             "required": True,
             "declared_author_model_family": "MiniMax-M3",
@@ -5388,6 +5659,39 @@ def frontier_root(plan_dir: Path) -> Path:
     return plan_dir / "state" / "frontier"
 
 
+def empty_frontier_budget_image() -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "reserved_calls": 0,
+        "reserved_input_tokens": 0,
+        "reserved_output_tokens": 0,
+        "request_ids": [],
+    }
+
+
+def effective_frontier_limits(
+    policy: dict[str, Any], ledger: dict[str, Any],
+) -> dict[str, int]:
+    base = policy["frontier_escalation"]
+    additions = ledger.get("authorized_capacity", {})
+    values = {
+        "max_calls": base["max_calls"] + require_non_negative_int(
+            additions.get("calls", 0), "authorized_capacity.calls",
+        ),
+        "max_input_tokens": base["max_input_tokens"]
+        + require_non_negative_int(
+            additions.get("input_tokens", 0),
+            "authorized_capacity.input_tokens",
+        ),
+        "max_output_tokens": base["max_output_tokens"]
+        + require_non_negative_int(
+            additions.get("output_tokens", 0),
+            "authorized_capacity.output_tokens",
+        ),
+    }
+    return values
+
+
 def request_dir(plan_dir: Path, request_id: str) -> Path:
     if not REQUEST_ID_RE.fullmatch(request_id):
         raise ContractError("invalid request_id")
@@ -5427,16 +5731,13 @@ def reserve_budget(plan_dir: Path, request: dict[str, Any], policy: dict[str, An
     ledger_path = root / "budget.json"
     requested = request["budget_reservation"]
     with budget_lock(plan_dir):
-        ledger = read_json(ledger_path) if ledger_path.exists() else {
-            "schema_version": SCHEMA_VERSION,
-            "reserved_calls": 0,
-            "reserved_input_tokens": 0,
-            "reserved_output_tokens": 0,
-            "request_ids": [],
-        }
+        ledger = (
+            read_json(ledger_path) if ledger_path.exists()
+            else empty_frontier_budget_image()
+        )
         if request["request_id"] in ledger["request_ids"]:
             return ledger
-        limits = policy["frontier_escalation"]
+        limits = effective_frontier_limits(policy, ledger)
         next_calls = ledger["reserved_calls"] + require_non_negative_int(requested["call"], "budget_reservation.call")
         next_input = ledger["reserved_input_tokens"] + require_non_negative_int(requested["max_input_tokens"], "budget_reservation.max_input_tokens")
         next_output = ledger["reserved_output_tokens"] + require_non_negative_int(requested["max_output_tokens"], "budget_reservation.max_output_tokens")
@@ -5608,13 +5909,10 @@ def reserve_frontier_and_staged_budget(
                             "released combined capacity lacks its release journal"
                         )
                     previous_release = journal
-            ledger = read_json(global_path) if global_path.exists() else {
-                "schema_version": 1,
-                "reserved_calls": 0,
-                "reserved_input_tokens": 0,
-                "reserved_output_tokens": 0,
-                "request_ids": [],
-            }
+            ledger = (
+                read_json(global_path) if global_path.exists()
+                else empty_frontier_budget_image()
+            )
             if journal_path.exists() and previous_release is None:
                 journal = read_json(journal_path)
                 if (
@@ -5632,7 +5930,7 @@ def reserve_frontier_and_staged_budget(
                         "combined capacity state exists without its recovery journal"
                     )
                 staged_require_preflight(plan_dir)
-                limits = policy["frontier_escalation"]
+                limits = effective_frontier_limits(policy, ledger)
                 global_after = dict(ledger)
                 global_after.update({
                     "reserved_calls": ledger["reserved_calls"] + requested["call"],
@@ -6165,6 +6463,36 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("CP-03 requires distinct scientific pivot eligibility")
     if not 1 <= args.deadline_seconds <= 86400:
         raise ContractError("deadline_seconds must be between 1 and 86400")
+    staged_review_state: dict[str, Any] | None = None
+    if args.checkpoint == "STAGE-REVIEW":
+        if not staged_is_active(plan_dir):
+            raise ContractError(
+                "STAGE-REVIEW requires active staged research and a canonical "
+                "terminal stage report"
+            )
+        staged_review_state = staged_load_state(plan_dir)
+        if staged_review_state["state"] == "CONTRACTED":
+            raise ContractError(
+                "STAGE-REVIEW is terminal-only; the current stage is CONTRACTED. "
+                "Create CP-01 and apply approve_execution first"
+            )
+        if staged_review_state["state"] not in {"RECORDED", "PAUSED"}:
+            raise ContractError(
+                "STAGE-REVIEW requires a recorded terminal Gate decision and "
+                "canonical stage report"
+            )
+        canonical_report = (
+            staged_stage_dir(plan_dir, staged_review_state["active_stage_id"])
+            / "stage-report.json"
+        )
+        if (
+            canonical_report.is_symlink()
+            or not canonical_report.is_file()
+            or canonical_report.stat().st_mode & 0o777 != 0o444
+        ):
+            raise ContractError(
+                "STAGE-REVIEW requires the canonical immutable stage-report.json"
+            )
     request_id = args.request_id or f"far_{uuid.uuid4().hex}"
     target_dir = request_dir(plan_dir, request_id)
     manifest_items = []
@@ -6227,6 +6555,26 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             expected_paths["optimization_contract"]
         ):
             raise ContractError("staged CP-01 optimization contract drifted")
+    if args.checkpoint == "STAGE-REVIEW":
+        assert staged_review_state is not None
+        stage_dir = staged_stage_dir(
+            plan_dir, staged_review_state["active_stage_id"],
+        )
+        expected_paths = {
+            "optimization_contract": (
+                staged_root(plan_dir) / "contracts"
+                / f"{staged_review_state['contract_version']}.json"
+            ),
+            "stage_envelope": stage_dir / "envelope.json",
+            "stage_report": stage_dir / "stage-report.json",
+        }
+        for item in manifest:
+            expected_path = expected_paths[item["purpose"]].resolve()
+            if Path(item["path"]).resolve() != expected_path:
+                raise ContractError(
+                    f"STAGE-REVIEW {item['purpose']} must be canonical; "
+                    "use CP-01 approve_execution for an initial stage"
+                )
     if args.checkpoint == "CP-02":
         promotion_item = next(item for item in manifest if item["purpose"] == "promotion_receipt")
         promotion_path = Path(promotion_item["path"])
@@ -6506,10 +6854,16 @@ def validate_frontier_response_integrity(
         raise ContractError("recommendation is invalid for checkpoint")
     if response["status"] != "completed":
         raise ContractError("frontier response must have status=completed")
-    if response["blockers"]:
-        raise ContractError("frontier response has unresolved blockers")
-    if any(item.get("severity") == "critical" for item in response["findings"]):
-        raise ContractError("frontier response has unresolved critical findings")
+    critical_findings = any(
+        item.get("severity") == "critical" for item in response["findings"]
+    )
+    if response["recommendation"] == "accept" and (
+        response["blockers"] or critical_findings
+    ):
+        raise FrontierSemanticResponseError(
+            "accept recommendation is inconsistent with unresolved blockers "
+            "or critical findings"
+        )
     evidence_authority = {item["path"] for item in request["context_manifest"]} | {
         item["sha256"] for item in request["context_manifest"]
     }
@@ -6518,7 +6872,9 @@ def validate_frontier_response_integrity(
             raise ContractError("frontier findings must cite frozen evidence paths or hashes")
     reservation = request["budget_reservation"]
     if response["usage"]["input_tokens"] > reservation["max_input_tokens"] or response["usage"]["output_tokens"] > reservation["max_output_tokens"]:
-        raise ContractError("observed token use exceeds the request reservation")
+        raise FrontierBudgetOverrunError(
+            "controller-observed token use exceeds the request reservation"
+        )
     verify_manifest_items(request["context_manifest"], base_dir=plan_dir)
     return response, request, request_path
 
@@ -6526,6 +6882,7 @@ def validate_frontier_response_integrity(
 def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]:
     run_dir = request_dir(plan_dir, request_id)
     current = read_json(status_path(plan_dir, request_id))
+    _, request = load_request(plan_dir, request_id)
     if current["state"] in {"RECEIVED", "VALIDATED", "APPLIED"}:
         return {"ok": True, "idempotent": True, **current}
     raw_response = run_dir / "response.raw.json"
@@ -6537,7 +6894,22 @@ def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]
         response = read_json(raw_response)
         usage = extract_usage(events_path.read_text() if events_path.exists() else "")
         if usage["input_tokens"] == 0 and usage["output_tokens"] == 0:
-            raise ContractError("transport usage is unavailable")
+            usage = {
+                "input_tokens": request["budget_reservation"]["max_input_tokens"],
+                "output_tokens": request["budget_reservation"]["max_output_tokens"],
+            }
+            usage_accounting = {
+                "authority": "conservative_reservation_fallback",
+                "raw_transport_usage": {
+                    "input_tokens": 0, "output_tokens": 0,
+                },
+                "charged_usage": usage,
+            }
+        else:
+            usage_accounting = {
+                "authority": "controller_observed_transport",
+                "charged_usage": usage,
+            }
         response["model_id"] = current["model_id"]
         response["usage"] = usage
         response.setdefault("completed_at", utc_now())
@@ -6550,6 +6922,7 @@ def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]
         received = transition(
             plan_dir, request_id, "RECEIVED", response_path=str(response_path),
             response_sha256=sha256_file(response_path),
+            usage_accounting=usage_accounting,
         )
         return {"ok": True, **received}
     except ContractError as exc:
@@ -6649,6 +7022,17 @@ def frontier_review_profile(
             "frontier_reasoning_effort", "xhigh",
         ),
     }
+
+
+def frontier_usage_floor(
+    policy: dict[str, Any], review_profile: dict[str, str],
+) -> dict[str, Any] | None:
+    if policy.get("frontier_transport", "codex-default") != "chatgpt-https":
+        return None
+    profile = policy.get("frontier_usage_profile", CHATGPT_USAGE_FLOOR)
+    if profile != CHATGPT_USAGE_FLOOR:
+        raise ContractError("frontier usage floor/profile changed")
+    return {**profile, "review_profile_kind": review_profile["kind"]}
 
 
 def preflight_frontier_transport(
@@ -7004,6 +7388,29 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             )
             raise ContractError("estimated input exceeds reservation")
         review_profile = frontier_review_profile(policy, request)
+        usage_floor = frontier_usage_floor(policy, review_profile)
+        if usage_floor is not None and (
+            request["budget_reservation"]["max_input_tokens"]
+            < usage_floor["min_input_tokens"]
+            or request["budget_reservation"]["max_output_tokens"]
+            < usage_floor["min_output_tokens"]
+        ):
+            recovery = release_frontier_prelaunch_reservation(
+                plan_dir, request,
+                "reservation_below_chatgpt_usage_floor_before_transport",
+            )
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                failure="reservation_below_chatgpt_usage_floor",
+                usage_floor=usage_floor,
+                budget_recovery=recovery,
+            )
+            raise ContractError(
+                "frontier reservation is below the frozen ChatGPT usage "
+                f"floor/profile {usage_floor['profile_id']}: input >= "
+                f"{usage_floor['min_input_tokens']}, output >= "
+                f"{usage_floor['min_output_tokens']}"
+            )
         try:
             preflight = preflight_frontier_transport(
                 plan_dir, args.request_id, args.codex_bin, policy,
@@ -7228,8 +7635,17 @@ def command_validate_response(args: argparse.Namespace) -> dict[str, Any]:
     try:
         validate_frontier_response_integrity(plan_dir, args.request_id, current, response_path)
     except ContractError as exc:
+        if isinstance(exc, FrontierBudgetOverrunError):
+            failure = "response_budget_overrun"
+        elif isinstance(exc, FrontierSemanticResponseError):
+            failure = "response_semantic_inconsistency"
+        else:
+            failure = "response_invalid"
         transition(plan_dir, args.request_id, "INVALID", validation_error=str(exc))
-        transition(plan_dir, args.request_id, "PAUSED", failure="response_invalid", validation_error=str(exc))
+        transition(
+            plan_dir, args.request_id, "PAUSED", failure=failure,
+            validation_error=str(exc),
+        )
         raise
     transition(
         plan_dir, args.request_id, "VALIDATED", validated_response_path=str(response_path),
@@ -7358,6 +7774,12 @@ def commit_durable_frontier_result_locked(
         plan_dir, request, require_current=True,
     )
     if capsule is None:
+        if request.get("checkpoint") == "STAGE-REVIEW":
+            raise ContractError(
+                "STAGE-REVIEW is persisted with record-strong-stage-review; "
+                "commit-durable-frontier-result is only for requests prebound "
+                "to a durable context capsule"
+            )
         raise ContractError("frontier request is not bound to a durable context capsule")
     current = read_json(status_path(plan_dir, args.request_id))
     if current.get("state") != "APPLIED":
@@ -7705,6 +8127,12 @@ def staged_load_state(plan_dir: Path) -> dict[str, Any]:
     )
     contract = read_json(contract_path)
     envelope = read_json(envelope_path)
+    staged_validate_envelope(
+        envelope, state["contract_version"],
+        envelope.get("incumbent_sha256"),
+        first=envelope.get("source_cycle_id") is None,
+        plan_dir=plan_dir, require_manifest=False,
+    )
     authorization_checks = {
         "contract_version": state["contract_version"],
         "contract_sha256": state["contract_sha256"],
@@ -7945,10 +8373,18 @@ def staged_validate_evaluation_profile(profile: dict[str, Any]) -> None:
 
 
 def staged_validate_capacity(capacity: dict[str, Any]) -> None:
-    if set(capacity) != {
+    required = {
         "schema_version", "checkpoint_capacity", "retry_budget",
         "remaining_calls", "mandatory_future_calls",
-    } or capacity.get("schema_version") != 1:
+    }
+    allowed = required | {
+        "capacity_authorization_ids", "authorized_additions",
+    }
+    if (
+        not required.issubset(capacity)
+        or set(capacity) - allowed
+        or capacity.get("schema_version") != 1
+    ):
         raise ContractError("checkpoint capacity has an invalid closed shape")
     checkpoints = capacity.get("checkpoint_capacity")
     if not isinstance(checkpoints, dict) or set(checkpoints) != {
@@ -7992,11 +8428,30 @@ def staged_validate_capacity(capacity: dict[str, Any]) -> None:
         raise ContractError("mandatory_future_calls must equal unspent named slots")
     if remaining < mandatory:
         raise ContractError("remaining_calls < mandatory_future_calls")
+    authorization_ids = capacity.get("capacity_authorization_ids", [])
+    if (
+        not isinstance(authorization_ids, list)
+        or len(authorization_ids) != len(set(authorization_ids))
+        or any(not isinstance(item, str) or not item.startswith("har_")
+               for item in authorization_ids)
+    ):
+        raise ContractError("capacity authorization IDs are invalid")
+    additions = capacity.get("authorized_additions", {"calls": 0})
+    if (
+        not isinstance(additions, dict)
+        or set(additions) != {"calls"}
+        or require_non_negative_int(
+            additions.get("calls"), "authorized_additions.calls",
+        ) < 0
+    ):
+        raise ContractError("authorized staged capacity additions are invalid")
 
 
 def staged_validate_envelope(
     envelope: dict[str, Any], contract_version: str,
     incumbent_sha256: str, *, first: bool,
+    plan_dir: Path | None = None,
+    require_manifest: bool = False,
 ) -> None:
     required = {
         "schema_version", "stage_id", "contract_version", "source_cycle_id",
@@ -8006,7 +8461,9 @@ def staged_validate_envelope(
         "stage_budget_sha256", "required_report_schema_sha256",
         "stage_budget_and_stop", "stage_kind",
     }
-    allowed = required | {"figure_requirements_sha256"}
+    allowed = required | {
+        "figure_requirements_sha256", "review_material_manifest",
+    }
     missing = sorted(required - set(envelope))
     if missing:
         raise ContractError(f"stage envelope is incomplete: {missing}")
@@ -8035,6 +8492,93 @@ def staged_validate_envelope(
         raise ContractError("authorized_evidence_refs must be unique")
     for item in envelope["authorized_evidence_refs"]:
         staged_require_id(item, "authorized_evidence_ref")
+    materials = envelope.get("review_material_manifest", [])
+    required_material_hashes = {
+        "stage_objective": envelope["stage_objective_sha256"],
+        "allowed_intervention": envelope["allowed_intervention_sha256"],
+        "entry_criteria": envelope["entry_criteria_sha256"],
+        "exit_criteria": envelope["exit_criteria_sha256"],
+        "stage_budget": envelope["stage_budget_sha256"],
+        "required_report_schema": envelope["required_report_schema_sha256"],
+        "stop_policy": (
+            envelope.get("stage_budget_and_stop", {}).get("stop_policy_sha256")
+            if isinstance(envelope.get("stage_budget_and_stop"), dict)
+            else None
+        ),
+    }
+    if envelope.get("stage_kind") == "figure_production":
+        required_material_hashes["figure_requirements"] = envelope.get(
+            "figure_requirements_sha256"
+        )
+    if require_manifest and not materials:
+        raise ContractError(
+            "new stage envelope requires review_material_manifest"
+        )
+    if not isinstance(materials, list):
+        raise ContractError("review_material_manifest must be a list")
+    material_ids: list[str] = []
+    material_paths: list[str] = []
+    material_purposes: list[str] = []
+    for material in materials:
+        if not isinstance(material, dict) or set(material) != {
+            "id", "path", "sha256", "purpose",
+        }:
+            raise ContractError(
+                "review material must bind id, path, sha256, and purpose"
+            )
+        material_ids.append(staged_require_id(material["id"], "review material id"))
+        staged_require_sha256(material["sha256"], "review material sha256")
+        if not isinstance(material["purpose"], str) or not material["purpose"].strip():
+            raise ContractError("review material purpose is required")
+        material_purposes.append(material["purpose"])
+        expected_digest = required_material_hashes.get(material["purpose"])
+        if expected_digest is None:
+            raise ContractError(
+                f"review material purpose is not authorized: {material['purpose']}"
+            )
+        if material["sha256"] != expected_digest:
+            raise ContractError(
+                f"review material digest does not bind {material['purpose']}"
+            )
+        raw_path = Path(material["path"])
+        if plan_dir is not None:
+            if (
+                raw_path.is_absolute()
+                or str(raw_path) != material["path"]
+                or any(part in {"", ".", ".."} for part in raw_path.parts)
+            ):
+                raise ContractError(
+                    "review material path must be canonical and plan-relative"
+                )
+            candidate = plan_dir
+            for part in raw_path.parts:
+                candidate = candidate / part
+                if candidate.is_symlink():
+                    raise ContractError(
+                        "review material path must not traverse a symlink"
+                    )
+            if candidate.is_symlink():
+                raise ContractError("review material path must not be a symlink")
+            path = normalize_owned_path(plan_dir, str(candidate))
+            if not path.is_file():
+                raise ContractError("review material must be an existing file")
+            if path.stat().st_mode & 0o777 != 0o444:
+                raise ContractError("review material must be immutable mode 0444")
+            if sha256_file(path) != material["sha256"]:
+                raise ContractError("review material content hash mismatch")
+            material_paths.append(str(path))
+        else:
+            material_paths.append(material["path"])
+    if len(material_ids) != len(set(material_ids)):
+        raise ContractError("review material IDs must be unique")
+    if len(material_paths) != len(set(material_paths)):
+        raise ContractError("review material paths must be unique")
+    if len(material_purposes) != len(set(material_purposes)):
+        raise ContractError("review material purposes must be unique")
+    if materials and set(material_purposes) != set(required_material_hashes):
+        raise ContractError(
+            "review material purpose set does not match envelope controls"
+        )
     for field in (
         "incumbent_sha256", "stage_objective_sha256",
         "allowed_intervention_sha256", "entry_criteria_sha256",
@@ -8086,23 +8630,9 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     staged_require_sha256(args.incumbent_sha256, "incumbent_sha256")
     staged_validate_envelope(
         envelope, contract["contract_version"], args.incumbent_sha256,
-        first=True,
+        first=True, plan_dir=plan_dir,
+        require_manifest=not state_path.exists(),
     )
-    authorization_path = Path(args.authorization_receipt).resolve()
-    authorization = validate_applied_action_receipt(
-        plan_dir, authorization_path, "authorize_contract",
-    )
-    expected_authorization = {
-        "contract_version": contract["contract_version"],
-        "contract_sha256": sha256_file(contract_path),
-        "stage_id": envelope["stage_id"],
-        "stage_envelope_sha256": sha256_file(envelope_path),
-    }
-    if authorization.get("record_id") != contract["authorization_receipt_id"]:
-        raise ContractError("optimization contract authorization receipt ID mismatch")
-    details = authorization.get("details", {})
-    if any(details.get(key) != value for key, value in expected_authorization.items()):
-        raise ContractError("owner authorization does not bind contract and first stage")
     if state_path.exists():
         state = staged_load_state(plan_dir)
         expected = {
@@ -8113,6 +8643,9 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         }
         if any(state.get(key) != value for key, value in expected.items()):
             raise ContractError("staged research initialization collision")
+        supplied_authorization = Path(args.authorization_receipt).resolve()
+        if supplied_authorization != Path(state["owner_authorization_path"]).resolve():
+            raise ContractError("staged research owner authorization path changed")
         _staged_ensure_audit_once_locked(
             plan_dir,
             "staged_research_initialized",
@@ -8134,6 +8667,21 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
             },
         )
         return {"ok": True, "idempotent": True, **state}
+    authorization_path = Path(args.authorization_receipt).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, authorization_path, "authorize_contract",
+    )
+    expected_authorization = {
+        "contract_version": contract["contract_version"],
+        "contract_sha256": sha256_file(contract_path),
+        "stage_id": envelope["stage_id"],
+        "stage_envelope_sha256": sha256_file(envelope_path),
+    }
+    if authorization.get("record_id") != contract["authorization_receipt_id"]:
+        raise ContractError("optimization contract authorization receipt ID mismatch")
+    details = authorization.get("details", {})
+    if any(details.get(key) != value for key, value in expected_authorization.items()):
+        raise ContractError("owner authorization does not bind contract and first stage")
     root = staged_root(plan_dir)
     root.mkdir(parents=True, exist_ok=True)
     contract_target = root / "contracts" / f"{contract['contract_version']}.json"
@@ -10382,7 +10930,7 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         incoming_envelope,
         state["contract_version"],
         source_decision["resulting_incumbent_sha256"],
-        first=False,
+        first=False, plan_dir=plan_dir, require_manifest=True,
     )
     authorization_path = Path(args.authorization_receipt).resolve()
     authorization = validate_applied_action_receipt(
@@ -10458,6 +11006,7 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     staged_validate_envelope(
         envelope, state["contract_version"],
         decision["resulting_incumbent_sha256"], first=False,
+        plan_dir=plan_dir, require_manifest=True,
     )
     if envelope["source_cycle_id"] != state["active_stage_id"]:
         raise ContractError("next stage must cite the preceding terminal cycle")
@@ -11245,6 +11794,7 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
         staged_validate_envelope(
             envelope, contract["contract_version"],
             state["current_incumbent_sha256"], first=False,
+            plan_dir=plan_dir, require_manifest=True,
         )
         authorization_path = Path(
             rebaseline["authorization_receipt_path"]
@@ -11643,6 +12193,9 @@ def build_parser() -> argparse.ArgumentParser:
     human.add_argument("--tier", choices=["arxiv", "conference", "journal-q1"])
     human.add_argument("--negative-result", action="store_true")
     human.add_argument("--learning-proposal")
+    human.add_argument("--add-frontier-calls", type=int)
+    human.add_argument("--add-frontier-input-tokens", type=int)
+    human.add_argument("--add-frontier-output-tokens", type=int)
     human.add_argument("--authorization-proposal")
     human.add_argument("--prepared-operation-id")
     human.set_defaults(handler=command_create_human_action)
