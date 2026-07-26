@@ -139,6 +139,47 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     "sha256": container[field],
                     "purpose": purpose,
                 })
+            for purpose in (
+                "execution_plan", "acceptance_evaluator",
+                "risk_and_stop_rules", "figure_strategy",
+            ):
+                material = materials_root / f"{purpose}.txt"
+                if material.exists():
+                    material.chmod(0o644)
+                material.write_text(f"{value['stage_id']}:{purpose}")
+                material.chmod(0o444)
+                manifest.append({
+                    "id": f"material_{value['stage_id']}_{purpose}",
+                    "path": str(material.relative_to(plan)),
+                    "sha256": hashlib.sha256(material.read_bytes()).hexdigest(),
+                    "purpose": purpose,
+                })
+            evaluator_implementation = materials_root / "source_inventory_validator.py"
+            if evaluator_implementation.exists():
+                evaluator_implementation.chmod(0o644)
+            evaluator_implementation.write_bytes(
+                (ROOT / "references" / "scripts" / "source_inventory_validator.py").read_bytes()
+            )
+            evaluator_implementation.chmod(0o444)
+            manifest.append({
+                "id": f"material_{value['stage_id']}_evaluator_implementation",
+                "path": str(evaluator_implementation.relative_to(plan)),
+                "sha256": hashlib.sha256(
+                    evaluator_implementation.read_bytes()
+                ).hexdigest(),
+                "purpose": "evaluator_implementation",
+            })
+            evaluator_conformance = materials_root / "evaluator_conformance.txt"
+            if evaluator_conformance.exists():
+                evaluator_conformance.chmod(0o644)
+            evaluator_conformance.write_text("source-inventory-validator/2 conformance")
+            evaluator_conformance.chmod(0o444)
+            manifest.append({
+                "id": f"material_{value['stage_id']}_evaluator_conformance",
+                "path": str(evaluator_conformance.relative_to(plan)),
+                "sha256": hashlib.sha256(evaluator_conformance.read_bytes()).hexdigest(),
+                "purpose": "evaluator_conformance",
+            })
             if value.get("stage_kind") == "figure_production":
                 expected = value.get("figure_requirements_sha256")
                 candidate = next((
@@ -271,9 +312,28 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--max-frontier-output-tokens", "100000",
         )
 
+    def test_policy_rejects_plan_budget_that_only_funds_one_call(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            rejected = self.invoke(
+                "init-policy", "--plan-dir", str(plan),
+                "--worker-model", "MiniMax-M3",
+                "--worker-max-budget-usd", "1",
+                "--frontier-model", "gpt-5.6-sol",
+                "--max-frontier-calls", "4",
+                "--max-frontier-input-tokens", "150000",
+                "--max-frontier-output-tokens", "5000",
+                ok=False,
+            )
+            self.assertIn(
+                "cannot fund every declared ChatGPT call", rejected.stderr,
+            )
+            self.assertFalse((plan / "state" / "model_policy.json").exists())
+
     def initialize(
         self, plan: Path, *, remaining: int = 8,
         envelope: dict | None = None,
+        noncanonical_contract: bool = False,
     ) -> dict:
         plan.mkdir(parents=True, exist_ok=True)
         if not (plan / "state" / "model_policy.json").exists():
@@ -291,6 +351,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             gate_evaluator.read_bytes()
         ).hexdigest()
         contract = self.write(plan / "inputs" / "contract.json", contract_value)
+        if noncanonical_contract:
+            contract.write_text(json.dumps(contract_value, separators=(",", ":")))
         stage = self.write(
             plan / "inputs" / "stage.json", envelope or self.envelope(),
         )
@@ -328,6 +390,313 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--incumbent-sha256", digest("incumbent"),
         )
         return json.loads(proc.stdout)
+
+    def test_init_preserves_authorized_contract_bytes_and_repairs_legacy_copy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            initialized = self.initialize(plan, noncanonical_contract=True)
+            source = plan / "inputs" / "contract.json"
+            target = (
+                plan / "state" / "staged_research" / "v1" / "contracts"
+                / "contract_v1.json"
+            )
+            state_path = plan / "state" / "staged_research" / "v1" / "state.json"
+            self.assertEqual(target.read_bytes(), source.read_bytes())
+            self.assertEqual(
+                initialized["contract_sha256"],
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+
+            # Recreate the pre-fix state: the staged copy was canonicalized and
+            # controller state bound that new hash, while the signed receipt
+            # continued to bind the original source bytes.
+            target.chmod(0o644)
+            canonical = json.dumps(
+                json.loads(source.read_text()), indent=2, sort_keys=True,
+            ) + "\n"
+            target.write_text(canonical)
+            target.chmod(0o444)
+            state = json.loads(state_path.read_text())
+            state["contract_sha256"] = hashlib.sha256(
+                target.read_bytes(),
+            ).hexdigest()
+            state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+            applied = next((plan / "state" / "human_actions" / "applied").glob("*.json"))
+            replay = self.invoke(
+                "init-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--contract", str(source),
+                "--stage-envelope", str(plan / "inputs" / "stage.json"),
+                "--evaluation-profile", str(plan / "inputs" / "evaluation.json"),
+                "--checkpoint-capacity", str(plan / "inputs" / "capacity.json"),
+                "--authorization-receipt", str(applied),
+                "--incumbent-sha256", digest("incumbent"),
+            )
+            recovered = json.loads(replay.stdout)
+            self.assertTrue(recovered["idempotent"])
+            self.assertEqual(target.read_bytes(), source.read_bytes())
+            self.assertEqual(
+                recovered["contract_sha256"],
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+            preflight = self.write(plan / "inputs" / "preflight.json", self.raw_preflight())
+            self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            )
+
+    def test_owner_can_revise_first_stage_before_preflight_without_spending_slot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            contract_value = json.loads((plan / "inputs" / "contract.json").read_text())
+            contract_value.update({
+                "contract_version": "contract_v2",
+                "authorization_receipt_id": "har_owner_auth_2",
+            })
+            contract = self.write(plan / "inputs" / "contract-v2.json", contract_value)
+            envelope_value = self.envelope("stage_1_rev2")
+            envelope_value["contract_version"] = "contract_v2"
+            envelope = self.write(plan / "inputs" / "stage-v2.json", envelope_value)
+            key = plan / "owner.key"
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--action", "authorize_contract",
+                "--key-file", str(key), "--expires-in", "3600",
+                "--record-id", "har_owner_auth_2", "--actor", "research-owner",
+                "--contract-version", "contract_v2", "--stage-id", "stage_1_rev2",
+                "--contract-sha256", hashlib.sha256(contract.read_bytes()).hexdigest(),
+                "--stage-envelope-sha256", hashlib.sha256(envelope.read_bytes()).hexdigest(),
+            ).stdout)
+            applied = json.loads(self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_contract",
+            ).stdout)
+            revised = json.loads(self.invoke(
+                "revise-unstarted-stage", "--plan-dir", str(plan),
+                "--contract", str(contract), "--stage-envelope", str(envelope),
+                "--evaluation-profile", str(plan / "inputs" / "evaluation.json"),
+                "--checkpoint-capacity", str(plan / "inputs" / "capacity.json"),
+                "--authorization-receipt", applied["receipt"]["receipt_path"],
+            ).stdout)
+            self.assertEqual(revised["contract_version"], "contract_v2")
+            self.assertEqual(revised["active_stage_id"], "stage_1_rev2")
+            self.assertTrue((root / "contracts" / "contract_v1.json").exists())
+            self.assertTrue((root / "contracts" / "contract_v2.json").exists())
+            capacity = json.loads((root / "capacity-ledger.json").read_text())
+            self.assertEqual(capacity["remaining_calls"], 8)
+            self.assertEqual(capacity["checkpoint_capacity"]["CP-01"]["spent"], 0)
+            preflight = self.write(plan / "inputs" / "preflight-v2.json", self.raw_preflight())
+            self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            )
+
+    def test_preflight_allows_first_attempt_with_zero_retry_and_evaluation_budget(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["retry_attempts"] = 0
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            self.initialize(plan, envelope=envelope)
+            preflight = self.write(
+                plan / "inputs" / "preflight.json",
+                self.raw_observation_preflight(plan),
+            )
+            result = json.loads(self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            ).stdout)
+            payload = json.loads(Path(result["preflight_path"]).read_text())
+            self.assertEqual(
+                payload["critical_path"]["mandatory_checkpoint_ids"],
+                ["CP-01"],
+            )
+            self.assertEqual(
+                payload["critical_path"]["deferred_checkpoint_ids"],
+                ["CP-02", "CP-04"],
+            )
+
+    def test_orphan_worker_budget_reconciliation_is_idempotent_and_rolls_forward(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            ledger_path = root / "stages" / "stage_1" / "usage-ledger.json"
+            ledger = json.loads(ledger_path.read_text())
+            run_id = "cwr_" + "a" * 32
+            ledger["reservation_ids"].append(f"worker:{run_id}")
+            ledger["used"]["tool_calls"] = 2
+            ledger["used"]["worker_tokens"] = 100
+            ledger["stop_reason"] = "tool_calls_exhausted"
+            ledger_path.write_text(json.dumps(ledger, sort_keys=True, indent=2) + "\n")
+            task = self.write(plan / "inputs" / "orphan-task.json", {
+                "stage_resource_request": {
+                    "tool_calls": 2, "worker_tokens": 100,
+                },
+            })
+            first = json.loads(self.invoke(
+                "reconcile-orphan-worker-budget", "--plan-dir", str(plan),
+                "--worker-run-id", run_id, "--task-contract", str(task),
+            ).stdout)
+            self.assertTrue(first["ok"])
+            after = json.loads(ledger_path.read_text())
+            self.assertNotIn(f"worker:{run_id}", after["reservation_ids"])
+            self.assertEqual(after["used"]["tool_calls"], 0)
+            self.assertEqual(after["used"]["worker_tokens"], 0)
+            self.assertIsNone(after["stop_reason"])
+
+            state_path = root / "state.json"
+            state = json.loads(state_path.read_text())
+            state["state"] = "DEVELOPING"
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            replay = json.loads(self.invoke(
+                "reconcile-orphan-worker-budget", "--plan-dir", str(plan),
+                "--worker-run-id", run_id, "--task-contract", str(task),
+            ).stdout)
+            self.assertTrue(replay["idempotent"])
+
+            journal_path = (
+                root / "worker-budget-reconciliations" / f"{run_id}.json"
+            )
+            journal_path.chmod(0o644)
+            journal = json.loads(journal_path.read_text())
+            journal["phase"] = "PREPARED"
+            journal.pop("committed_at", None)
+            journal_path.write_text(json.dumps(journal, sort_keys=True, indent=2) + "\n")
+            state["state"] = "PAUSED"
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            recovered = json.loads(self.invoke(
+                "reconcile-orphan-worker-budget", "--plan-dir", str(plan),
+                "--worker-run-id", run_id, "--task-contract", str(task),
+            ).stdout)
+            self.assertTrue(recovered["recovered"])
+            self.assertEqual(recovered["phase"], "COMMITTED")
+            self.assertEqual(
+                json.loads(state_path.read_text())["state"], "STAGE_AUTHORIZED",
+            )
+
+    def test_observation_preflight_rejects_non_utf8_before_state_or_budget_change(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            self.initialize(plan, envelope=envelope)
+            raw = self.raw_observation_preflight(plan)
+            source = plan / "inputs" / "non-utf8.py"
+            source.write_bytes(b"\xff\xfe\x00")
+            raw["source_manifest"] = [{
+                "path": str(source.resolve()),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }]
+            raw_path = self.write(plan / "inputs" / "non-utf8-preflight.json", raw)
+            root = plan / "state" / "staged_research" / "v1"
+            state_before = (root / "state.json").read_bytes()
+            usage_path = root / "stages" / "stage_1" / "usage-ledger.json"
+            usage_before = usage_path.read_bytes()
+            rejected = self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(raw_path), ok=False,
+            )
+            self.assertIn("must be UTF-8 text", rejected.stderr)
+            self.assertEqual((root / "state.json").read_bytes(), state_before)
+            self.assertEqual(usage_path.read_bytes(), usage_before)
+            self.assertFalse(
+                (root / "stages" / "stage_1" / "preflight.json").exists()
+            )
+
+    def test_developing_dispatch_capacity_rejects_before_scientific_budget(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            state_path = root / "state.json"
+            state = json.loads(state_path.read_text())
+            state["state"] = "DEVELOPING"
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            capacity_path = root / "capacity-ledger.json"
+            capacity = json.loads(capacity_path.read_text())
+            capacity["remaining_calls"] = capacity["mandatory_future_calls"]
+            capacity_path.chmod(0o644)
+            capacity_path.write_text(
+                json.dumps(capacity, sort_keys=True, indent=2) + "\n"
+            )
+            usage_path = root / "stages" / "stage_1" / "usage-ledger.json"
+            usage_before = usage_path.read_bytes()
+            spec = importlib.util.spec_from_file_location(
+                "dispatch_capacity_runtime", RUNTIME,
+            )
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            runtime = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(runtime)
+            run_id = "cwr_" + "b" * 32
+            with self.assertRaisesRegex(
+                runtime.ContractError, "mandatory_future_calls",
+            ):
+                runtime.staged_reserve_worker_dispatch_and_budget(
+                    plan.resolve(), dispatch_id=run_id,
+                    usage={"tool_calls": 2, "worker_tokens": 100},
+                )
+            self.assertEqual(usage_path.read_bytes(), usage_before)
+            self.assertFalse(
+                (root / "dispatch-reservations" / f"{run_id}.json").exists()
+            )
+            self.assertFalse(
+                (root / "dispatch-journals" / f"{run_id}.json").exists()
+            )
+
+    def test_orphan_budget_recovery_preserves_developing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            state_path = root / "state.json"
+            state = json.loads(state_path.read_text())
+            state["state"] = "DEVELOPING"
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            usage_path = root / "stages" / "stage_1" / "usage-ledger.json"
+            usage = json.loads(usage_path.read_text())
+            run_id = "cwr_" + "c" * 32
+            usage["reservation_ids"].append(f"worker:{run_id}")
+            usage["used"]["tool_calls"] = 2
+            usage["used"]["worker_tokens"] = 100
+            usage_path.write_text(json.dumps(usage, sort_keys=True, indent=2) + "\n")
+            task = self.write(plan / "inputs" / "developing-orphan-task.json", {
+                "stage_resource_request": {
+                    "tool_calls": 2, "worker_tokens": 100,
+                },
+            })
+            recovered = json.loads(self.invoke(
+                "reconcile-orphan-worker-budget", "--plan-dir", str(plan),
+                "--worker-run-id", run_id, "--task-contract", str(task),
+            ).stdout)
+            self.assertTrue(recovered["ok"])
+            self.assertEqual(json.loads(state_path.read_text())["state"], "DEVELOPING")
+            after = json.loads(usage_path.read_text())
+            self.assertNotIn(f"worker:{run_id}", after["reservation_ids"])
+            self.assertEqual(after["used"]["tool_calls"], 0)
+            self.assertEqual(after["used"]["worker_tokens"], 0)
 
     def raw_preflight(self) -> dict:
         return {
@@ -368,6 +737,49 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "checkpoint_after_transition": {
                     "CP-01": "authorize", "CP-02": "freeze", "CP-04": "accept",
                 },
+            },
+        }
+
+    def raw_observation_preflight(self, plan: Path) -> dict:
+        source = self.write(
+            plan / "inputs" / "bounded-source.py",
+            {"source": "immutable observation input"},
+        )
+        return {
+            "source_manifest": [{
+                "path": str(source.resolve()),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }],
+            "verdict_truth_table": {
+                "applicable": False,
+                "rationale": (
+                    "The first stage only records source-bound observations; "
+                    "the controller compiles a later Gate stage from its report."
+                ),
+            },
+            "statistical_design": {
+                "applicable": False,
+                "rationale": "source inventory only",
+            },
+            "training_evaluation_matrix": {
+                "applicable": False,
+                "rationale": "no training or evaluation in this stage",
+            },
+            "conditional_state_machine": {
+                "initial": "CONTRACTED",
+                "transitions": [
+                    {"id": "authorize", "from": "CONTRACTED", "event": "cp01", "to": "STAGE_AUTHORIZED"},
+                    {"id": "develop", "from": "STAGE_AUTHORIZED", "event": "dispatch", "to": "DEVELOPING"},
+                    {"id": "record", "from": "DEVELOPING", "event": "report", "to": "RECORDED"},
+                    {"id": "complete", "from": "RECORDED", "event": "compile", "to": "COMPLETE"},
+                    {"id": "pause", "from": "DEVELOPING", "event": "stop", "to": "PAUSED"},
+                ],
+            },
+            "critical_path": {
+                "ordered_transition_ids": [
+                    "authorize", "develop", "record", "complete",
+                ],
+                "checkpoint_after_transition": {"CP-01": "authorize"},
             },
         }
     def preflight(self, plan: Path, *, validators: dict | None = None) -> dict:
@@ -555,6 +967,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "a=sys.argv[1:]\n"
             "if a[:2]==['login','status']:\n"
             " print('Logged in with ChatGPT'); raise SystemExit(0)\n"
+            "if a[-2:]==['features','list']:\n"
+            " print('multi_agent stable false'); raise SystemExit(0)\n"
             "out=Path(a[a.index('--output-last-message')+1])\n"
             "request_path=out.parent/'request.json'\n"
             "request=json.loads(request_path.read_text())\n"
@@ -591,8 +1005,11 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "from pathlib import Path\n"
             "a=sys.argv[1:]\n"
             "if a[:2]==['login','status']:\n"
-            " os.unlink(__file__)\n"
             " print('Logged in with ChatGPT')\n"
+            " raise SystemExit(0)\n"
+            "if a[-2:]==['features','list']:\n"
+            " os.unlink(__file__)\n"
+            " print('multi_agent stable false')\n"
             " raise SystemExit(0)\n"
             f"Path({str(child_marker)!r}).write_text('started')\n"
         )
@@ -834,15 +1251,21 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 args += ["--artifact", f"{path}::{role}"]
             created = json.loads(self.invoke(*args).stdout)
             request = json.loads(Path(created["request_path"]).read_text())
-            self.assertEqual(request["evidence_profile_version"], 2)
+            self.assertEqual(request["evidence_profile_version"], 3)
             self.assertEqual(
                 request["review_contract"]["kind"],
-                "staged-contract-stage-review-v1",
+                "staged-contract-stage-review-v2",
             )
-            self.assertEqual(
-                {item["purpose"] for item in request["context_manifest"]},
-                set(artifacts),
-            )
+            purposes = {
+                item["purpose"] for item in request["context_manifest"]
+            }
+            self.assertTrue(set(artifacts).issubset(purposes))
+            self.assertTrue({
+                "review_material:execution_plan",
+                "review_material:acceptance_evaluator",
+                "review_material:risk_and_stop_rules",
+                "review_material:figure_strategy",
+            }.issubset(purposes))
             self.assertNotIn("figure_requirements", {
                 item["purpose"] for item in request["context_manifest"]
             })
@@ -2561,6 +2984,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "from pathlib import Path\n"
                 "if sys.argv[1:3] == ['login','status']:\n"
                 " print('Logged in with ChatGPT'); raise SystemExit(0)\n"
+                "if sys.argv[-2:] == ['features','list']:\n"
+                " print('multi_agent stable false'); raise SystemExit(0)\n"
                 f"Path({str(child_marker)!r}).write_text('started')\n"
                 "raise SystemExit(7)\n"
             )

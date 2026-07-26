@@ -124,6 +124,9 @@ class RuntimeContracts(unittest.TestCase):
             "if args == ['login', 'status']:\n"
             "  print('Logged in using ChatGPT')\n"
             "  raise SystemExit(0)\n"
+            "if args[-2:] == ['features', 'list']:\n"
+            "  print('multi_agent stable false')\n"
+            "  raise SystemExit(0)\n"
             "if os.environ.get('CODEX_TEST_LOG'):\n"
             "  json.dump(args, open(os.environ['CODEX_TEST_LOG'], 'w'))\n"
             "out = args[args.index('--output-last-message') + 1]\n"
@@ -280,6 +283,17 @@ class RuntimeContracts(unittest.TestCase):
                     },
                 },
             }))
+            missing = run([
+                sys.executable,
+                "references/scripts/harness-runtime.py",
+                "dispatch-worker",
+                "--plan-dir", str(plan),
+                "--task-contract", str(contract),
+                "--claude-bin", str(tmp / "missing-claude"),
+            ], check=False)
+            self.assertEqual(missing.returncode, 2)
+            self.assertIn("Claude Code executable is unavailable", missing.stderr)
+            self.assertFalse((plan / "state" / "worker_runs").exists())
             claude, log = self.fake_claude(tmp)
             proc = run([
                 sys.executable,
@@ -294,6 +308,11 @@ class RuntimeContracts(unittest.TestCase):
             argv = json.loads(log.read_text())
             self.assertEqual(argv[argv.index("--model") + 1], "MiniMax-M3-test")
             self.assertIn("--json-schema", argv)
+            self.assertIn("--add-dir", argv)
+            self.assertEqual(
+                Path(argv[argv.index("--add-dir") + 1]).resolve(),
+                plan.resolve(),
+            )
             self.assertNotIn("mavis", " ".join(argv).lower())
 
     def test_frontier_bridge_is_durable_bounded_and_idempotent(self) -> None:
@@ -384,7 +403,11 @@ class RuntimeContracts(unittest.TestCase):
                 ("far_valid_block", "block", "1", "321", "VALIDATED"),
                 ("far_accept_critical", "accept", "1", "321", "PAUSED"),
                 ("far_zero_usage", "accept", "0", "0", "VALIDATED"),
-                ("far_usage_overrun", "accept", "0", "150001", "PAUSED"),
+                (
+                    "far_reservation_overrun_within_plan",
+                    "accept", "0", "160000", "VALIDATED",
+                ),
+                ("far_plan_budget_overrun", "accept", "0", "400001", "PAUSED"),
             ):
                 plan = self.make_plan(tmp / request_id)
                 self.init_model_policy(plan)
@@ -426,9 +449,27 @@ class RuntimeContracts(unittest.TestCase):
                     self.assertEqual(
                         status["failure"], "response_semantic_inconsistency",
                     )
-                elif request_id == "far_usage_overrun":
+                elif request_id == "far_plan_budget_overrun":
                     self.assertNotEqual(validated.returncode, 0)
                     self.assertEqual(status["failure"], "response_budget_overrun")
+                elif request_id == "far_reservation_overrun_within_plan":
+                    receipt_path = (
+                        plan / "state" / "frontier" / "requests" / request_id
+                        / "budget-overrun-receipt.json"
+                    )
+                    receipt = json.loads(receipt_path.read_text())
+                    self.assertEqual(
+                        receipt["delta"],
+                        {"input_tokens": 10000, "output_tokens": 0},
+                    )
+                    ledger = json.loads(
+                        (plan / "state" / "frontier" / "budget.json").read_text()
+                    )
+                    self.assertEqual(ledger["reserved_input_tokens"], 160000)
+                    self.assertEqual(
+                        Path(status["budget_overrun_receipt"]).resolve(),
+                        receipt_path.resolve(),
+                    )
                 else:
                     response = json.loads(
                         (plan / "state" / "frontier" / "requests" / request_id
@@ -507,6 +548,15 @@ class RuntimeContracts(unittest.TestCase):
             self.assertIn("plugins", argv)
             self.assertIn("apps", argv)
             self.assertIn("multi_agent", argv)
+            self.assertIn("multi_agent_v2", argv)
+            self.assertIn("agents.enabled=false", argv)
+            self.assertIn(
+                "include_collaboration_mode_instructions=false", argv
+            )
+            self.assertTrue(any(
+                value.startswith('developer_instructions="Act as the sole ')
+                for value in argv
+            ))
             self.assertIn('model_provider="chatgpt_http"', argv)
             self.assertIn(
                 "model_providers.chatgpt_http.supports_websockets=false", argv
@@ -622,6 +672,9 @@ class RuntimeContracts(unittest.TestCase):
                 "if sys.argv[1:] == ['login', 'status']:\n"
                 "  print('Logged in using ChatGPT')\n"
                 "  raise SystemExit(0)\n"
+                "if sys.argv[-2:] == ['features', 'list']:\n"
+                "  print('multi_agent stable false')\n"
+                "  raise SystemExit(0)\n"
                 f"subprocess.Popen([sys.executable, '-c', "
                 f"\"import signal,time;from pathlib import Path;"
                 f"signal.signal(signal.SIGTERM, signal.SIG_IGN);time.sleep(3);"
@@ -658,6 +711,34 @@ class RuntimeContracts(unittest.TestCase):
             self.assertEqual(json.loads(reconciled.stdout)["state"], "PAUSED")
             time.sleep(3.2)
             self.assertFalse(descendant_marker.exists())
+
+    def test_frontier_rejects_collaboration_event_even_with_valid_output(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.harness(*self.cp01_create_args(plan, "plan_collab", "far_collab"))
+            codex = self.fake_codex(tmp)
+            original = codex.read_text()
+            codex.write_text(original.replace(
+                "print(json.dumps({'type': 'turn.completed',",
+                "print(json.dumps({'type':'item.completed','item':"
+                "{'type':'collab_tool_call','tool':'wait'}}))\n"
+                "print(json.dumps({'type': 'turn.completed',",
+            ))
+            failed = self.harness(
+                "send-frontier-request", "--plan-dir", str(plan),
+                "--request-id", "far_collab", "--codex-bin", str(codex),
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("single-reviewer boundary", failed.stderr)
+            status = json.loads((
+                plan / "state" / "frontier" / "requests" / "far_collab"
+                / "status.json"
+            ).read_text())
+            self.assertEqual(status["state"], "PAUSED")
+            self.assertEqual(status["failure"], "frontier_surface_violation")
 
     def test_frontier_preflight_rejects_minimax_without_budget(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -750,8 +831,11 @@ class RuntimeContracts(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "import os, sys\n"
                 "if sys.argv[1:] == ['login', 'status']:\n"
-                "  os.unlink(sys.argv[0])\n"
                 "  print('Logged in using ChatGPT')\n"
+                "  raise SystemExit(0)\n"
+                "if sys.argv[-2:] == ['features', 'list']:\n"
+                "  os.unlink(sys.argv[0])\n"
+                "  print('multi_agent stable false')\n"
                 "  raise SystemExit(0)\n"
                 "raise SystemExit(99)\n"
             )

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.16.1"
+  version: "0.16.2"
 ---
 
 # Autoresearch Paper
@@ -36,6 +36,17 @@ file-backed state.
   content-addressed `review_material_manifest` for objective, intervention,
   entry/exit, budget, report schema, and stop policy. Legacy v0.16 envelopes
   without it are read/replay-only.
+- Never submit an initial staged CP-01 with wrapper artifacts alone. Bind a
+  readable first-stage execution plan, acceptance evaluator, risk/stop rules,
+  and figure strategy in `review_material_manifest`; the controller expands
+  them into the bounded Codex evidence manifest.
+- Never hide a closed artifact validator from the Worker. Compile the exact
+  top-level and record fields, order, cardinality, and grounding rules into the
+  Worker-visible prompt. External frozen inputs may be exposed with
+  `--add-dir` only after controller hash verification and only with read-only
+  tools. Claude grants that read authority at directory granularity: the input
+  parent must contain no sibling secret that the Worker is not authorized to
+  read. Accepted evidence still cites only the frozen manifest.
 - Never treat `usage: {0,0}` as free or refund a launched frontier call.
   Preserve valid negative advice; reject `accept` with blockers/critical
   findings. Extra capacity requires a signed future-only
@@ -472,6 +483,17 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.16.2 (2026-07-26)** — Field-loop recovery: staged CP-01 now expands
+  readable plan/evaluator/risk/figure materials into the Codex audit boundary,
+  plan-wide ChatGPT budgets must fund every declared call, frontier review is
+  forced into an isolated single-reviewer surface, and hash-verified external
+  Worker inputs plus closed evaluator schemas are made visible before spend.
+  Claude executable/UTF-8 checks and combined dispatch/scientific-capacity
+  prechecks now occur before mutation, and every normalized artifact obeys its
+  declared byte cap.
+  Release acceptance used the original Claude session to pass CP-01, enter
+  `DEVELOPING`, execute MiniMax-M3 research, and produce a strictly grounded
+  first-stage inventory rather than stopping at a schema fixture.
 - **v0.16.1 (2026-07-26)** — Field-recovery patch: typed negative frontier
   advice, conservative unknown-usage charging, ChatGPT reservation floors,
   signed prospective capacity top-ups, content-addressed stage review

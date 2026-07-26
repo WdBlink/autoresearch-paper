@@ -30,6 +30,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from source_inventory_validator import (
+    SourceInventoryValidationError,
+    run_conformance_suite as run_source_inventory_conformance_suite,
+    validate_source_inventory,
+)
+
 
 SCHEMA_VERSION = 1
 PLAN_AUDIT_MODEL = "gpt-5.6-sol"
@@ -87,7 +97,6 @@ STATES = {
     "VALIDATED", "APPLIED", "EXPIRED", "INVALID", "PAUSED",
 }
 FRONTIER_TRANSPORTS = {"chatgpt-https", "codex-default"}
-SCRIPT_DIR = Path(__file__).resolve().parent
 RESPONSE_SCHEMA = SCRIPT_DIR.parent / "frontier-response.schema.json"
 HUMAN_ACTION_SCHEMA = SCRIPT_DIR.parent / "human-action.schema.json"
 EVALUATOR_VERDICT_SCHEMA = SCRIPT_DIR.parent / "evaluator-verdict.schema.json"
@@ -126,6 +135,14 @@ STAGED_CP01_EVIDENCE_PROFILE = {
     "optimization_contract", "first_stage_envelope",
     "current_stage_preflight", "checkpoint_capacity",
 }
+STAGED_CP01_REVIEW_MATERIAL_PURPOSES = {
+    "execution_plan", "acceptance_evaluator", "risk_and_stop_rules",
+    "figure_strategy",
+}
+STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
+    "evaluator_implementation", "evaluator_conformance",
+}
+STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {
     "algorithm_family", "data_representation", "objective", "evaluator",
     "baseline_framing", "lineage", "candidate_sha256",
@@ -380,19 +397,34 @@ def validate_top_level_plan_review_contract(
         "reasoning_effort": PLAN_AUDIT_REASONING_EFFORT,
     }
     kind = contract.get("kind")
-    expected_evidence_roles = (
-        sorted(STAGED_CP01_EVIDENCE_PROFILE)
-        if kind == "staged-contract-stage-review-v1"
-        else sorted(CHECKPOINT_EVIDENCE_PROFILES[("CP-01", None)])
-    )
+    evidence_roles = contract.get("evidence_roles")
+    if kind == "staged-contract-stage-review-v2":
+        expected_evidence_roles = sorted(
+            item["purpose"] for item in request.get("context_manifest", [])
+        )
+        required_staged_roles = STAGED_CP01_EVIDENCE_PROFILE | {
+            f"{STAGED_CP01_REVIEW_ROLE_PREFIX}{purpose}"
+            for purpose in STAGED_CP01_REVIEW_MATERIAL_PURPOSES
+        }
+        if not required_staged_roles.issubset(set(expected_evidence_roles)):
+            raise ContractError(
+                "staged CP-01 review contract lacks substantive review material"
+            )
+    else:
+        expected_evidence_roles = (
+            sorted(STAGED_CP01_EVIDENCE_PROFILE)
+            if kind == "staged-contract-stage-review-v1"
+            else sorted(CHECKPOINT_EVIDENCE_PROFILES[("CP-01", None)])
+        )
     if (
         contract.get("schema_version") != SCHEMA_VERSION
         or kind not in {
             "top-level-plan-review-v1", "staged-contract-stage-review-v1",
+            "staged-contract-stage-review-v2",
         }
         or contract.get("declared_author_model_family") != "MiniMax-M3"
         or contract.get("reviewer_profile") != expected_profile
-        or contract.get("evidence_roles") != expected_evidence_roles
+        or evidence_roles != expected_evidence_roles
         or contract.get("dependent_transition") != "approve_execution"
         or not isinstance(contract.get("model_policy_sha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", contract["model_policy_sha256"])
@@ -3207,6 +3239,22 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
     require_non_negative_int(args.max_frontier_calls, "max_frontier_calls")
     require_non_negative_int(args.max_frontier_input_tokens, "max_frontier_input_tokens")
     require_non_negative_int(args.max_frontier_output_tokens, "max_frontier_output_tokens")
+    if args.frontier_transport == "chatgpt-https":
+        minimum_input = (
+            args.max_frontier_calls * CHATGPT_USAGE_FLOOR["min_input_tokens"]
+        )
+        minimum_output = (
+            args.max_frontier_calls * CHATGPT_USAGE_FLOOR["min_output_tokens"]
+        )
+        if (
+            args.max_frontier_input_tokens < minimum_input
+            or args.max_frontier_output_tokens < minimum_output
+        ):
+            raise ContractError(
+                "frontier plan budget cannot fund every declared ChatGPT call; "
+                f"require at least {minimum_input} input and {minimum_output} "
+                "output tokens for the declared max_frontier_calls"
+            )
     if not 2 <= args.scientific_pivot_threshold <= 10:
         raise ContractError("scientific_pivot_threshold must be between 2 and 10")
     policy = {
@@ -3261,10 +3309,12 @@ def normalized_task_id(raw: str) -> str:
 
 def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
     fields = {"artifact_id", "path", "content_field", "max_bytes", "capability"}
-    if not isinstance(raw, dict) or set(raw) != fields:
+    if not isinstance(raw, dict) or frozenset(raw) not in {
+        frozenset(fields), frozenset(fields | {"content_validator"}),
+    }:
         raise ContractError(
             "artifact_outputs entries require exactly artifact_id, path, content_field, "
-            "max_bytes, capability"
+            "max_bytes, capability, and optionally content_validator"
         )
     if not all(isinstance(raw.get(key), str) and raw[key] for key in ("artifact_id", "path", "content_field")):
         raise ContractError("artifact output identifiers and paths must be non-empty strings")
@@ -3285,7 +3335,40 @@ def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
         if cursor == plan_dir:
             break
         cursor = cursor.parent
-    return {**raw, "path": str(path)}
+    validator = raw.get("content_validator")
+    if validator is not None:
+        if (
+            not isinstance(validator, dict)
+            or set(validator) != {"kind", "source_manifest"}
+            or validator.get("kind") != "source_inventory_v1"
+        ):
+            raise ContractError("artifact content_validator is invalid")
+        checked_sources = verify_manifest_items(
+            validator.get("source_manifest"), base_dir=plan_dir,
+        )
+        if len(checked_sources) != len(validator["source_manifest"]):
+            raise ContractError("artifact source manifest is incomplete")
+        validator = {"kind": "source_inventory_v1", "source_manifest": checked_sources}
+    return {
+        **raw, "path": str(path),
+        **({"content_validator": validator} if validator is not None else {}),
+    }
+
+
+def validate_source_inventory_content(
+    content: str, source_manifest: list[dict[str, Any]],
+) -> None:
+    try:
+        validate_source_inventory(content, source_manifest)
+    except SourceInventoryValidationError as exc:
+        raise ContractError(str(exc)) from exc
+
+
+def enforce_artifact_byte_cap(
+    content: bytes, declaration: dict[str, Any],
+) -> None:
+    if len(content) > declaration["max_bytes"]:
+        raise ContractError("worker artifact exceeds declared max_bytes")
 
 
 def validate_worker_artifact_proposals(
@@ -3310,10 +3393,18 @@ def validate_worker_artifact_proposals(
         if not isinstance(content, str):
             raise ContractError("worker artifact content must be a string")
         encoded = content.encode("utf-8")
-        if len(encoded) > declaration["max_bytes"]:
-            raise ContractError("worker artifact exceeds declared max_bytes")
+        enforce_artifact_byte_cap(encoded, declaration)
         digest = hashlib.sha256(encoded).hexdigest()
-        if proposal.get("sha256") != digest:
+        validator = declaration.get("content_validator")
+        if validator is not None:
+            validate_source_inventory_content(
+                content, validator["source_manifest"],
+            )
+        if proposal.get("sha256") == "controller-compute":
+            # The worker proposes UTF-8 content; the trusted controller owns
+            # byte canonicalization and the acceptance-critical digest.
+            proposal["sha256"] = digest
+        elif proposal.get("sha256") != digest:
             raise ContractError("worker artifact content hash mismatch")
         checked.append(proposal)
     return checked
@@ -3415,6 +3506,49 @@ def enforce_output_capability(
             raise ContractError("research-intermediate output must name a file inside its task namespace")
 
 
+def worker_visible_content_contracts(
+    declarations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compile evaluator-facing content requirements into Worker-visible form."""
+    contracts: list[dict[str, Any]] = []
+    for declaration in declarations:
+        validator = declaration.get("content_validator")
+        if validator is None:
+            continue
+        if validator.get("kind") != "source_inventory_v1":
+            raise ContractError("unknown Worker-visible content validator")
+        contracts.append({
+            "artifact_id": declaration["artifact_id"],
+            "content_encoding": "strict JSON encoded as the artifact content string",
+            "exact_top_level_fields": [
+                "schema_version", "records",
+                "uncertainties_and_next_questions",
+            ],
+            "schema_version": 1,
+            "record_count": len(validator["source_manifest"]),
+            "record_order": "exact source_manifest order",
+            "exact_record_fields": [
+                "path", "source_sha256", "symbol", "line_start",
+                "observation", "hypothesis",
+            ],
+            "record_rules": {
+                "path": "exact source_manifest path",
+                "source_sha256": "exact source_manifest sha256",
+                "symbol": "ASCII identifier or dotted identifier literally present on line_start",
+                "line_start": "one-based integer source line",
+                "observation": "exact cited source line with leading/trailing whitespace removed",
+                "hypothesis": "non-empty explicitly speculative string, at most 1000 characters",
+            },
+            "uncertainties_and_next_questions": {
+                "minimum_items": 1,
+                "maximum_items": 10,
+                "maximum_characters_per_item": 500,
+            },
+            "additional_fields": "forbidden at every object level",
+        })
+    return contracts
+
+
 def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
@@ -3485,9 +3619,17 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         )
     if not 1 <= args.timeout <= 86400:
         raise ContractError("timeout must be between 1 and 86400 seconds")
+    resolved_claude_bin = resolve_executable(args.claude_bin, label="Claude Code")
     operation_id = getattr(args, "operation_id", None)
     run_id = "cwr_" + (operation_id[3:35] if operation_id else uuid.uuid4().hex)
+    staged_usage: dict[str, int] | None = None
     if staged_is_active(plan_dir):
+        # All deterministic and immutable-input checks must pass before a
+        # worker reservation can consume the non-refundable stage budget.
+        # A v0.16.1 ordering bug consumed the entire work-unit allowance and
+        # only then discovered a stale preflight, leaving no worker run to
+        # reconcile.  Keep this guard immediately before the first mutation.
+        staged_require_preflight(plan_dir)
         resource_request = contract.get("stage_resource_request")
         if (
             not isinstance(resource_request, dict)
@@ -3496,16 +3638,14 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError(
                 "staged worker contract requires a closed stage_resource_request"
             )
-        staged_consume_stage_budget(
-            plan_dir, f"worker:{run_id}", {
-                "tool_calls": require_non_negative_int(
-                    resource_request["tool_calls"], "stage_resource_request.tool_calls",
-                ),
-                "worker_tokens": require_non_negative_int(
-                    resource_request["worker_tokens"], "stage_resource_request.worker_tokens",
-                ),
-            },
-        )
+        staged_usage = {
+            "tool_calls": require_non_negative_int(
+                resource_request["tool_calls"], "stage_resource_request.tool_calls",
+            ),
+            "worker_tokens": require_non_negative_int(
+                resource_request["worker_tokens"], "stage_resource_request.worker_tokens",
+            ),
+        }
     (plan_dir / "state" / "worker_runs").mkdir(parents=True, exist_ok=True)
     run_dir = worker_run_dir(plan_dir, run_id, must_exist=False)
     if run_dir.exists():
@@ -3523,7 +3663,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             })
             raise ContractError("worker delivery outcome is uncertain; inspect and explicitly reconcile")
         return {**prior, "idempotent": True}
-    staged_reserve_dispatch(plan_dir, dispatch_id=run_id)
+    if staged_usage is not None:
+        staged_reserve_worker_dispatch_and_budget(
+            plan_dir, dispatch_id=run_id, usage=staged_usage,
+        )
+    else:
+        staged_reserve_dispatch(plan_dir, dispatch_id=run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = json.dumps({
         "role": "bounded research worker",
@@ -3532,17 +3677,26 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "instruction": instruction,
         "inputs": inputs,
         "artifact_outputs": declarations,
+        "artifact_content_contracts": worker_visible_content_contracts(
+            declarations,
+        ),
         "artifact_contract": "return proposals only; the controller validates and promotes them",
         "writing_gate": writing_gate,
         "context_capsule": context_capsule,
     }, indent=2)
     cmd = [
-        args.claude_bin, "-p", "--model", policy["worker_model"],
+        resolved_claude_bin, "-p", "--model", policy["worker_model"],
         "--output-format", "json", "--json-schema", json.dumps(output_schema),
         "--max-budget-usd", str(policy["worker_max_budget_usd"]),
         "--permission-mode", "dontAsk", "--tools", ",".join(allowed_tools),
         "--no-session-persistence",
     ]
+    input_dirs = sorted({str(Path(item["path"]).parent) for item in inputs})
+    if input_dirs:
+        # Claude Code treats files outside cwd as permission-denied even when
+        # Read is the only exposed tool.  Grant directory visibility for the
+        # already hash-verified input manifest; this does not grant write tools.
+        cmd.extend(["--add-dir", *input_dirs])
     started = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -3603,6 +3757,549 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     except ContractError:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "invalid_worker_output", "completed_at": utc_now()})
         raise
+
+
+def command_reconcile_orphan_worker_budget(args: argparse.Namespace) -> dict[str, Any]:
+    """Refund a worker reservation that provably never created a worker run.
+
+    This is intentionally narrower than a general refund mechanism.  It only
+    repairs the legacy ordering fault where stage usage was committed before
+    the preflight/dispatch reservation.  A run directory, dispatch marker, or
+    dispatch journal makes delivery ambiguous and therefore blocks recovery.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    run_id = args.worker_run_id
+    run_dir = worker_run_dir(plan_dir, run_id, must_exist=False)
+    contract_path = Path(args.task_contract).resolve()
+    contract = read_json(contract_path)
+    request = contract.get("stage_resource_request")
+    if (
+        not isinstance(request, dict)
+        or set(request) != {"tool_calls", "worker_tokens"}
+    ):
+        raise ContractError(
+            "orphan recovery requires a closed stage_resource_request"
+        )
+    usage = {
+        "tool_calls": require_non_negative_int(
+            request["tool_calls"], "stage_resource_request.tool_calls",
+        ),
+        "worker_tokens": require_non_negative_int(
+            request["worker_tokens"], "stage_resource_request.worker_tokens",
+        ),
+    }
+    reservation_id = f"worker:{run_id}"
+    with staged_transaction_lock(plan_dir):
+        state = staged_load_state(plan_dir)
+        root = staged_root(plan_dir)
+        journal_path = (
+            root / "worker-budget-reconciliations" / f"{run_id}.json"
+        )
+        if journal_path.exists():
+            committed = read_json(journal_path)
+            if committed.get("phase") == "COMMITTED":
+                if (
+                    committed.get("reservation_id") != reservation_id
+                    or committed.get("contract_sha256")
+                    != sha256_file(contract_path)
+                    or committed.get("ledger_after_sha256")
+                    != sha256_json(committed.get("ledger_after"))
+                ):
+                    raise ContractError("orphan worker reconciliation changed")
+                return {"ok": True, "idempotent": True, **committed}
+        if state["state"] not in {
+            "STAGE_AUTHORIZED", "DEVELOPING", "PAUSED",
+        }:
+            raise ContractError(
+                "orphan worker recovery requires an active or paused stage"
+            )
+        if run_dir.exists():
+            raise ContractError(
+                "worker run exists; delivery is not provably unstarted"
+            )
+        dispatch_marker = root / "dispatch-reservations" / f"{run_id}.json"
+        dispatch_journal = root / "dispatch-journals" / f"{run_id}.json"
+        if dispatch_marker.exists() or dispatch_journal.exists():
+            raise ContractError(
+                "worker dispatch capacity exists; delivery is ambiguous"
+            )
+        ledger_path = (
+            staged_stage_dir(plan_dir, state["active_stage_id"])
+            / "usage-ledger.json"
+        )
+        ledger = read_json(ledger_path)
+        if journal_path.exists():
+            journal = read_json(journal_path)
+            if (
+                journal.get("phase") not in {"PREPARED", "COMMITTED"}
+                or journal.get("reservation_id") != reservation_id
+                or journal.get("contract_sha256") != sha256_file(contract_path)
+                or journal.get("ledger_after_sha256")
+                != sha256_json(journal.get("ledger_after"))
+            ):
+                raise ContractError("orphan worker reconciliation changed")
+            if journal["phase"] == "COMMITTED":
+                return {"ok": True, "idempotent": True, **journal}
+            current_sha = sha256_json(ledger)
+            if current_sha == journal["ledger_before_sha256"]:
+                atomic_write_json(ledger_path, journal["ledger_after"])
+            elif current_sha != journal["ledger_after_sha256"]:
+                raise ContractError("orphan worker ledger cannot be reconciled")
+            if state["state"] == "PAUSED":
+                state["state"] = "STAGE_AUTHORIZED"
+                atomic_write_json(staged_state_path(plan_dir), state)
+            _staged_ensure_audit_once_locked(
+                plan_dir,
+                "orphan_worker_budget_reconciled",
+                {"worker_run_id": run_id},
+                {
+                    "reservation_id": reservation_id,
+                    "contract_sha256": journal["contract_sha256"],
+                    "usage_refunded": journal["usage_refunded"],
+                    "ledger_before_sha256": journal["ledger_before_sha256"],
+                    "ledger_after_sha256": journal["ledger_after_sha256"],
+                },
+            )
+            journal["phase"] = "COMMITTED"
+            journal["committed_at"] = utc_now()
+            atomic_write_json(journal_path, journal, immutable=True)
+            return {"ok": True, "recovered": True, **journal}
+        if ledger["reservation_ids"].count(reservation_id) != 1:
+            raise ContractError(
+                "exactly one orphan worker budget reservation is required"
+            )
+        if any(ledger["used"][field] < amount for field, amount in usage.items()):
+            raise ContractError("orphan worker usage exceeds the recorded stage usage")
+        before = json.loads(json.dumps(ledger))
+        after = json.loads(json.dumps(ledger))
+        after["reservation_ids"].remove(reservation_id)
+        for field, amount in usage.items():
+            after["used"][field] -= amount
+        exhausted_reasons = {f"{field}_exhausted" for field in usage}
+        if after.get("stop_reason") in exhausted_reasons:
+            after["stop_reason"] = None
+        # No Worker ever started, so restart the scientific work-unit clock at
+        # the recovery point instead of charging CP-01 audit latency.
+        after["started_at"] = utc_now()
+        after["updated_at"] = after["started_at"]
+        journal = {
+            "schema_version": 1,
+            "phase": "PREPARED",
+            "worker_run_id": run_id,
+            "reservation_id": reservation_id,
+            "contract_path": str(contract_path),
+            "contract_sha256": sha256_file(contract_path),
+            "usage_refunded": usage,
+            "ledger_before_sha256": sha256_json(before),
+            "ledger_after": after,
+            "ledger_after_sha256": sha256_json(after),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+        atomic_write_json(ledger_path, after)
+        if state["state"] == "PAUSED":
+            state["state"] = "STAGE_AUTHORIZED"
+            atomic_write_json(staged_state_path(plan_dir), state)
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "orphan_worker_budget_reconciled",
+            {"worker_run_id": run_id},
+            {
+                "reservation_id": reservation_id,
+                "contract_sha256": journal["contract_sha256"],
+                "usage_refunded": usage,
+                "ledger_before_sha256": journal["ledger_before_sha256"],
+                "ledger_after_sha256": journal["ledger_after_sha256"],
+            },
+        )
+        journal["phase"] = "COMMITTED"
+        journal["committed_at"] = utc_now()
+        atomic_write_json(journal_path, journal, immutable=True)
+        return {"ok": True, **journal}
+
+
+def command_reconcile_denied_input_worker_budget(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Release scientific capacity when Claude denied every frozen input.
+
+    The failed transport and its real token usage remain permanently recorded;
+    only the scientific work-unit reservation is released because no source
+    observation was possible.  This is not a content-quality retry path.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    run_id = args.worker_run_id
+    run_dir = worker_run_dir(plan_dir, run_id)
+    status_path = run_dir / "status.json"
+    status = read_json(status_path)
+    contract_path = Path(args.task_contract).resolve()
+    contract = read_json(contract_path)
+    if (
+        status.get("status") != "FAILED"
+        or status.get("failure") != "invalid_worker_output"
+        or status.get("contract_path") != str(contract_path)
+        or status.get("contract_sha256") != sha256_file(contract_path)
+        or (run_dir / "result.json").exists()
+        or (run_dir / "promotion-receipt.json").exists()
+    ):
+        raise ContractError(
+            "worker is not a failed, unpromoted denied-input transport"
+        )
+    stdout_path = run_dir / "transport.stdout"
+    transport = strict_json_loads(stdout_path.read_text())
+    denials = transport.get("permission_denials")
+    expected_paths = [item["path"] for item in contract.get("inputs", [])]
+    denied_paths = [
+        item.get("tool_input", {}).get("file_path")
+        for item in denials if isinstance(item, dict)
+    ] if isinstance(denials, list) else []
+    if (
+        not expected_paths
+        or sorted(denied_paths) != sorted(expected_paths)
+        or any(item.get("tool_name") != "Read" for item in denials)
+    ):
+        raise ContractError(
+            "transport does not prove that every frozen input read was denied"
+        )
+    structured = transport.get("structured_output")
+    artifacts = structured.get("artifacts") if isinstance(structured, dict) else None
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        raise ContractError("denied-input transport output shape is not bounded")
+    try:
+        denied_content = strict_json_loads(artifacts[0]["content"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ContractError("denied-input transport content is not JSON") from exc
+    if denied_content.get("records") != []:
+        raise ContractError("denied-input transport produced scientific records")
+    request = contract.get("stage_resource_request")
+    if (
+        not isinstance(request, dict)
+        or set(request) != {"tool_calls", "worker_tokens"}
+    ):
+        raise ContractError("denied-input recovery requires closed stage usage")
+    usage = {
+        field: require_non_negative_int(request[field], f"stage_resource_request.{field}")
+        for field in ("tool_calls", "worker_tokens")
+    }
+    reservation_id = f"worker:{run_id}"
+    with staged_transaction_lock(plan_dir):
+        state = staged_load_state(plan_dir)
+        ledger_path = (
+            staged_stage_dir(plan_dir, state["active_stage_id"])
+            / "usage-ledger.json"
+        )
+        ledger = read_json(ledger_path)
+        journal_path = (
+            staged_root(plan_dir) / "worker-budget-reconciliations"
+            / f"{run_id}-denied-input.json"
+        )
+        if journal_path.exists():
+            journal = read_json(journal_path)
+            if journal.get("phase") != "COMMITTED":
+                raise ContractError("denied-input reconciliation is incomplete")
+            return {"ok": True, "idempotent": True, **journal}
+        if ledger["reservation_ids"].count(reservation_id) != 1:
+            raise ContractError("worker scientific reservation is not refundable")
+        after = json.loads(json.dumps(ledger))
+        after["reservation_ids"].remove(reservation_id)
+        for field, amount in usage.items():
+            if after["used"][field] < amount:
+                raise ContractError("worker scientific usage ledger underflow")
+            after["used"][field] -= amount
+        if after.get("stop_reason") in {f"{field}_exhausted" for field in usage}:
+            after["stop_reason"] = None
+        after["updated_at"] = utc_now()
+        model_usage = transport.get("usage")
+        journal = {
+            "schema_version": 1,
+            "phase": "PREPARED",
+            "worker_run_id": run_id,
+            "reservation_id": reservation_id,
+            "failure_class": "permission_denied_before_source_access",
+            "denied_input_paths": expected_paths,
+            "transport_stdout_sha256": sha256_file(stdout_path),
+            "observed_model_usage": model_usage,
+            "scientific_capacity_released": usage,
+            "ledger_before_sha256": sha256_json(ledger),
+            "ledger_after": after,
+            "ledger_after_sha256": sha256_json(after),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+        atomic_write_json(ledger_path, after)
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "denied_input_worker_budget_reconciled",
+            {"worker_run_id": run_id},
+            {
+                "failure_class": journal["failure_class"],
+                "transport_stdout_sha256": journal["transport_stdout_sha256"],
+                "scientific_capacity_released": usage,
+                "observed_model_usage": model_usage,
+            },
+        )
+        journal["phase"] = "COMMITTED"
+        journal["committed_at"] = utc_now()
+        atomic_write_json(journal_path, journal, immutable=True)
+        return {"ok": True, **journal}
+
+
+def command_reconcile_undisclosed_content_contract_budget(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Release a work unit made impossible by an undisclosed closed schema."""
+    plan_dir = Path(args.plan_dir).resolve()
+    run_id = args.worker_run_id
+    run_dir = worker_run_dir(plan_dir, run_id)
+    status = read_json(run_dir / "status.json")
+    contract_path = Path(args.task_contract).resolve()
+    contract = read_json(contract_path)
+    declarations = [
+        normalize_declared_output(plan_dir, item)
+        for item in contract.get("artifact_outputs", [])
+    ]
+    if (
+        status.get("status") != "FAILED"
+        or status.get("failure") != "invalid_worker_output"
+        or status.get("contract_path") != str(contract_path)
+        or status.get("contract_sha256") != sha256_file(contract_path)
+        or len(declarations) != 1
+        or declarations[0].get("content_validator", {}).get("kind")
+        != "source_inventory_v1"
+        or (run_dir / "result.json").exists()
+        or (run_dir / "promotion-receipt.json").exists()
+    ):
+        raise ContractError(
+            "worker is not an unpromoted source-inventory contract failure"
+        )
+    stdout_path = run_dir / "transport.stdout"
+    transport = strict_json_loads(stdout_path.read_text())
+    if transport.get("permission_denials") != []:
+        raise ContractError("content-contract recovery cannot mask permission faults")
+    structured = transport.get("structured_output")
+    artifacts = structured.get("artifacts") if isinstance(structured, dict) else None
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        raise ContractError("content-contract transport output is not bounded")
+    guessed = strict_json_loads(artifacts[0].get("content", ""))
+    legacy_top = {"schema", "records", "uncertainties"}
+    legacy_record = {
+        "index", "path", "purpose", "sha256", "line", "identifier",
+        "observation", "hypothesis",
+    }
+    records = guessed.get("records") if isinstance(guessed, dict) else None
+    if (
+        set(guessed) != legacy_top
+        or guessed.get("schema") != "source_inventory_v1"
+        or not isinstance(records, list)
+        or len(records) != len(contract.get("inputs", []))
+        or any(not isinstance(item, dict) or set(item) != legacy_record for item in records)
+    ):
+        raise ContractError(
+            "output is not the bounded legacy shape caused by the hidden schema"
+        )
+    request = contract.get("stage_resource_request")
+    if not isinstance(request, dict) or set(request) != {"tool_calls", "worker_tokens"}:
+        raise ContractError("content-contract recovery requires closed stage usage")
+    usage = {
+        field: require_non_negative_int(request[field], f"stage_resource_request.{field}")
+        for field in ("tool_calls", "worker_tokens")
+    }
+    reservation_id = f"worker:{run_id}"
+    with staged_transaction_lock(plan_dir):
+        state = staged_load_state(plan_dir)
+        ledger_path = (
+            staged_stage_dir(plan_dir, state["active_stage_id"])
+            / "usage-ledger.json"
+        )
+        ledger = read_json(ledger_path)
+        journal_path = (
+            staged_root(plan_dir) / "worker-budget-reconciliations"
+            / f"{run_id}-undisclosed-content-contract.json"
+        )
+        if journal_path.exists():
+            journal = read_json(journal_path)
+            if journal.get("phase") != "COMMITTED":
+                raise ContractError("content-contract reconciliation is incomplete")
+            return {"ok": True, "idempotent": True, **journal}
+        if ledger["reservation_ids"].count(reservation_id) != 1:
+            raise ContractError("worker scientific reservation is not refundable")
+        after = json.loads(json.dumps(ledger))
+        after["reservation_ids"].remove(reservation_id)
+        for field, amount in usage.items():
+            if after["used"][field] < amount:
+                raise ContractError("worker scientific usage ledger underflow")
+            after["used"][field] -= amount
+        if after.get("stop_reason") in {f"{field}_exhausted" for field in usage}:
+            after["stop_reason"] = None
+        after["updated_at"] = utc_now()
+        journal = {
+            "schema_version": 1,
+            "phase": "PREPARED",
+            "worker_run_id": run_id,
+            "reservation_id": reservation_id,
+            "failure_class": "controller_content_contract_undisclosed",
+            "legacy_shape_sha256": sha256_json(guessed),
+            "transport_stdout_sha256": sha256_file(stdout_path),
+            "observed_model_usage": transport.get("usage"),
+            "scientific_capacity_released": usage,
+            "ledger_before_sha256": sha256_json(ledger),
+            "ledger_after": after,
+            "ledger_after_sha256": sha256_json(after),
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+        atomic_write_json(ledger_path, after)
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "undisclosed_content_contract_budget_reconciled",
+            {"worker_run_id": run_id},
+            {
+                "failure_class": journal["failure_class"],
+                "legacy_shape_sha256": journal["legacy_shape_sha256"],
+                "transport_stdout_sha256": journal["transport_stdout_sha256"],
+                "scientific_capacity_released": usage,
+                "observed_model_usage": journal["observed_model_usage"],
+            },
+        )
+        journal["phase"] = "COMMITTED"
+        journal["committed_at"] = utc_now()
+        atomic_write_json(journal_path, journal, immutable=True)
+        return {"ok": True, **journal}
+
+
+def command_normalize_legacy_source_inventory(args: argparse.Namespace) -> dict[str, Any]:
+    """Deterministically compile a pre-disclosure alias shape into validator v2."""
+    plan_dir = Path(args.plan_dir).resolve()
+    run_id = args.worker_run_id
+    run_dir = worker_run_dir(plan_dir, run_id)
+    contract_path = Path(args.task_contract).resolve()
+    contract = read_json(contract_path)
+    status = read_json(run_dir / "status.json")
+    recovery_path = (
+        staged_root(plan_dir) / "worker-budget-reconciliations"
+        / f"{run_id}-undisclosed-content-contract.json"
+    )
+    recovery = read_json(recovery_path)
+    if (
+        status.get("status") != "FAILED"
+        or status.get("failure") != "invalid_worker_output"
+        or status.get("contract_sha256") != sha256_file(contract_path)
+        or recovery.get("phase") != "COMMITTED"
+        or recovery.get("failure_class")
+        != "controller_content_contract_undisclosed"
+    ):
+        raise ContractError("legacy normalization lacks its controller-fault lineage")
+    declarations = [
+        normalize_declared_output(plan_dir, item)
+        for item in contract.get("artifact_outputs", [])
+    ]
+    if len(declarations) != 1:
+        raise ContractError("legacy normalization requires exactly one artifact")
+    declaration = declarations[0]
+    validator = declaration.get("content_validator")
+    if validator is None or validator.get("kind") != "source_inventory_v1":
+        raise ContractError("legacy normalization requires source_inventory_v1")
+    stdout_path = run_dir / "transport.stdout"
+    transport = strict_json_loads(stdout_path.read_text())
+    legacy = strict_json_loads(
+        transport["structured_output"]["artifacts"][0]["content"],
+    )
+    records = legacy.get("records") if isinstance(legacy, dict) else None
+    if (
+        set(legacy) != {"schema", "records", "uncertainties"}
+        or legacy.get("schema") != "source_inventory_v1"
+        or not isinstance(records, list)
+    ):
+        raise ContractError("legacy source inventory alias shape changed")
+    normalized = {
+        "schema_version": 1,
+        "records": [{
+            "path": item["path"],
+            "source_sha256": item["sha256"],
+            "symbol": item["identifier"],
+            "line_start": item["line"],
+            "observation": item["observation"],
+            "hypothesis": item["hypothesis"],
+        } for item in records],
+        "uncertainties_and_next_questions": legacy["uncertainties"],
+    }
+    content = canonical_json(normalized)
+    enforce_artifact_byte_cap(content, declaration)
+    validate_source_inventory_content(
+        content.decode("utf-8"), validator["source_manifest"],
+    )
+    target = Path(declaration["path"])
+    digest = hashlib.sha256(content).hexdigest()
+    journal_path = run_dir / "controller-normalization-journal.json"
+    receipt_path = run_dir / "controller-normalization-receipt.json"
+    journal = read_json(journal_path) if journal_path.exists() else None
+    if journal is None:
+        journal = {
+            "schema_version": 1,
+            "phase": "PREPARED",
+            "worker_run_id": run_id,
+            "source_transport_sha256": sha256_file(stdout_path),
+            "controller_fault_reconciliation_sha256": sha256_file(recovery_path),
+            "validator_implementation_sha256": sha256_file(
+                SCRIPT_DIR / "source_inventory_validator.py"
+            ),
+            "artifact_path": str(target),
+            "artifact_sha256": digest,
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(journal_path, journal)
+    if (
+        journal.get("worker_run_id") != run_id
+        or journal.get("source_transport_sha256") != sha256_file(stdout_path)
+        or journal.get("artifact_path") != str(target)
+        or journal.get("artifact_sha256") != digest
+    ):
+        raise ContractError("controller normalization journal changed")
+    if target.exists():
+        if target.is_symlink() or sha256_file(target) != digest:
+            raise ContractError("normalized source inventory destination changed")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(target, content, immutable=True)
+    receipt = {
+        "schema_version": 1,
+        "worker_run_id": run_id,
+        "producer": "MiniMax-M3 proposal plus deterministic controller alias normalization",
+        "source_transport_path": str(stdout_path),
+        "source_transport_sha256": sha256_file(stdout_path),
+        "controller_fault_reconciliation_path": str(recovery_path),
+        "controller_fault_reconciliation_sha256": sha256_file(recovery_path),
+        "validator_id": "source_inventory_v1",
+        "validator_implementation_sha256": journal[
+            "validator_implementation_sha256"
+        ],
+        "artifact_path": str(target),
+        "artifact_sha256": digest,
+    }
+    if receipt_path.exists():
+        if read_json(receipt_path) != receipt:
+            raise ContractError("controller normalization receipt changed")
+    else:
+        atomic_write_json(receipt_path, receipt, immutable=True)
+    if journal.get("phase") != "COMMITTED":
+        journal["phase"] = "COMMITTED"
+        journal["receipt_sha256"] = sha256_file(receipt_path)
+        journal["committed_at"] = utc_now()
+        atomic_write_json(journal_path, journal, immutable=True)
+    staged_ensure_audit_once(
+        plan_dir,
+        "legacy_source_inventory_normalized",
+        {"worker_run_id": run_id},
+        {
+            "artifact_path": str(target),
+            "artifact_sha256": digest,
+            "receipt_sha256": sha256_file(receipt_path),
+            "validator_implementation_sha256": journal[
+                "validator_implementation_sha256"
+            ],
+        },
+    )
+    return {"ok": True, **receipt, "receipt_path": str(receipt_path)}
 
 
 def validate_committed_promotion_journal(
@@ -6555,6 +7252,30 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             expected_paths["optimization_contract"]
         ):
             raise ContractError("staged CP-01 optimization contract drifted")
+        envelope = read_json(expected_paths["first_stage_envelope"])
+        contract = read_json(expected_paths["optimization_contract"])
+        staged_validate_envelope(
+            envelope,
+            contract["contract_version"],
+            state["current_incumbent_sha256"],
+            first=envelope["source_cycle_id"] is None,
+            plan_dir=plan_dir,
+            require_manifest=True,
+        )
+        review_materials = verify_manifest_items(
+            [
+                {
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                    "purpose": (
+                        f"{STAGED_CP01_REVIEW_ROLE_PREFIX}{item['purpose']}"
+                    ),
+                }
+                for item in envelope["review_material_manifest"]
+            ],
+            base_dir=plan_dir,
+        )
+        manifest.extend(review_materials)
     if args.checkpoint == "STAGE-REVIEW":
         assert staged_review_state is not None
         stage_dir = staged_stage_dir(
@@ -6598,7 +7319,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         "objective": args.objective,
         "decision_required": args.decision_required,
         "context_manifest": manifest,
-        "evidence_profile_version": 2 if staged_cp01 else 1,
+        "evidence_profile_version": 3 if staged_cp01 else 1,
         "constraints": args.constraint,
         "budget_reservation": {"call": 1, "max_input_tokens": args.max_input_tokens, "max_output_tokens": args.max_output_tokens},
         "created_at": utc_now(),
@@ -6614,7 +7335,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         request["review_contract"] = {
             "schema_version": SCHEMA_VERSION,
             "kind": (
-                "staged-contract-stage-review-v1"
+                "staged-contract-stage-review-v2"
                 if staged_cp01 else "top-level-plan-review-v1"
             ),
             "declared_author_model_family": policy[
@@ -6628,7 +7349,9 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
                 ]["reasoning_effort"],
             },
             "model_policy_sha256": sha256_file(policy_path(plan_dir)),
-            "evidence_roles": sorted(required_roles),
+            "evidence_roles": sorted(
+                item["purpose"] for item in manifest
+            ),
             "dependent_transition": "approve_execution",
         }
         validate_top_level_plan_review_contract(request)
@@ -6828,6 +7551,7 @@ def request_send_lock(plan_dir: Path, request_id: str) -> Iterator[None]:
 
 def validate_frontier_response_integrity(
     plan_dir: Path, request_id: str, current: dict[str, Any], response_path: Path,
+    *, allow_unreconciled_overrun: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     request_path, request = load_request(plan_dir, request_id)
     validate_request_durable_context(
@@ -6871,12 +7595,235 @@ def validate_frontier_response_integrity(
         if not finding["evidence"] or any(item not in evidence_authority for item in finding["evidence"]):
             raise ContractError("frontier findings must cite frozen evidence paths or hashes")
     reservation = request["budget_reservation"]
-    if response["usage"]["input_tokens"] > reservation["max_input_tokens"] or response["usage"]["output_tokens"] > reservation["max_output_tokens"]:
-        raise FrontierBudgetOverrunError(
-            "controller-observed token use exceeds the request reservation"
+    if (
+        response["usage"]["input_tokens"] > reservation["max_input_tokens"]
+        or response["usage"]["output_tokens"] > reservation["max_output_tokens"]
+    ) and not allow_unreconciled_overrun:
+        validate_frontier_overrun_receipt(
+            plan_dir, request_id, request, request_path, response, response_path,
         )
     verify_manifest_items(request["context_manifest"], base_dir=plan_dir)
     return response, request, request_path
+
+
+def frontier_overrun_receipt_path(plan_dir: Path, request_id: str) -> Path:
+    return request_dir(plan_dir, request_id) / "budget-overrun-receipt.json"
+
+
+def frontier_overrun_journal_path(plan_dir: Path, request_id: str) -> Path:
+    return request_dir(plan_dir, request_id) / "budget-overrun-journal.json"
+
+
+def frontier_overrun_projection(
+    request: dict[str, Any], response: dict[str, Any],
+) -> dict[str, Any]:
+    reservation = request["budget_reservation"]
+    actual = response["usage"]
+    return {
+        "reservation": dict(reservation),
+        "actual_usage": dict(actual),
+        "delta": {
+            "input_tokens": max(
+                0, actual["input_tokens"] - reservation["max_input_tokens"],
+            ),
+            "output_tokens": max(
+                0, actual["output_tokens"] - reservation["max_output_tokens"],
+            ),
+        },
+    }
+
+
+def validate_frontier_overrun_receipt(
+    plan_dir: Path, request_id: str, request: dict[str, Any],
+    request_path: Path, response: dict[str, Any], response_path: Path,
+) -> dict[str, Any]:
+    receipt_path = frontier_overrun_receipt_path(plan_dir, request_id)
+    if not receipt_path.is_file():
+        raise FrontierBudgetOverrunError(
+            "controller-observed token use exceeds the request reservation "
+            "without a committed plan-budget reconciliation"
+        )
+    receipt = read_json(receipt_path)
+    projection = frontier_overrun_projection(request, response)
+    expected = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "request_id": request_id,
+        "request_sha256": sha256_file(request_path),
+        "response_sha256": sha256_file(response_path),
+        **projection,
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ContractError("frontier budget-overrun receipt correlation mismatch")
+    if not any(projection["delta"].values()):
+        raise ContractError("frontier budget-overrun receipt has no overrun")
+    journal_path = frontier_overrun_journal_path(plan_dir, request_id)
+    journal = read_json(journal_path)
+    if (
+        journal.get("phase") != "COMMITTED"
+        or journal.get("request_id") != request_id
+        or journal.get("receipt_sha256") != sha256_file(receipt_path)
+    ):
+        raise ContractError("frontier budget-overrun journal is not committed")
+    global_ledger = read_json(frontier_root(plan_dir) / "budget.json")
+    global_after = receipt["global_after"]
+    if (
+        request_id not in global_ledger.get("request_ids", [])
+        or any(
+            global_ledger.get(field, -1) < global_after[field]
+            for field in (
+                "reserved_calls", "reserved_input_tokens",
+                "reserved_output_tokens",
+            )
+        )
+    ):
+        raise ContractError("frontier reconciled global budget was reduced")
+    usage_after = receipt.get("stage_usage_after")
+    if usage_after is not None:
+        usage_path = Path(receipt["stage_usage_path"])
+        usage = read_json(usage_path)
+        if (
+            f"frontier:{request_id}" not in usage.get("reservation_ids", [])
+            or usage.get("used", {}).get("review_tokens", -1)
+            < usage_after["used"]["review_tokens"]
+        ):
+            raise ContractError("frontier reconciled stage usage was reduced")
+    return receipt
+
+
+def reconcile_frontier_budget_overrun(
+    plan_dir: Path, request_id: str, request: dict[str, Any],
+    request_path: Path, response: dict[str, Any], response_path: Path,
+) -> dict[str, Any]:
+    """Charge a response overrun only when every enclosing hard limit can pay it."""
+    projection = frontier_overrun_projection(request, response)
+    delta = projection["delta"]
+    if not any(delta.values()):
+        raise ContractError("frontier response does not require budget reconciliation")
+    policy = load_policy(plan_dir)
+    journal_path = frontier_overrun_journal_path(plan_dir, request_id)
+    receipt_path = frontier_overrun_receipt_path(plan_dir, request_id)
+
+    def reconcile_locked() -> dict[str, Any]:
+        global_path = frontier_root(plan_dir) / "budget.json"
+        if journal_path.exists():
+            journal = read_json(journal_path)
+            if journal.get("phase") == "COMMITTED":
+                return validate_frontier_overrun_receipt(
+                    plan_dir, request_id, request, request_path,
+                    response, response_path,
+                )
+            expected_identity = {
+                "request_id": request_id,
+                "request_sha256": sha256_file(request_path),
+                "response_sha256": sha256_file(response_path),
+                "projection": projection,
+            }
+            if any(
+                journal.get(key) != value
+                for key, value in expected_identity.items()
+            ):
+                raise ContractError("frontier budget-overrun journal conflict")
+            global_after = journal["global_after"]
+            usage_path = (
+                Path(journal["stage_usage_path"])
+                if journal.get("stage_usage_path") else None
+            )
+            usage_after = journal.get("stage_usage_after")
+        else:
+            global_before = read_json(global_path)
+            limits = effective_frontier_limits(policy, global_before)
+            global_after = json.loads(json.dumps(global_before))
+            global_after["reserved_input_tokens"] += delta["input_tokens"]
+            global_after["reserved_output_tokens"] += delta["output_tokens"]
+            global_after["updated_at"] = utc_now()
+            if (
+                global_after["reserved_input_tokens"] > limits["max_input_tokens"]
+                or global_after["reserved_output_tokens"] > limits["max_output_tokens"]
+            ):
+                raise FrontierBudgetOverrunError(
+                    "controller-observed token use exceeds the authorized plan budget"
+                )
+            usage_path: Path | None = None
+            usage_before: dict[str, Any] | None = None
+            usage_after: dict[str, Any] | None = None
+            if staged_is_active(plan_dir):
+                state = staged_load_state(plan_dir)
+                usage_path = (
+                    staged_stage_dir(plan_dir, state["active_stage_id"])
+                    / "usage-ledger.json"
+                )
+                usage_before = read_json(usage_path)
+                if f"frontier:{request_id}" not in usage_before["reservation_ids"]:
+                    raise ContractError("frontier stage reservation is missing")
+                usage_after = json.loads(json.dumps(usage_before))
+                usage_after["used"]["review_tokens"] += delta["output_tokens"]
+                usage_after["updated_at"] = utc_now()
+                if (
+                    usage_after["used"]["review_tokens"]
+                    > usage_after["limits"]["review_tokens"]
+                ):
+                    raise FrontierBudgetOverrunError(
+                        "controller-observed token use exceeds the authorized stage budget"
+                    )
+            journal = {
+                "schema_version": SCHEMA_VERSION,
+                "phase": "PREPARED",
+                "request_id": request_id,
+                "request_sha256": sha256_file(request_path),
+                "response_sha256": sha256_file(response_path),
+                "projection": projection,
+                "global_before": global_before,
+                "global_after": global_after,
+                "stage_usage_path": str(usage_path) if usage_path else None,
+                "stage_usage_before": usage_before,
+                "stage_usage_after": usage_after,
+                "prepared_at": utc_now(),
+                "reconciled_at": utc_now(),
+            }
+            atomic_write_json(journal_path, journal)
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": request["plan_id"],
+            "request_id": request_id,
+            "request_sha256": sha256_file(request_path),
+            "response_sha256": sha256_file(response_path),
+            **projection,
+            "global_after": global_after,
+            "stage_usage_path": str(usage_path) if usage_path else None,
+            "stage_usage_after": usage_after,
+            "reconciled_at": journal["reconciled_at"],
+        }
+        current_global = read_json(global_path)
+        if current_global == journal["global_before"]:
+            atomic_write_json(global_path, journal["global_after"])
+        elif current_global != journal["global_after"]:
+            raise ContractError("frontier budget-overrun global image conflict")
+        if usage_path is not None:
+            current_usage = read_json(usage_path)
+            if current_usage == journal["stage_usage_before"]:
+                atomic_write_json(usage_path, journal["stage_usage_after"])
+            elif current_usage != journal["stage_usage_after"]:
+                raise ContractError("frontier budget-overrun stage image conflict")
+        if receipt_path.exists():
+            if read_json(receipt_path) != receipt:
+                raise ContractError("frontier budget-overrun receipt conflict")
+        else:
+            atomic_write_json(receipt_path, receipt, immutable=True)
+        journal.update({
+            "phase": "COMMITTED",
+            "receipt_sha256": sha256_file(receipt_path),
+            "committed_at": utc_now(),
+        })
+        atomic_write_json(journal_path, journal)
+        return receipt
+
+    if staged_is_active(plan_dir):
+        with staged_transaction_lock(plan_dir):
+            with budget_lock(plan_dir):
+                return reconcile_locked()
+    with budget_lock(plan_dir):
+        return reconcile_locked()
 
 
 def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]:
@@ -6931,19 +7878,23 @@ def reconcile_frontier_locked(plan_dir: Path, request_id: str) -> dict[str, Any]
         raise ContractError(str(exc)) from None
 
 
-def resolve_executable(command: str) -> str:
+def resolve_executable(command: str, *, label: str = "Codex") -> str:
     candidate = Path(command)
     if os.sep in command or (os.altsep and os.altsep in command):
         resolved = candidate.expanduser().resolve()
         if not resolved.is_file() or not os.access(resolved, os.X_OK):
-            raise ContractError(f"Codex executable is unavailable or not executable: {resolved}")
+            raise ContractError(
+                f"{label} executable is unavailable or not executable: {resolved}"
+            )
         return str(resolved)
     found = shutil.which(command)
     if not found:
-        raise ContractError(f"Codex executable is unavailable on PATH: {command}")
+        raise ContractError(f"{label} executable is unavailable on PATH: {command}")
     resolved = Path(found).resolve()
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
-        raise ContractError(f"Codex executable is unavailable or not executable: {resolved}")
+        raise ContractError(
+            f"{label} executable is unavailable or not executable: {resolved}"
+        )
     return str(resolved)
 
 
@@ -6984,13 +7935,44 @@ def frontier_transport_args(policy: dict[str, Any]) -> list[str]:
 
 def frontier_surface_reduction_args() -> list[str]:
     return [
+        "-c", "agents.enabled=false",
+        "-c", "include_collaboration_mode_instructions=false",
+        "-c", (
+            'developer_instructions="Act as the sole bounded frontier reviewer. '
+            'Do not delegate, spawn, message, resume, interrupt, or wait for any '
+            'other agent. Inspect the immutable manifest yourself and return the '
+            'required final JSON in this turn."'
+        ),
         "--disable", "plugins",
         "--disable", "apps",
         "--disable", "multi_agent",
+        "--disable", "multi_agent_v2",
         "--disable", "goals",
         "-c", 'web_search="disabled"',
         "-c", "tools.view_image=false",
     ]
+
+
+def validate_frontier_transport_events(events_path: Path) -> None:
+    """Reject a transport that escaped the single-reviewer surface."""
+    if not events_path.exists():
+        raise ContractError("frontier transport event log is missing")
+    for line_number, raw_line in enumerate(
+        events_path.read_text(errors="replace").splitlines(), start=1,
+    ):
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "collab_tool_call":
+            raise ContractError(
+                "frontier transport violated the single-reviewer boundary at "
+                f"event line {line_number}: collaboration tool "
+                f"{item.get('tool', '<unknown>')}"
+            )
 
 
 def frontier_review_profile(
@@ -7073,6 +8055,31 @@ def preflight_frontier_transport(
             "Codex login preflight did not confirm a ChatGPT session required "
             "by chatgpt-https"
         )
+    config_probe_command = [
+        resolved_bin,
+        *frontier_transport_args(policy),
+        *frontier_surface_reduction_args(),
+        "features",
+        "list",
+    ]
+    try:
+        config_probe = subprocess.run(
+            config_probe_command,
+            cwd=plan_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ContractError(
+            f"Codex isolated-surface config preflight failed: {exc}"
+        ) from exc
+    if config_probe.returncode != 0:
+        detail = (config_probe.stderr or config_probe.stdout).strip()
+        raise ContractError(
+            "Codex isolated-surface config preflight failed"
+            + (f": {detail[:500]}" if detail else "")
+        )
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "request_id": request_id,
@@ -7087,6 +8094,7 @@ def preflight_frontier_transport(
             if transport == "chatgpt-https"
             else "codex-login-passed"
         ),
+        "isolated_surface_config_check": "passed",
         "checked_at": utc_now(),
     }
     receipt_path = request_dir(plan_dir, request_id) / "preflight.json"
@@ -7598,6 +8606,25 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             )
             transition(plan_dir, args.request_id, "PAUSED", failure="transport_failed", exit_code=proc.returncode)
             raise ContractError(f"Codex transport failed with exit {proc.returncode}")
+        try:
+            validate_frontier_transport_events(events_path)
+        except ContractError as exc:
+            update_transport_launch(
+                plan_dir,
+                args.request_id,
+                claim,
+                "FAILED",
+                exit_code=proc.returncode,
+                failure="frontier_surface_violation",
+            )
+            transition(
+                plan_dir,
+                args.request_id,
+                "PAUSED",
+                failure="frontier_surface_violation",
+                validation_error=str(exc),
+            )
+            raise
         update_transport_launch(
             plan_dir, args.request_id, claim, "COMPLETED", exit_code=0,
         )
@@ -7625,16 +8652,15 @@ def command_validate_response(args: argparse.Namespace) -> dict[str, Any]:
     current = read_json(status_path(plan_dir, args.request_id))
     if current["state"] in {"VALIDATED", "APPLIED"}:
         return {"ok": True, "idempotent": True, **current}
-    if current["state"] != "RECEIVED":
+    recoverable_overrun = (
+        current["state"] == "PAUSED"
+        and current.get("failure") == "response_budget_overrun"
+    )
+    if current["state"] != "RECEIVED" and not recoverable_overrun:
         raise ContractError(f"cannot validate response from state {current['state']}")
-    if parse_utc(request["deadline_at"]) <= datetime.now(timezone.utc):
-        transition(plan_dir, args.request_id, "EXPIRED", failure="response_after_deadline")
-        transition(plan_dir, args.request_id, "PAUSED", failure="response_after_deadline")
-        raise ContractError("frontier response arrived after the frozen deadline")
     response_path = request_dir(plan_dir, args.request_id) / "response.json"
-    try:
-        validate_frontier_response_integrity(plan_dir, args.request_id, current, response_path)
-    except ContractError as exc:
+
+    def pause_validation_failure(exc: ContractError) -> None:
         if isinstance(exc, FrontierBudgetOverrunError):
             failure = "response_budget_overrun"
         elif isinstance(exc, FrontierSemanticResponseError):
@@ -7646,12 +8672,49 @@ def command_validate_response(args: argparse.Namespace) -> dict[str, Any]:
             plan_dir, args.request_id, "PAUSED", failure=failure,
             validation_error=str(exc),
         )
+
+    try:
+        response, _, _ = validate_frontier_response_integrity(
+            plan_dir, args.request_id, current, response_path,
+            allow_unreconciled_overrun=True,
+        )
+    except ContractError as exc:
+        pause_validation_failure(exc)
+        raise
+    if parse_utc(response["completed_at"]) > parse_utc(request["deadline_at"]):
+        transition(
+            plan_dir, args.request_id, "EXPIRED",
+            failure="response_after_deadline",
+        )
+        transition(
+            plan_dir, args.request_id, "PAUSED",
+            failure="response_after_deadline",
+        )
+        raise ContractError("frontier response arrived after the frozen deadline")
+    try:
+        projection = frontier_overrun_projection(request, response)
+        if any(projection["delta"].values()):
+            reconcile_frontier_budget_overrun(
+                plan_dir, args.request_id, request, request_path,
+                response, response_path,
+            )
+        validate_frontier_response_integrity(
+            plan_dir, args.request_id, current, response_path,
+        )
+    except ContractError as exc:
+        pause_validation_failure(exc)
         raise
     transition(
         plan_dir, args.request_id, "VALIDATED", validated_response_path=str(response_path),
         validated_response_sha256=sha256_file(response_path),
         validated_request_sha256=sha256_file(request_path),
-        validated_context_manifest_sha256=sha256_json(request["context_manifest"]), advisory_only=True,
+        validated_context_manifest_sha256=sha256_json(request["context_manifest"]),
+        budget_overrun_receipt=(
+            str(frontier_overrun_receipt_path(plan_dir, args.request_id))
+            if frontier_overrun_receipt_path(plan_dir, args.request_id).is_file()
+            else None
+        ),
+        failure=None, validation_error=None, advisory_only=True,
     )
     return {"ok": True, "request_id": args.request_id, "state": "VALIDATED", "response_path": str(response_path)}
 
@@ -7988,8 +9051,107 @@ def staged_copy_immutable(source: Path, target: Path) -> dict[str, Any]:
         if canonical_json(read_json(target)) != canonical_json(value):
             raise ContractError(f"immutable staged artifact collision: {target}")
     else:
-        atomic_write_json(target, value, immutable=True)
+        # Authorization receipts bind the exact source bytes.  Re-serializing a
+        # valid JSON document here changes its sha256 whenever key order or
+        # whitespace differs, which used to make a freshly initialized stage
+        # fail its own lineage check.  Preserve the authorized bytes exactly.
+        atomic_write_bytes(target, source.read_bytes(), immutable=True)
     return value
+
+
+def staged_repair_legacy_canonical_copies(
+    plan_dir: Path,
+    contract_path: Path,
+    envelope_path: Path,
+    evaluation_path: Path,
+    capacity_path: Path,
+    authorization_path: Path,
+) -> bool:
+    """Repair the v0.16.1 canonical-copy lineage defect without resetting state.
+
+    The repair is deliberately narrow: the signed source and staged contract
+    must be JSON-semantically identical, the current staged bytes must still
+    match controller state, and the applied authorization must bind the exact
+    supplied source bytes plus the already-active first-stage envelope.
+    """
+    state_path = staged_state_path(plan_dir)
+    if not state_path.is_file():
+        return False
+    state = read_json(state_path)
+    root = staged_root(plan_dir)
+    targets = (
+        (
+            contract_path,
+            root / "contracts" / f"{state['contract_version']}.json",
+            "contract_sha256",
+        ),
+        (
+            envelope_path,
+            staged_stage_dir(plan_dir, state["active_stage_id"]) / "envelope.json",
+            "active_stage_envelope_sha256",
+        ),
+        (evaluation_path, root / "evaluation-profile.json", "evaluation_profile_sha256"),
+        (capacity_path, root / "checkpoint-capacity.json", "checkpoint_capacity_sha256"),
+    )
+    if any(not target.is_file() for _, target, _ in targets):
+        return False
+    changes: list[tuple[Path, Path, str, str]] = []
+    for source, target, field in targets:
+        source_sha = sha256_file(source)
+        target_sha = sha256_file(target)
+        state_sha = state.get(field)
+        if source_sha == target_sha == state_sha:
+            continue
+        if canonical_json(read_json(source)) != canonical_json(read_json(target)):
+            return False
+        canonical_copy_sha = atomic_json_sha256(read_json(source))
+        if not (
+            (target_sha == state_sha == canonical_copy_sha)
+            or (target_sha == source_sha and state_sha == canonical_copy_sha)
+        ):
+            return False
+        changes.append((source, target, field, source_sha))
+    audit_path = root / "audit.jsonl"
+    initialized_hashes = {
+        record.get("contract_sha256")
+        for record in (
+            strict_json_loads(line)
+            for line in audit_path.read_text().splitlines()
+            if line.strip()
+        )
+        if record.get("event") == "staged_research_initialized"
+        and record.get("contract_version") == state["contract_version"]
+    } if audit_path.exists() else set()
+    legacy_audit_mismatch = bool(initialized_hashes) and (
+        sha256_file(contract_path) not in initialized_hashes
+    )
+    if not changes and not legacy_audit_mismatch:
+        return False
+    if authorization_path != Path(state["owner_authorization_path"]).resolve():
+        return False
+    authorization = validate_applied_action_receipt(
+        plan_dir, authorization_path, "authorize_contract",
+    )
+    contract = read_json(contract_path)
+    details = authorization.get("details", {})
+    expected = {
+        "contract_version": state["contract_version"],
+        "contract_sha256": sha256_file(contract_path),
+        "stage_id": state["active_stage_id"],
+        "stage_envelope_sha256": sha256_file(envelope_path),
+    }
+    if (
+        authorization.get("record_id") != contract["authorization_receipt_id"]
+        or any(details.get(key) != value for key, value in expected.items())
+    ):
+        return False
+    if changes:
+        for source, target, field, source_sha in changes:
+            if sha256_file(target) != source_sha:
+                atomic_write_bytes(target, source.read_bytes(), immutable=True)
+            state[field] = source_sha
+        atomic_write_json(state_path, state)
+    return True
 
 
 def _staged_reconcile_audit_revision_locked(
@@ -8075,6 +9237,15 @@ def staged_append_audit(
 ) -> dict[str, Any]:
     with staged_transaction_lock(plan_dir):
         return _staged_append_audit_locked(plan_dir, event, details)
+
+
+def staged_ensure_audit_once(
+    plan_dir: Path, event: str, identity: dict[str, Any], details: dict[str, Any],
+) -> dict[str, Any]:
+    with staged_transaction_lock(plan_dir):
+        return _staged_ensure_audit_once_locked(
+            plan_dir, event, identity, details,
+        )
 
 
 def staged_load_state(plan_dir: Path) -> dict[str, Any]:
@@ -8272,6 +9443,20 @@ def _staged_authorize_first_stage_locked(
         raise ContractError("staged CP-01 transition receipt is missing")
     state = staged_load_state(plan_dir)
     if state["state"] == "CONTRACTED":
+        usage_path = (
+            staged_stage_dir(plan_dir, state["active_stage_id"])
+            / "usage-ledger.json"
+        )
+        usage = read_json(usage_path)
+        if not any(
+            item.startswith("worker:")
+            for item in usage.get("reservation_ids", [])
+        ):
+            # The scientific stage clock begins when CP-01 authorizes
+            # development, not while the plan is waiting for frontier review.
+            usage["started_at"] = utc_now()
+            usage["updated_at"] = usage["started_at"]
+            atomic_write_json(usage_path, usage)
         state["state"] = "STAGE_AUTHORIZED"
         atomic_write_json(staged_state_path(plan_dir), state)
         _staged_fault_after_artifact("first_stage_authorize")
@@ -8510,6 +9695,11 @@ def staged_validate_envelope(
         required_material_hashes["figure_requirements"] = envelope.get(
             "figure_requirements_sha256"
         )
+    allowed_material_purposes = (
+        set(required_material_hashes)
+        | STAGED_CP01_REVIEW_MATERIAL_PURPOSES
+        | STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES
+    )
     if require_manifest and not materials:
         raise ContractError(
             "new stage envelope requires review_material_manifest"
@@ -8532,11 +9722,11 @@ def staged_validate_envelope(
             raise ContractError("review material purpose is required")
         material_purposes.append(material["purpose"])
         expected_digest = required_material_hashes.get(material["purpose"])
-        if expected_digest is None:
+        if material["purpose"] not in allowed_material_purposes:
             raise ContractError(
                 f"review material purpose is not authorized: {material['purpose']}"
             )
-        if material["sha256"] != expected_digest:
+        if expected_digest is not None and material["sha256"] != expected_digest:
             raise ContractError(
                 f"review material digest does not bind {material['purpose']}"
             )
@@ -8575,9 +9765,15 @@ def staged_validate_envelope(
         raise ContractError("review material paths must be unique")
     if len(material_purposes) != len(set(material_purposes)):
         raise ContractError("review material purposes must be unique")
-    if materials and set(material_purposes) != set(required_material_hashes):
+    required_purposes = set(required_material_hashes)
+    if first and require_manifest:
+        required_purposes |= STAGED_CP01_REVIEW_MATERIAL_PURPOSES
+    if materials and (
+        not required_purposes.issubset(set(material_purposes))
+        or not set(material_purposes).issubset(allowed_material_purposes)
+    ):
         raise ContractError(
-            "review material purpose set does not match envelope controls"
+            "review material purpose set does not close the stage audit boundary"
         )
     for field in (
         "incumbent_sha256", "stage_objective_sha256",
@@ -8634,6 +9830,14 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         require_manifest=not state_path.exists(),
     )
     if state_path.exists():
+        repaired_legacy_copy = staged_repair_legacy_canonical_copies(
+            plan_dir,
+            contract_path,
+            envelope_path,
+            evaluation_path,
+            capacity_path,
+            Path(args.authorization_receipt).resolve(),
+        )
         state = staged_load_state(plan_dir)
         expected = {
             "contract_sha256": sha256_file(contract_path),
@@ -8646,26 +9850,38 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         supplied_authorization = Path(args.authorization_receipt).resolve()
         if supplied_authorization != Path(state["owner_authorization_path"]).resolve():
             raise ContractError("staged research owner authorization path changed")
-        _staged_ensure_audit_once_locked(
-            plan_dir,
-            "staged_research_initialized",
-            {"contract_version": contract["contract_version"]},
-            {
-                "contract_sha256": state["contract_sha256"],
-                "stage_id": envelope["stage_id"],
-                "stage_envelope_sha256": state[
-                    "active_stage_envelope_sha256"
-                ],
-                "evaluation_profile_sha256": state[
-                    "evaluation_profile_sha256"
-                ],
-                "checkpoint_capacity_sha256": state[
-                    "checkpoint_capacity_sha256"
-                ],
-                "executable_stage_count": 1,
-                "controller_authoritative": True,
-            },
-        )
+        if repaired_legacy_copy:
+            _staged_ensure_audit_once_locked(
+                plan_dir,
+                "staged_json_canonicalization_repaired",
+                {"contract_sha256": state["contract_sha256"]},
+                {
+                    "contract_version": state["contract_version"],
+                    "repair_scope": "byte_preserving_contract_copy",
+                    "semantic_content_changed": False,
+                },
+            )
+        else:
+            _staged_ensure_audit_once_locked(
+                plan_dir,
+                "staged_research_initialized",
+                {"contract_version": contract["contract_version"]},
+                {
+                    "contract_sha256": state["contract_sha256"],
+                    "stage_id": envelope["stage_id"],
+                    "stage_envelope_sha256": state[
+                        "active_stage_envelope_sha256"
+                    ],
+                    "evaluation_profile_sha256": state[
+                        "evaluation_profile_sha256"
+                    ],
+                    "checkpoint_capacity_sha256": state[
+                        "checkpoint_capacity_sha256"
+                    ],
+                    "executable_stage_count": 1,
+                    "controller_authoritative": True,
+                },
+            )
         return {"ok": True, "idempotent": True, **state}
     authorization_path = Path(args.authorization_receipt).resolve()
     authorization = validate_applied_action_receipt(
@@ -8738,6 +9954,154 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def command_revise_unstarted_stage(args: argparse.Namespace) -> dict[str, Any]:
+    """Replace only an unstarted first stage through fresh owner authorization.
+
+    This is a forward-only correction path for deterministic draft defects.  It
+    preserves the superseded contract/stage, refuses any stage that has passed
+    preflight or reserved capacity, and never refunds a frontier call.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    with staged_transaction_lock(plan_dir):
+        state = staged_load_state(plan_dir)
+        current_stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+        if state["state"] != "CONTRACTED" or (current_stage_dir / "preflight.json").exists():
+            raise ContractError(
+                "unstarted-stage revision requires CONTRACTED state before preflight"
+            )
+        root = staged_root(plan_dir)
+        capacity = read_json(root / "capacity-ledger.json")
+        baseline_capacity = read_json(root / "checkpoint-capacity.json")
+        if capacity != baseline_capacity:
+            raise ContractError("unstarted-stage revision refuses consumed capacity")
+        frontier_budget = frontier_root(plan_dir) / "budget.json"
+        if frontier_budget.exists():
+            ledger = read_json(frontier_budget)
+            if ledger.get("request_ids") or any(
+                ledger.get(field, 0) != 0
+                for field in (
+                    "reserved_calls", "reserved_input_tokens",
+                    "reserved_output_tokens",
+                )
+            ):
+                raise ContractError(
+                    "unstarted-stage revision refuses frontier reservations"
+                )
+
+        contract_path = Path(args.contract).resolve()
+        envelope_path = Path(args.stage_envelope).resolve()
+        evaluation_path = Path(args.evaluation_profile).resolve()
+        capacity_path = Path(args.checkpoint_capacity).resolve()
+        authorization_path = Path(args.authorization_receipt).resolve()
+        contract = read_json(contract_path)
+        envelope = read_json(envelope_path)
+        evaluation = read_json(evaluation_path)
+        incoming_capacity = read_json(capacity_path)
+        staged_validate_contract(contract)
+        staged_validate_evaluation_profile(evaluation)
+        staged_validate_capacity(incoming_capacity)
+        if contract["contract_version"] == state["contract_version"]:
+            raise ContractError("revised first stage requires a new contract_version")
+        if envelope.get("stage_id") == state["active_stage_id"]:
+            raise ContractError("revised first stage requires a new stage_id")
+        staged_validate_envelope(
+            envelope,
+            contract["contract_version"],
+            state["current_incumbent_sha256"],
+            first=True,
+            plan_dir=plan_dir,
+            require_manifest=True,
+        )
+        authorization = validate_applied_action_receipt(
+            plan_dir, authorization_path, "authorize_contract",
+        )
+        expected_authorization = {
+            "contract_version": contract["contract_version"],
+            "contract_sha256": sha256_file(contract_path),
+            "stage_id": envelope["stage_id"],
+            "stage_envelope_sha256": sha256_file(envelope_path),
+        }
+        if (
+            authorization.get("record_id")
+            != contract["authorization_receipt_id"]
+            or any(
+                authorization.get("details", {}).get(key) != value
+                for key, value in expected_authorization.items()
+            )
+        ):
+            raise ContractError(
+                "owner authorization does not bind revised contract and first stage"
+            )
+
+        contract_target = (
+            root / "contracts" / f"{contract['contract_version']}.json"
+        )
+        stage_dir = staged_stage_dir(plan_dir, envelope["stage_id"])
+        prior_evaluation_path = root / "evaluation-profile.json"
+        prior_capacity_path = root / "checkpoint-capacity.json"
+        staged_copy_immutable(
+            prior_evaluation_path,
+            root / "evaluation-profiles" / f"{state['contract_version']}.json",
+        )
+        staged_copy_immutable(
+            prior_capacity_path,
+            root / "checkpoint-capacities" / f"{state['contract_version']}.json",
+        )
+        staged_copy_immutable(contract_path, contract_target)
+        staged_copy_immutable(envelope_path, stage_dir / "envelope.json")
+        atomic_write_bytes(
+            prior_evaluation_path, evaluation_path.read_bytes(), immutable=True,
+        )
+        atomic_write_bytes(
+            prior_capacity_path, capacity_path.read_bytes(), immutable=True,
+        )
+        atomic_write_bytes(
+            root / "capacity-ledger.json", capacity_path.read_bytes(),
+        )
+        staged_initialize_usage_ledger(plan_dir, envelope)
+        prior = {
+            "contract_version": state["contract_version"],
+            "contract_sha256": state["contract_sha256"],
+            "stage_id": state["active_stage_id"],
+            "stage_envelope_sha256": state["active_stage_envelope_sha256"],
+            "evaluation_profile_sha256": state["evaluation_profile_sha256"],
+            "checkpoint_capacity_sha256": state["checkpoint_capacity_sha256"],
+        }
+        state.update({
+            "contract_version": contract["contract_version"],
+            "contract_sha256": sha256_file(contract_target),
+            "owner_authorization_path": str(authorization_path),
+            "owner_authorization_sha256": sha256_file(authorization_path),
+            "owner_authorization_action": "authorize_contract",
+            "active_stage_authorization_path": str(authorization_path),
+            "active_stage_authorization_sha256": sha256_file(authorization_path),
+            "active_stage_authorization_action": "authorize_contract",
+            "active_stage_id": envelope["stage_id"],
+            "active_stage_envelope_sha256": sha256_file(stage_dir / "envelope.json"),
+            "evaluation_profile_sha256": sha256_file(prior_evaluation_path),
+            "checkpoint_capacity_sha256": sha256_file(prior_capacity_path),
+            "next_stage_compiled": False,
+        })
+        validate_schema(state, read_json(STAGED_RESEARCH_SCHEMA))
+        atomic_write_json(staged_state_path(plan_dir), state)
+        _staged_ensure_audit_once_locked(
+            plan_dir,
+            "unstarted_stage_revised",
+            {"contract_version": state["contract_version"]},
+            {
+                **{f"prior_{key}": value for key, value in prior.items()},
+                "contract_sha256": state["contract_sha256"],
+                "stage_id": state["active_stage_id"],
+                "stage_envelope_sha256": state["active_stage_envelope_sha256"],
+                "authorization_receipt_sha256": state[
+                    "active_stage_authorization_sha256"
+                ],
+                "frontier_calls_spent": 0,
+            },
+        )
+        return {"ok": True, **read_json(staged_state_path(plan_dir))}
+
+
 def staged_preflight_payload(
     plan_dir: Path, raw_path: Path,
 ) -> dict[str, Any]:
@@ -8755,16 +10119,107 @@ def staged_preflight_payload(
         for value in _walk_json_values(raw)
     ):
         raise ContractError("preflight accepts raw evidence, not caller verdict labels")
+    envelope = read_json(
+        staged_stage_dir(plan_dir, state["active_stage_id"]) / "envelope.json",
+    )
+    budget = envelope["stage_budget_and_stop"]
+    observation_only = (
+        envelope["stage_kind"] == "research"
+        and budget["evaluation_calls"] == 0
+    )
     required = {
         "verdict_truth_table", "statistical_design",
         "training_evaluation_matrix", "conditional_state_machine",
         "critical_path",
     }
+    if observation_only:
+        required.add("source_manifest")
     if set(raw) != required:
         raise ContractError("preflight raw inputs have an invalid closed shape")
     capacity_path = staged_root(plan_dir) / "capacity-ledger.json"
     capacity = read_json(capacity_path)
     staged_validate_capacity(capacity)
+    verified_source_manifest: list[dict[str, Any]] = []
+    evaluator_conformance: dict[str, Any] | None = None
+    if observation_only:
+        implementation_materials = [
+            item for item in envelope.get("review_material_manifest", [])
+            if item.get("purpose") == "evaluator_implementation"
+        ]
+        if len(implementation_materials) != 1:
+            raise ContractError(
+                "observation-only preflight requires one frozen evaluator "
+                "implementation review material"
+            )
+        implementation_material = implementation_materials[0]
+        implementation_path = normalize_owned_path(
+            plan_dir, str(plan_dir / implementation_material["path"]),
+        )
+        shipped_implementation_path = SCRIPT_DIR / "source_inventory_validator.py"
+        if (
+            implementation_path.is_symlink()
+            or not implementation_path.is_file()
+            or implementation_material["sha256"]
+            != sha256_file(implementation_path)
+            or sha256_file(implementation_path)
+            != sha256_file(shipped_implementation_path)
+        ):
+            raise ContractError(
+                "frozen source inventory evaluator does not match Runtime enforcement"
+            )
+        try:
+            suite = run_source_inventory_conformance_suite()
+        except SourceInventoryValidationError as exc:
+            raise ContractError(
+                f"source inventory evaluator conformance failed: {exc}"
+            ) from exc
+        evaluator_conformance = {
+            "implementation_path": str(implementation_path),
+            "implementation_sha256": sha256_file(implementation_path),
+            **suite,
+        }
+        source_manifest = raw["source_manifest"]
+        if not isinstance(source_manifest, list) or not source_manifest:
+            raise ContractError(
+                "observation-only preflight requires a non-empty source manifest"
+            )
+        seen_paths: set[str] = set()
+        for index, item in enumerate(source_manifest):
+            if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+                raise ContractError(
+                    f"source_manifest[{index}] must bind path and sha256"
+                )
+            raw_source = item.get("path")
+            expected_sha = item.get("sha256")
+            if not isinstance(raw_source, str) or not Path(raw_source).is_absolute():
+                raise ContractError("source manifest paths must be absolute")
+            staged_require_sha256(expected_sha, "source_manifest.sha256")
+            source_path = Path(raw_source)
+            if (
+                source_path.is_symlink()
+                or not source_path.is_file()
+                or not os.access(source_path, os.R_OK)
+                or sha256_file(source_path) != expected_sha
+            ):
+                raise ContractError(
+                    f"source manifest identity is unavailable or changed: {raw_source}"
+                )
+            canonical_source = str(source_path.resolve())
+            if canonical_source != raw_source or canonical_source in seen_paths:
+                raise ContractError("source manifest paths must be canonical and unique")
+            source_bytes = source_path.read_bytes()
+            try:
+                source_text = source_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ContractError(
+                    f"source manifest must be UTF-8 text: {raw_source}"
+                ) from exc
+            seen_paths.add(canonical_source)
+            verified_source_manifest.append({
+                "path": canonical_source, "sha256": expected_sha,
+                "size_bytes": source_path.stat().st_size,
+                "line_count": len(source_text.splitlines()),
+            })
     truth = raw["verdict_truth_table"]
     expected_truth = {
         "accept": {
@@ -8777,8 +10232,22 @@ def staged_preflight_payload(
             "resulting_incumbent": "incumbent", "advancement": "paused",
         },
     }
-    if truth != expected_truth:
+    if observation_only:
+        if (
+            not isinstance(truth, dict)
+            or set(truth) != {"applicable", "rationale"}
+            or truth.get("applicable") is not False
+            or not isinstance(truth.get("rationale"), str)
+            or not truth["rationale"].strip()
+        ):
+            raise ContractError(
+                "observation-only preflight must declare why no Gate verdict applies"
+            )
+        truth_result = "not_applicable"
+    elif truth != expected_truth:
         raise ContractError("preflight verdict truth table is invalid")
+    else:
+        truth_result = "pass"
     statistical = raw["statistical_design"]
     if not isinstance(statistical, dict) or not isinstance(
         statistical.get("applicable"), bool,
@@ -8869,10 +10338,14 @@ def staged_preflight_payload(
         if expanded == reachable:
             break
         reachable = expanded
-    required_states = {
-        "STAGE_AUTHORIZED", "CANDIDATE_FROZEN", "GATE_QUERIED",
-        "RECORDED", "PAUSED",
-    }
+    required_states = (
+        {"STAGE_AUTHORIZED", "DEVELOPING", "RECORDED", "COMPLETE", "PAUSED"}
+        if observation_only
+        else {
+            "STAGE_AUTHORIZED", "CANDIDATE_FROZEN", "GATE_QUERIED",
+            "RECORDED", "PAUSED",
+        }
+    )
     if not required_states <= reachable:
         raise ContractError("conditional state machine has an unreachable state")
     critical = raw["critical_path"]
@@ -8887,24 +10360,26 @@ def staged_preflight_payload(
         or len(ordered) != len(set(ordered))
         or any(item not in transition_ids for item in ordered)
         or not isinstance(cp_bindings, dict)
-        or set(cp_bindings) != {"CP-01", "CP-02", "CP-04"}
+        or set(cp_bindings) != (
+            {"CP-01"} if observation_only else {"CP-01", "CP-02", "CP-04"}
+        )
         or any(value not in ordered for value in cp_bindings.values())
     ):
         raise ContractError("current-stage critical path is broken")
-    mandatory = [
+    all_unspent = [
         name for name, slot in capacity["checkpoint_capacity"].items()
         if slot["spent"] == 0
     ]
-    unreachable = next((item for item in mandatory if item not in cp_bindings), None)
-    envelope = read_json(
-        staged_stage_dir(plan_dir, state["active_stage_id"]) / "envelope.json",
+    mandatory = (
+        ["CP-01"] if observation_only and "CP-01" in all_unspent
+        else ([] if observation_only else all_unspent)
     )
-    budget = envelope["stage_budget_and_stop"]
+    unreachable = next((item for item in mandatory if item not in cp_bindings), None)
     zero_budget = next(
         (
             field for field in (
                 "time_seconds", "tool_calls", "worker_tokens",
-                "review_tokens", "retry_attempts", "evaluation_calls",
+                "review_tokens",
             )
             if budget[field] < 1
         ),
@@ -8912,6 +10387,19 @@ def staged_preflight_payload(
     )
     if zero_budget:
         raise ContractError(f"stage budget is not dispatchable: {zero_budget}=0")
+    if observation_only:
+        required_read_calls = len(verified_source_manifest)
+        estimated_source_tokens = (
+            sum(item["size_bytes"] for item in verified_source_manifest) + 2
+        ) // 3
+        required_worker_tokens = estimated_source_tokens + 8000
+        if (
+            budget["tool_calls"] < required_read_calls
+            or budget["worker_tokens"] < required_worker_tokens
+        ):
+            raise ContractError(
+                "observation-only stage budget cannot cover the frozen source manifest"
+            )
     if unreachable is not None:
         raise ContractError(f"critical path cannot reach {unreachable}")
     if capacity["remaining_calls"] < capacity["mandatory_future_calls"]:
@@ -8924,6 +10412,13 @@ def staged_preflight_payload(
         "budget_arithmetic": "controller-capacity-arithmetic/v1",
         "current_stage_critical_path": "controller-critical-path/v1",
     }
+    if observation_only:
+        calculators["source_manifest_identity"] = (
+            "controller-source-manifest/v1"
+        )
+        calculators["source_inventory_evaluator_conformance"] = (
+            evaluator_conformance["validator_version"]
+        )
     return {
         "schema_version": 1,
         "preflight_id": f"preflight_{state['active_stage_id']}",
@@ -8933,19 +10428,42 @@ def staged_preflight_payload(
         "validator_versions_sha256": sha256_json(calculators),
         "calculator_versions": calculators,
         "validators": {
-            "verdict_truth_table": "pass",
+            "verdict_truth_table": truth_result,
             "statistical_feasibility": statistical_result,
             "training_evaluation_matrix": matrix_result,
             "conditional_state_machine": "pass",
             "budget_arithmetic": "pass",
             "current_stage_critical_path": "pass",
+            **({"source_manifest_identity": "pass"} if observation_only else {}),
+            **({
+                "source_inventory_evaluator_conformance": "pass",
+            } if observation_only else {}),
         },
         "critical_path": {
             "ordered_transition_ids": ordered,
             "mandatory_checkpoint_ids": mandatory,
+            **({
+                "deferred_checkpoint_ids": [
+                    item for item in all_unspent if item not in mandatory
+                ],
+            } if observation_only else {}),
             "checkpoint_after_transition": cp_bindings,
             "unreachable_transition_id": None,
         },
+        **({
+            "verified_source_manifest": verified_source_manifest,
+            "verified_source_manifest_sha256": sha256_json(
+                verified_source_manifest
+            ),
+            "source_budget_proof": {
+                "required_read_calls": required_read_calls,
+                "estimated_source_tokens": estimated_source_tokens,
+                "required_worker_tokens": required_worker_tokens,
+                "authorized_tool_calls": budget["tool_calls"],
+                "authorized_worker_tokens": budget["worker_tokens"],
+            },
+            "evaluator_conformance": evaluator_conformance,
+        } if observation_only else {}),
         "failure": {"type": None, "evidence_sha256": None},
     }
 
@@ -8999,9 +10517,83 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
     if (
         not input_path.is_file()
         or sha256_file(input_path) != preflight.get("input_manifest_sha256")
-        or staged_preflight_payload(plan_dir, input_path) != preflight
     ):
         raise ContractError("current-stage preflight raw evidence changed")
+    # Do not rebuild the complete preflight after CP-01. Its critical-path and
+    # capacity image intentionally change when the non-fungible CP-01 slot is
+    # spent. Revalidate only immutable scientific inputs and executable
+    # evaluator identity here; the applied CP-01 receipt separately binds the
+    # exact frozen preflight bytes used for authorization.
+    verified_sources = preflight.get("verified_source_manifest")
+    if verified_sources is not None:
+        if not isinstance(verified_sources, list) or not verified_sources:
+            raise ContractError("current-stage preflight source manifest is invalid")
+        current_sources = []
+        for item in verified_sources:
+            if not isinstance(item, dict) or set(item) != {
+                "path", "sha256", "size_bytes", "line_count",
+            }:
+                raise ContractError(
+                    "current-stage preflight source identity is malformed"
+                )
+            source_path = Path(item["path"])
+            if (
+                source_path.is_symlink()
+                or not source_path.is_file()
+                or str(source_path.resolve()) != item["path"]
+                or sha256_file(source_path) != item["sha256"]
+            ):
+                raise ContractError(
+                    "current-stage preflight source evidence changed"
+                )
+            try:
+                source_text = source_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ContractError(
+                    "current-stage preflight source is no longer UTF-8 text"
+                ) from exc
+            current_sources.append({
+                "path": item["path"],
+                "sha256": item["sha256"],
+                "size_bytes": source_path.stat().st_size,
+                "line_count": len(source_text.splitlines()),
+            })
+        if (
+            current_sources != verified_sources
+            or sha256_json(current_sources)
+            != preflight.get("verified_source_manifest_sha256")
+        ):
+            raise ContractError("current-stage preflight source evidence changed")
+    evaluator = preflight.get("evaluator_conformance")
+    if evaluator is not None:
+        implementation_path = Path(evaluator.get("implementation_path", ""))
+        shipped_path = SCRIPT_DIR / "source_inventory_validator.py"
+        if (
+            implementation_path.is_symlink()
+            or not implementation_path.is_file()
+            or sha256_file(implementation_path)
+            != evaluator.get("implementation_sha256")
+            or sha256_file(implementation_path) != sha256_file(shipped_path)
+        ):
+            raise ContractError(
+                "current-stage preflight evaluator implementation changed"
+            )
+        try:
+            current_suite = run_source_inventory_conformance_suite()
+        except SourceInventoryValidationError as exc:
+            raise ContractError(
+                f"current-stage preflight evaluator conformance failed: {exc}"
+            ) from exc
+        recorded_suite = {
+            key: evaluator.get(key) for key in (
+                "validator_id", "validator_version", "case_count", "cases",
+                "status",
+            )
+        }
+        if current_suite != recorded_suite:
+            raise ContractError(
+                "current-stage preflight evaluator conformance changed"
+            )
     return preflight
 
 
@@ -9014,9 +10606,70 @@ def staged_reserve_dispatch(
         )
 
 
+def staged_reserve_worker_dispatch_and_budget(
+    plan_dir: Path, *, dispatch_id: str, usage: dict[str, int],
+) -> None:
+    """Precheck and reserve both worker ledgers under one controller lock."""
+    with staged_transaction_lock(plan_dir):
+        _staged_precheck_dispatch_locked(
+            plan_dir, checkpoint=None, dispatch_id=dispatch_id,
+        )
+        _staged_consume_stage_budget_locked(
+            plan_dir, f"worker:{dispatch_id}", usage,
+        )
+        _staged_reserve_dispatch_locked(
+            plan_dir, checkpoint=None, dispatch_id=dispatch_id,
+        )
+
+
+def _staged_precheck_dispatch_locked(
+    plan_dir: Path, *, checkpoint: str | None, dispatch_id: str,
+) -> None:
+    if not staged_is_active(plan_dir):
+        return
+    root = staged_root(plan_dir)
+    reservation_path = root / "dispatch-reservations" / f"{dispatch_id}.json"
+    journal_path = root / "dispatch-journals" / f"{dispatch_id}.json"
+    if journal_path.exists():
+        journal = read_json(journal_path)
+        if (
+            journal.get("dispatch_id") != dispatch_id
+            or journal.get("checkpoint") != checkpoint
+        ):
+            raise ContractError("staged dispatch journal identity collision")
+        return
+    if reservation_path.exists():
+        raise ContractError(
+            "staged dispatch marker exists without its recovery journal"
+        )
+    staged_require_preflight(plan_dir)
+    state = staged_load_state(plan_dir)
+    if checkpoint is None and state["state"] not in {
+        "STAGE_AUTHORIZED", "DEVELOPING",
+    }:
+        raise ContractError("worker dispatch requires controller-authorized stage")
+    capacity = read_json(root / "capacity-ledger.json")
+    staged_validate_capacity(capacity)
+    if checkpoint is None:
+        if capacity["remaining_calls"] - 1 < capacity["mandatory_future_calls"]:
+            raise ContractError(
+                "dispatch blocked: remaining_calls would fall below "
+                "mandatory_future_calls"
+            )
+    else:
+        slot = capacity["checkpoint_capacity"].get(checkpoint)
+        if slot is None or slot["spent"] != 0:
+            raise ContractError(
+                f"non-fungible {checkpoint} capacity is unavailable"
+            )
+
+
 def _staged_reserve_dispatch_locked(
     plan_dir: Path, *, checkpoint: str | None = None, dispatch_id: str,
 ) -> None:
+    _staged_precheck_dispatch_locked(
+        plan_dir, checkpoint=checkpoint, dispatch_id=dispatch_id,
+    )
     if not staged_is_active(plan_dir):
         return
     root = staged_root(plan_dir)
@@ -11943,6 +13596,18 @@ def build_parser() -> argparse.ArgumentParser:
     staged_init.add_argument("--incumbent-sha256", required=True)
     staged_init.set_defaults(handler=command_init_staged_research)
 
+    revise_unstarted = sub.add_parser(
+        "revise-unstarted-stage",
+        help="replace a contracted first stage before preflight or capacity use",
+    )
+    revise_unstarted.add_argument("--plan-dir", required=True)
+    revise_unstarted.add_argument("--contract", required=True)
+    revise_unstarted.add_argument("--stage-envelope", required=True)
+    revise_unstarted.add_argument("--evaluation-profile", required=True)
+    revise_unstarted.add_argument("--checkpoint-capacity", required=True)
+    revise_unstarted.add_argument("--authorization-receipt", required=True)
+    revise_unstarted.set_defaults(handler=command_revise_unstarted_stage)
+
     staged_preflight = sub.add_parser(
         "preflight-staged-research",
         help="run deterministic current-stage feasibility and capacity checks",
@@ -12142,6 +13807,50 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--writing-gate-receipt")
     worker.add_argument("--context-capsule")
     worker.set_defaults(handler=command_dispatch_worker)
+
+    recover_worker_budget = sub.add_parser(
+        "reconcile-orphan-worker-budget",
+        help="refund a provably unstarted legacy worker budget reservation",
+    )
+    recover_worker_budget.add_argument("--plan-dir", required=True)
+    recover_worker_budget.add_argument("--worker-run-id", required=True)
+    recover_worker_budget.add_argument("--task-contract", required=True)
+    recover_worker_budget.set_defaults(
+        handler=command_reconcile_orphan_worker_budget,
+    )
+
+    recover_denied_input = sub.add_parser(
+        "reconcile-denied-input-worker-budget",
+        help="release scientific capacity after every frozen input read was denied",
+    )
+    recover_denied_input.add_argument("--plan-dir", required=True)
+    recover_denied_input.add_argument("--worker-run-id", required=True)
+    recover_denied_input.add_argument("--task-contract", required=True)
+    recover_denied_input.set_defaults(
+        handler=command_reconcile_denied_input_worker_budget,
+    )
+
+    recover_content_contract = sub.add_parser(
+        "reconcile-undisclosed-content-contract-budget",
+        help="release a work unit made impossible by an undisclosed closed schema",
+    )
+    recover_content_contract.add_argument("--plan-dir", required=True)
+    recover_content_contract.add_argument("--worker-run-id", required=True)
+    recover_content_contract.add_argument("--task-contract", required=True)
+    recover_content_contract.set_defaults(
+        handler=command_reconcile_undisclosed_content_contract_budget,
+    )
+
+    normalize_legacy_inventory = sub.add_parser(
+        "normalize-legacy-source-inventory",
+        help="compile a bounded pre-disclosure alias shape through validator v2",
+    )
+    normalize_legacy_inventory.add_argument("--plan-dir", required=True)
+    normalize_legacy_inventory.add_argument("--worker-run-id", required=True)
+    normalize_legacy_inventory.add_argument("--task-contract", required=True)
+    normalize_legacy_inventory.set_defaults(
+        handler=command_normalize_legacy_source_inventory,
+    )
 
     promote = sub.add_parser("promote-worker-artifacts")
     promote.add_argument("--plan-dir", required=True)
