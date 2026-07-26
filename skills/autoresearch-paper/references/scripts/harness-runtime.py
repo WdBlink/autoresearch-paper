@@ -5555,7 +5555,10 @@ def reserve_frontier_and_staged_budget(
                 elapsed = (
                     datetime.now(timezone.utc) - parse_utc(usage["started_at"])
                 ).total_seconds()
-                if usage.get("stop_reason") is not None or state["state"] == "PAUSED":
+                if usage.get("stop_reason") is not None or (
+                    state["state"] == "PAUSED"
+                    and request.get("checkpoint") != "STAGE-REVIEW"
+                ):
                     raise ContractError(
                         "stage is stopped pending canonical human reauthorization"
                     )
@@ -9271,8 +9274,221 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
 
 
+def staged_resolve_compile_evidence(
+    plan_dir: Path,
+    envelope: dict[str, Any],
+    cli_evidence: list[str],
+    authorization: dict[str, Any],
+    state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Resolve caller IDs to current canonical Controller evidence."""
+    explicit_ids = list(dict.fromkeys(cli_evidence))
+    if explicit_ids != envelope["authorized_evidence_refs"]:
+        raise ContractError(
+            "compile evidence IDs must exactly match envelope order"
+        )
+    root = staged_root(plan_dir)
+    ledger_path = root / "evidence-ledger.jsonl"
+    audit_path = root / "audit.jsonl"
+    ledger = [
+        strict_json_loads(line)
+        for line in ledger_path.read_text().splitlines() if line.strip()
+    ] if ledger_path.exists() else []
+    audit = [
+        strict_json_loads(line)
+        for line in audit_path.read_text().splitlines() if line.strip()
+    ] if audit_path.exists() else []
+    profile = read_json(root / "evaluation-profile.json")
+    contract = read_json(
+        root / "contracts" / f"{state['contract_version']}.json"
+    )
+    external_identity = profile["external_suite_identity_sha256"]
+    bindings: list[dict[str, Any]] = []
+    for evidence_id in explicit_ids:
+        receipt_candidates = [
+            path for path in sorted((root / "stages").glob("*/evidence-receipt.json"))
+            if read_json(path).get("evidence_id") == evidence_id
+        ] + [
+            path for path in sorted(
+                (root / "stages").glob("*/released-evidence-receipt.json")
+            )
+            if read_json(path).get("evidence_id") == evidence_id
+        ]
+        stage_ids = {path.parent.name for path in receipt_candidates}
+        if not receipt_candidates:
+            raise ContractError(
+                f"compile evidence is not canonical: {evidence_id}"
+            )
+        if len(stage_ids) != 1:
+            raise ContractError(
+                f"compile evidence is duplicated across stages: {evidence_id}"
+            )
+        stage_id = next(iter(stage_ids))
+        stage_dir = staged_stage_dir(plan_dir, stage_id)
+        candidate = read_json(stage_dir / "candidate.json")
+        decision = read_json(stage_dir / "decision.json")
+        maturity_path = stage_dir / "evidence-maturity.json"
+        maturity = read_json(maturity_path)
+        staged_validate_evidence_maturity(
+            maturity, candidate["candidate_sha256"],
+        )
+        if (
+            evidence_id != f"evidence_{stage_id}"
+            or maturity.get("evidence_id") != evidence_id
+            or decision.get("stage_cycle_id") != stage_id
+            or decision.get("candidate_sha256")
+            != candidate["candidate_sha256"]
+        ):
+            raise ContractError("compile evidence stage binding changed")
+        source_envelope = read_json(stage_dir / "envelope.json")
+        if source_envelope.get("contract_version") != state["contract_version"]:
+            raise ContractError("compile evidence contract lineage is stale")
+        current_maturity = maturity["current_maturity"]
+        if current_maturity == "released":
+            receipt_path = stage_dir / "released-evidence-receipt.json"
+            classification = "released_reusable"
+            expected_applicability = ["released under current contract lineage"]
+            audit_event = "staged_evidence_released"
+        else:
+            receipt_path = stage_dir / "evidence-receipt.json"
+            classification = (
+                "gate_accepted_reusable"
+                if decision.get("decision") == "accept"
+                else "negative_context"
+            )
+            expected_applicability = [
+                "same frozen evaluation profile and environment"
+            ]
+            audit_event = "logical_gate_decision_applied"
+        if (
+            receipt_path not in receipt_candidates
+            or not receipt_path.is_file()
+            or receipt_path.is_symlink()
+            or receipt_path.stat().st_mode & 0o222
+        ):
+            raise ContractError(
+                "compile evidence maturity receipt is missing or mutable"
+            )
+        receipt = read_json(receipt_path)
+        receipt_fields = {
+            "schema_version", "evidence_id", "stage_cycle_id", "decision",
+            "maturity", "environment_version", "evaluator_version",
+            "applicability", "confidence", "validation_status",
+            "provenance_sha256", "active_for_retrieval",
+        }
+        if (
+            set(receipt) != receipt_fields
+            or receipt.get("schema_version") != 1
+            or receipt.get("stage_cycle_id") != stage_id
+            or receipt.get("evidence_id") != evidence_id
+            or receipt.get("decision") != decision.get("decision")
+            or receipt.get("maturity") != current_maturity
+            or receipt.get("validation_status") != "validated"
+            or receipt.get("applicability") != expected_applicability
+            or receipt.get("environment_version") != profile["profile_id"]
+            or receipt.get("evaluator_version")
+            != contract["acceptance_evaluator_sha256"]
+            or receipt.get("confidence") != "high"
+        ):
+            raise ContractError("compile evidence receipt is ineligible or stale")
+        if classification in {"gate_accepted_reusable", "released_reusable"}:
+            if (
+                decision.get("decision") != "accept"
+                or current_maturity not in {"gate_accepted", "released"}
+                or receipt.get("active_for_retrieval") is not True
+            ):
+                raise ContractError("compile reusable evidence authority changed")
+        else:
+            authorization_details = authorization.get("details", {})
+            if (
+                decision.get("decision") not in {"reject", "escalate"}
+                or current_maturity != "full_experiment"
+                or receipt.get("active_for_retrieval") is not False
+                or authorization_details.get("evidence_id") != evidence_id
+                or authorization_details.get("reason") != "negative_context"
+            ):
+                raise ContractError(
+                    "negative evidence requires explicit owner context authority"
+                )
+        execution_path = Path(
+            decision.get("evaluator_execution_receipt_path", "")
+        )
+        if (
+            not execution_path.is_file()
+            or sha256_file(execution_path)
+            != decision.get("evaluator_execution_receipt_sha256")
+        ):
+            raise ContractError("compile evidence evaluator provenance changed")
+        execution = read_json(execution_path)
+        if (
+            execution.get("evaluator_sha256")
+            != contract["acceptance_evaluator_sha256"]
+            or execution.get("candidate_sha256")
+            != candidate["candidate_sha256"]
+        ):
+            raise ContractError("compile evidence evaluator lineage changed")
+        expected_provenance = (
+            sha256_file(maturity_path)
+            if current_maturity == "released"
+            else decision["evaluator_execution_receipt_sha256"]
+        )
+        if receipt.get("provenance_sha256") != expected_provenance:
+            raise ContractError("compile evidence provenance changed")
+        ledger_matches = [record for record in ledger if record == receipt]
+        if len(ledger_matches) != 1:
+            raise ContractError("compile evidence lacks one exact ledger record")
+        if audit_event == "logical_gate_decision_applied":
+            audit_matches = [
+                record for record in audit
+                if record.get("event") == audit_event
+                and record.get("evidence_id") == evidence_id
+                and record.get("stage_cycle_id") == stage_id
+                and record.get("decision") == decision["decision"]
+                and record.get("evaluator_execution_receipt_sha256")
+                == decision["evaluator_execution_receipt_sha256"]
+            ]
+        else:
+            audit_matches = [
+                record for record in audit
+                if record.get("event") == audit_event
+                and record.get("evidence_id") == evidence_id
+                and record.get("stage_id") == stage_id
+                and record.get("released_evidence_receipt_sha256")
+                == sha256_file(receipt_path)
+            ]
+        if len(audit_matches) != 1:
+            raise ContractError("compile evidence lacks one canonical audit binding")
+        if external_identity in canonical_json({
+            "receipt": receipt,
+            "ledger": ledger_matches[0],
+            "audit": audit_matches[0],
+        }).decode("utf-8"):
+            raise ContractError("external transfer evidence is not compilable")
+        bindings.append({
+            "evidence_id": evidence_id,
+            "stage_id": stage_id,
+            "receipt_path": str(receipt_path),
+            "receipt_sha256": sha256_file(receipt_path),
+            "ledger_record_sha256": sha256_json(ledger_matches[0]),
+            "audit_revision": audit_matches[0]["audit_revision"],
+            "audit_record_sha256": sha256_json(audit_matches[0]),
+            "classification": classification,
+            "decision": decision["decision"],
+            "maturity": current_maturity,
+            "validation_status": receipt["validation_status"],
+            "applicability": receipt["applicability"],
+            "environment_version": receipt["environment_version"],
+            "evaluator_version": receipt["evaluator_version"],
+            "contract_version": state["contract_version"],
+            "provenance_sha256": expected_provenance,
+        })
+    return bindings
+
+
 def staged_compile_operation_identity(
-    args: argparse.Namespace, incoming_source: Path,
+    args: argparse.Namespace,
+    incoming_source: Path,
+    evidence_bindings: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Freeze every authority-bearing compile input with ordered-set semantics."""
     ordered_evidence = list(dict.fromkeys(args.authorized_evidence))
@@ -9292,6 +9508,7 @@ def staged_compile_operation_identity(
         "authorization_receipt_sha256": sha256_file(authorization_path),
         # First-occurrence order is semantic; duplicates are not authority.
         "authorized_evidence_ordered_set": ordered_evidence,
+        "canonical_evidence_bindings": evidence_bindings,
         "figure_requirements": figure_identity,
     }
 
@@ -9300,8 +9517,43 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     incoming_source = Path(args.stage_envelope).resolve()
     incoming_envelope = read_json(incoming_source)
+    state = staged_load_state(plan_dir)
+    source_cycle_id = staged_require_id(
+        incoming_envelope.get("source_cycle_id"), "source_cycle_id",
+    )
+    source_decision = read_json(
+        staged_stage_dir(plan_dir, source_cycle_id) / "decision.json"
+    )
+    staged_validate_envelope(
+        incoming_envelope,
+        state["contract_version"],
+        source_decision["resulting_incumbent_sha256"],
+        first=False,
+    )
+    authorization_path = Path(args.authorization_receipt).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, authorization_path, "reauthorize_stage",
+    )
+    authorization_checks = {
+        "contract_version": state["contract_version"],
+        "contract_sha256": state["contract_sha256"],
+        "stage_id": incoming_envelope["stage_id"],
+        "stage_envelope_sha256": sha256_file(incoming_source),
+    }
+    if any(
+        authorization.get("details", {}).get(key) != value
+        for key, value in authorization_checks.items()
+    ):
+        raise ContractError("next-stage owner authorization binding mismatch")
+    evidence_bindings = staged_resolve_compile_evidence(
+        plan_dir,
+        incoming_envelope,
+        args.authorized_evidence,
+        authorization,
+        state,
+    )
     operation_identity = staged_compile_operation_identity(
-        args, incoming_source,
+        args, incoming_source, evidence_bindings,
     )
     operation_identity_sha256 = sha256_json(operation_identity)
     journal_dir = staged_root(plan_dir) / "compile-journals"
@@ -9332,9 +9584,8 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError(
             "next-stage compilation identity conflict: source cycle is committed"
         )
-    state = staged_load_state(plan_dir)
-    if state["state"] != "RECORDED":
-        raise ContractError("next-stage compilation requires a non-escalated recorded cycle")
+    if state["state"] not in {"RECORDED", "PAUSED"}:
+        raise ContractError("next-stage compilation requires a terminal cycle")
     if state["next_stage_compiled"]:
         raise ContractError("at most one next-stage envelope may be compiled")
     stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
@@ -9358,21 +9609,6 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("next stage must cite the preceding terminal cycle")
     if set(envelope["authorized_evidence_refs"]) - set(args.authorized_evidence):
         raise ContractError("next stage includes unauthorized evidence")
-    authorization_path = Path(args.authorization_receipt).resolve()
-    authorization = validate_applied_action_receipt(
-        plan_dir, authorization_path, "reauthorize_stage",
-    )
-    authorization_checks = {
-        "contract_version": state["contract_version"],
-        "contract_sha256": state["contract_sha256"],
-        "stage_id": envelope["stage_id"],
-        "stage_envelope_sha256": sha256_file(source),
-    }
-    if any(
-        authorization.get("details", {}).get(key) != value
-        for key, value in authorization_checks.items()
-    ):
-        raise ContractError("next-stage owner authorization binding mismatch")
     if envelope["stage_kind"] == "figure_production":
         if not args.figure_requirements:
             raise ContractError("figure-production stage must freeze exact figure requirements")
@@ -9430,6 +9666,7 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
         "usage_after": usage_after,
         "usage_after_sha256": sha256_json(usage_after),
         "state_before_sha256": sha256_json(state),
+        "source_state": state["state"],
         "state_transition": state_transition,
         "marker_after": marker_value,
         "marker_after_sha256": sha256_json(marker_value),
@@ -9486,7 +9723,7 @@ def _finish_next_stage_compile_locked(
     transition = journal["state_transition"]
     if (
         state["active_stage_id"] == journal["source_cycle_id"]
-        and state["state"] == "RECORDED"
+        and state["state"] == journal["source_state"]
     ):
         state.update(transition)
         atomic_write_json(staged_state_path(plan_dir), state)

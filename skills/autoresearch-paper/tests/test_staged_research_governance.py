@@ -272,13 +272,16 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         state["state"] = "STAGE_AUTHORIZED"
         state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
 
-    def authorize_next_stage(self, plan: Path, envelope_path: Path) -> str:
+    def authorize_next_stage(
+        self, plan: Path, envelope_path: Path, *,
+        negative_evidence_id: str | None = None,
+    ) -> str:
         envelope = json.loads(envelope_path.read_text())
         root = plan / "state" / "staged_research" / "v1"
         state = json.loads((root / "state.json").read_text())
         key = plan / "owner.key"
         record_id = f"har_authorize_{envelope['stage_id']}"
-        created = json.loads(self.invoke(
+        create_args = [
             "create-human-action", "--plan-dir", str(plan),
             "--plan-id", "plan_staged", "--action", "reauthorize_stage",
             "--key-file", str(key), "--expires-in", "3600",
@@ -288,7 +291,13 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "--stage-id", envelope["stage_id"],
             "--stage-envelope-sha256",
             hashlib.sha256(envelope_path.read_bytes()).hexdigest(),
-        ).stdout)
+        ]
+        if negative_evidence_id is not None:
+            create_args += [
+                "--evidence-id", negative_evidence_id,
+                "--reason", "negative_context",
+            ]
+        created = json.loads(self.invoke(*create_args).stdout)
         applied = json.loads(self.invoke(
             "apply-human-action", "--plan-dir", str(plan),
             "--record", created["record_path"], "--key-file", str(key),
@@ -1014,6 +1023,15 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             cycle = self.run_terminal_cycle(plan, "accept")
             root = plan / "state" / "staged_research" / "v1"
             stage_dir = root / "stages" / "stage_1"
+            report_path, worker_run_id = self.prepare_worker_report(
+                plan, cycle, "7",
+            )
+            report = json.loads(self.invoke(
+                "record-stage-report", "--plan-dir", str(plan),
+                "--stage-report", str(report_path),
+                "--worker-run-id", worker_run_id,
+            ).stdout)
+            self.apply_strong_review(plan, Path(report["path"]))
             roles = {
                 role: self.write(
                     plan / "inputs" / f"cp04-{role}.json",
@@ -1111,6 +1129,29 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 ]),
                 1,
             )
+            envelope = self.envelope(
+                "stage_2", source="stage_1",
+                incumbent=cycle["resulting_incumbent_sha256"],
+            )
+            envelope["authorized_evidence_refs"] = ["evidence_stage_1"]
+            envelope_path = self.write(
+                plan / "inputs" / "released-stage-2.json", envelope,
+            )
+            authorization = self.authorize_next_stage(plan, envelope_path)
+            self.invoke(
+                "compile-next-stage", "--plan-dir", str(plan),
+                "--stage-envelope", str(envelope_path),
+                "--authorized-evidence", "evidence_stage_1",
+                "--authorization-receipt", authorization,
+            )
+            journal = json.loads(
+                (root / "compile-journals" / "stage_1.json").read_text()
+            )
+            binding = journal["operation_identity"][
+                "canonical_evidence_bindings"
+            ][0]
+            self.assertEqual(binding["classification"], "released_reusable")
+            self.assertEqual(binding["maturity"], "released")
 
     def test_gate_crash_recovery_is_exact_once_and_maturity_skip_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1171,6 +1212,208 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                  / "state.json").read_text()
             )
             self.assertEqual(state["current_incumbent_sha256"], digest("incumbent"))
+
+    def test_canonical_negative_evidence_is_context_only(self) -> None:
+        for decision in ("reject", "escalate"):
+            with self.subTest(decision=decision), tempfile.TemporaryDirectory() as td:
+                plan = Path(td) / "plan"
+                self.initialize(plan)
+                self.preflight(plan)
+                self.authorize_fixture(plan)
+                cycle = self.run_terminal_cycle(plan, decision)
+                report_path, worker_run_id = self.prepare_worker_report(
+                    plan, cycle, "6",
+                )
+                report = json.loads(self.invoke(
+                    "record-stage-report", "--plan-dir", str(plan),
+                    "--stage-report", str(report_path),
+                    "--worker-run-id", worker_run_id,
+                ).stdout)
+                self.apply_strong_review(plan, Path(report["path"]))
+                envelope = self.envelope(
+                    "stage_2", source="stage_1",
+                    incumbent=cycle["resulting_incumbent_sha256"],
+                )
+                envelope["authorized_evidence_refs"] = ["evidence_stage_1"]
+                envelope_path = self.write(
+                    plan / "inputs" / "negative-stage-2.json", envelope,
+                )
+                authorization = self.authorize_next_stage(
+                    plan, envelope_path,
+                    negative_evidence_id="evidence_stage_1",
+                )
+                compiled = json.loads(self.invoke(
+                    "compile-next-stage", "--plan-dir", str(plan),
+                    "--stage-envelope", str(envelope_path),
+                    "--authorized-evidence", "evidence_stage_1",
+                    "--authorization-receipt", authorization,
+                ).stdout)
+                self.assertEqual(compiled["next_stage_id"], "stage_2")
+                root = plan / "state" / "staged_research" / "v1"
+                journal = json.loads(
+                    (root / "compile-journals" / "stage_1.json").read_text()
+                )
+                binding = journal["operation_identity"][
+                    "canonical_evidence_bindings"
+                ][0]
+                self.assertEqual(binding["classification"], "negative_context")
+                self.assertEqual(binding["decision"], decision)
+                self.assertEqual(binding["maturity"], "full_experiment")
+                evidence = json.loads(
+                    (root / "stages" / "stage_1" / "evidence-receipt.json")
+                    .read_text()
+                )
+                self.assertFalse(evidence["active_for_retrieval"])
+                retrieved = json.loads(self.invoke(
+                    "retrieve-staged-evidence", "--plan-dir", str(plan),
+                ).stdout)
+                self.assertEqual(retrieved["active_evidence"], [])
+
+    def test_compile_rejects_noncanonical_evidence_before_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            cycle = self.prepare_compilable_stage(plan, "5")
+            root = plan / "state" / "staged_research" / "v1"
+
+            def compile_args(
+                stage_id: str, evidence_refs: list[str], cli_refs: list[str],
+            ) -> list[str]:
+                envelope = self.envelope(
+                    stage_id, source="stage_1",
+                    incumbent=cycle["resulting_incumbent_sha256"],
+                )
+                envelope["authorized_evidence_refs"] = evidence_refs
+                path = self.write(
+                    plan / "inputs" / f"{stage_id}.json", envelope,
+                )
+                authorization = self.authorize_next_stage(plan, path)
+                args = [
+                    "compile-next-stage", "--plan-dir", str(plan),
+                    "--stage-envelope", str(path),
+                ]
+                for evidence_id in cli_refs:
+                    args += ["--authorized-evidence", evidence_id]
+                args += ["--authorization-receipt", authorization]
+                return args
+
+            def reject_without_projection(args: list[str]) -> str:
+                before = {
+                    str(path.relative_to(root)): path.read_bytes()
+                    for path in root.rglob("*") if path.is_file()
+                }
+                proc = self.invoke(*args, ok=False)
+                self.assertEqual(
+                    {
+                        str(path.relative_to(root)): path.read_bytes()
+                        for path in root.rglob("*") if path.is_file()
+                    },
+                    before,
+                )
+                self.assertFalse((root / "compile-journals").exists())
+                return proc.stderr
+
+            forged = compile_args(
+                "stage_forged", ["evidence_does_not_exist"],
+                ["evidence_does_not_exist"],
+            )
+            self.assertIn("not canonical", reject_without_projection(forged))
+            cli_only = compile_args(
+                "stage_cli_only", [], ["evidence_stage_1"],
+            )
+            self.assertIn("exactly match", reject_without_projection(cli_only))
+
+            canonical = compile_args(
+                "stage_2", ["evidence_stage_1"], ["evidence_stage_1"],
+            )
+            stage_dir = root / "stages" / "stage_1"
+            receipt_path = stage_dir / "evidence-receipt.json"
+            ledger_path = root / "evidence-ledger.jsonl"
+            audit_path = root / "audit.jsonl"
+            maturity_path = stage_dir / "evidence-maturity.json"
+            originals = {
+                path: path.read_bytes()
+                for path in (
+                    receipt_path, ledger_path, audit_path, maturity_path,
+                )
+            }
+            original_receipt = json.loads(receipt_path.read_text())
+
+            def restore() -> None:
+                for path, value in originals.items():
+                    path.chmod(0o600)
+                    path.write_bytes(value)
+                receipt_path.chmod(0o444)
+
+            ledger_path.write_text("")
+            self.assertIn("ledger", reject_without_projection(canonical))
+            restore()
+            audit_records = [
+                json.loads(line) for line in audit_path.read_text().splitlines()
+                if line.strip()
+            ]
+            audit_path.write_text("".join(
+                json.dumps(record, sort_keys=True) + "\n"
+                for record in audit_records
+                if record.get("event") != "logical_gate_decision_applied"
+            ))
+            self.assertIn("audit", reject_without_projection(canonical))
+            restore()
+            receipt_path.chmod(0o600)
+            self.assertIn("mutable", reject_without_projection(canonical))
+            restore()
+
+            mutation_cases = {
+                "unvalidated": lambda value: value.update(
+                    validation_status="unvalidated"
+                ),
+                "empty_applicability": lambda value: value.update(
+                    applicability=[]
+                ),
+                "environment": lambda value: value.update(
+                    environment_version="stale_environment"
+                ),
+                "evaluator": lambda value: value.update(
+                    evaluator_version=digest("stale_evaluator")
+                ),
+                "inactive": lambda value: value.update(
+                    active_for_retrieval=False
+                ),
+                "provenance": lambda value: value.update(
+                    provenance_sha256=digest("drifted_provenance")
+                ),
+                "retired": lambda value: value.update(retired=True),
+                "external": lambda value: value.update(applicability=[
+                    self.evaluation_profile()[
+                        "external_suite_identity_sha256"
+                    ]
+                ]),
+            }
+            for name, mutate in mutation_cases.items():
+                with self.subTest(case=name):
+                    receipt = json.loads(json.dumps(original_receipt))
+                    mutate(receipt)
+                    receipt_path.chmod(0o600)
+                    self.write(receipt_path, receipt)
+                    ledger_path.write_text(json.dumps(
+                        receipt, sort_keys=True,
+                    ) + "\n")
+                    reject_without_projection(canonical)
+                    restore()
+
+            original_maturity = json.loads(maturity_path.read_text())
+            for length, maturity_name in ((1, "idea"), (2, "screened")):
+                maturity = json.loads(json.dumps(original_maturity))
+                maturity["transitions"] = maturity["transitions"][:length]
+                maturity["current_maturity"] = maturity_name
+                self.write(maturity_path, maturity)
+                reject_without_projection(canonical)
+                restore()
+
+            duplicate = root / "stages" / "duplicate" / "evidence-receipt.json"
+            self.write(duplicate, original_receipt)
+            self.assertIn("duplicated", reject_without_projection(canonical))
+            duplicate.unlink()
+            duplicate.parent.rmdir()
 
     def test_forged_worker_identity_and_role_visible_source_drift_fail(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1931,7 +2174,6 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 sys.executable, str(RUNTIME), "compile-next-stage",
                 "--plan-dir", str(recovery), "--stage-envelope", str(path),
                 "--authorized-evidence", "evidence_stage_1",
-                "--authorized-evidence", "evidence_extra",
                 "--authorization-receipt", authorization,
             ]
             env = dict(os.environ)
@@ -1953,9 +2195,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 for item in recovery_root.rglob("*") if item.is_file()
             }
             drifted_evidence = (
-                ["evidence_stage_1", "evidence_extra", "evidence_added"],
-                ["evidence_stage_1"],
-                ["evidence_extra", "evidence_stage_1"],
+                ["evidence_stage_1", "evidence_added"],
+                [],
             )
             for evidence_values in drifted_evidence:
                 drifted_command = [
@@ -1973,7 +2214,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertNotEqual(rejected.returncode, 0)
-                self.assertIn("identity conflict", rejected.stderr)
+                self.assertIn("compile evidence", rejected.stderr)
                 self.assertEqual(
                     {
                         str(item.relative_to(recovery_root)): item.read_bytes()
@@ -1981,6 +2222,37 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     },
                     frozen_projection,
                 )
+            audit_path = recovery_root / "audit.jsonl"
+            original_audit = audit_path.read_bytes()
+            audit_records = [
+                json.loads(line) for line in audit_path.read_text().splitlines()
+                if line.strip()
+            ]
+            next(
+                item for item in audit_records
+                if item["event"] == "logical_gate_decision_applied"
+            )["binding_drift"] = True
+            audit_path.write_text("".join(
+                json.dumps(item, sort_keys=True) + "\n"
+                for item in audit_records
+            ))
+            drifted_projection = {
+                str(item.relative_to(recovery_root)): item.read_bytes()
+                for item in recovery_root.rglob("*") if item.is_file()
+            }
+            rejected = subprocess.run(
+                command, cwd=ROOT, text=True, capture_output=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("identity conflict", rejected.stderr)
+            self.assertEqual(
+                {
+                    str(item.relative_to(recovery_root)): item.read_bytes()
+                    for item in recovery_root.rglob("*") if item.is_file()
+                },
+                drifted_projection,
+            )
+            audit_path.write_bytes(original_audit)
             recovered = subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True,
             )
