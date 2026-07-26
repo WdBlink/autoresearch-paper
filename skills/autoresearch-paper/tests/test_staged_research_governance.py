@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -29,6 +30,60 @@ def digest(value: object) -> str:
 
 class StagedResearchGovernanceTests(unittest.TestCase):
     maxDiff = None
+
+    def test_immutable_atomic_publication_freezes_before_replace(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "atomic_publication_runtime", RUNTIME,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            json_path = root / "authority.json"
+            bytes_path = root / "authority.bin"
+            json_value = {"schema_version": 1, "authority": "terminal"}
+            bytes_value = b"terminal-authority\x00bytes"
+            real_replace = runtime.os.replace
+            real_chmod = Path.chmod
+            observations: list[tuple[int, int]] = []
+            published: set[Path] = set()
+            post_publication_chmod: list[Path] = []
+
+            def observed_replace(source: object, destination: object) -> None:
+                source_path = Path(source)
+                destination_path = Path(destination)
+                source_mode = source_path.stat().st_mode & 0o777
+                real_replace(source, destination)
+                destination_mode = destination_path.stat().st_mode & 0o777
+                observations.append((source_mode, destination_mode))
+                published.add(destination_path)
+
+            def observed_chmod(path: Path, mode: int, *args: object, **kwargs: object) -> None:
+                if path in published:
+                    post_publication_chmod.append(path)
+                real_chmod(path, mode, *args, **kwargs)
+
+            runtime.os.replace = observed_replace
+            Path.chmod = observed_chmod
+            try:
+                runtime.atomic_write_json(json_path, json_value, immutable=True)
+                runtime.atomic_write_bytes(bytes_path, bytes_value, immutable=True)
+            finally:
+                runtime.os.replace = real_replace
+                Path.chmod = real_chmod
+            self.assertEqual(observations, [(0o444, 0o444), (0o444, 0o444)])
+            self.assertEqual(post_publication_chmod, [])
+            expected_json = (
+                json.dumps(json_value, indent=2, sort_keys=True) + "\n"
+            ).encode()
+            self.assertEqual(json_path.read_bytes(), expected_json)
+            self.assertEqual(bytes_path.read_bytes(), bytes_value)
+            self.assertEqual(
+                hashlib.sha256(json_path.read_bytes()).hexdigest(),
+                runtime.atomic_json_sha256(json_value),
+            )
 
     def invoke(
         self, *args: str, ok: bool = True,

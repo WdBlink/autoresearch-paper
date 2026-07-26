@@ -236,10 +236,10 @@ def atomic_write_json(path: Path, value: dict[str, Any], *, immutable: bool = Fa
     with temporary.open("w") as handle:
         handle.write(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
         handle.flush()
+        if immutable:
+            os.fchmod(handle.fileno(), 0o444)
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    if immutable:
-        path.chmod(0o444)
     directory_fd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(directory_fd)
@@ -253,10 +253,10 @@ def atomic_write_bytes(path: Path, value: bytes, *, immutable: bool = False) -> 
     with temporary.open("wb") as handle:
         handle.write(value)
         handle.flush()
+        if immutable:
+            os.fchmod(handle.fileno(), 0o444)
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    if immutable:
-        path.chmod(0o444)
     directory_fd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(directory_fd)
