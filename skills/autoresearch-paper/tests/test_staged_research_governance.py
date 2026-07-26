@@ -359,6 +359,15 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         self.write(run_dir / "promotion-journal.json", {
             "schema_version": 1, "phase": "COMMITTED",
             "worker_run_id": run_id,
+            "contract_sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+            "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            "artifacts": [{
+                "artifact_id": "candidate", "path": str(candidate_path),
+                "sha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
+                "staged_path": str(run_dir / "promotion-stage" / "0000.stage"),
+            }],
+            "prepared_at": "2026-07-26T00:00:00Z",
+            "committed_at": "2026-07-26T00:00:01Z",
             "receipt_sha256": hashlib.sha256(promotion.read_bytes()).hexdigest(),
         })
         (run_dir / "promotion-journal.json").chmod(0o444)
@@ -533,6 +542,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         self, plan: Path, decision: str, *,
         crash_transport: bool = False,
         crash_decision: bool = False,
+        fault_decision: str | None = None,
         tamper_maturity: str | None = None,
     ) -> dict:
         value = {"accept": 0.8, "reject": 0.2, "escalate": 0.5}[decision]
@@ -608,6 +618,11 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.invoke(
                 *decision_args, "--simulate-crash-after-prepare", ok=False,
             )
+        if fault_decision is not None:
+            env = dict(os.environ)
+            env["HARNESS_FAULT_AFTER_STAGED_ARTIFACT"] = fault_decision
+            crashed = self.invoke(*decision_args, ok=False, env=env)
+            self.assertEqual(crashed.returncode, 88, crashed.stderr)
         if tamper_maturity is not None:
             proc = self.invoke(*decision_args, ok=False)
             return {"error": proc.stderr}
@@ -629,6 +644,16 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             path.stat().st_mode & 0o777 == 0o444
             for path in terminal_authority
         ))
+        projection = {
+            str(path): (path.read_bytes(), path.stat().st_mode & 0o777)
+            for path in plan.rglob("*") if path.is_file()
+        }
+        self.invoke(*transport_args)
+        self.invoke(*decision_args)
+        self.assertEqual(projection, {
+            str(path): (path.read_bytes(), path.stat().st_mode & 0o777)
+            for path in plan.rglob("*") if path.is_file()
+        })
         return json.loads(proc.stdout)
 
     def create_cp01_request(self, plan: Path, request_id: str) -> None:
@@ -1274,6 +1299,20 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 ["evidence_stage_1"],
             )
 
+            for fault in (
+                "gate_evidence_receipt", "gate_evidence_ledger",
+                "gate_decision_state", "gate_decision_audit",
+            ):
+                with self.subTest(fault=fault):
+                    fault_plan = Path(td) / fault
+                    self.initialize(fault_plan)
+                    self.preflight(fault_plan)
+                    self.authorize_fixture(fault_plan)
+                    recovered = self.run_terminal_cycle(
+                        fault_plan, "accept", fault_decision=fault,
+                    )
+                    self.assertEqual(recovered["decision"], "accept")
+
             tampered = Path(td) / "maturity"
             self.initialize(tampered)
             self.preflight(tampered)
@@ -1554,7 +1593,9 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     self.write(path, body)
                     path.chmod(0o444 if path in {
                         execution_path, candidate_path, promotion_path,
-                        decision_path, maturity_path,
+                        decision_path, maturity_path, run_dir / "status.json",
+                        run_dir / "promotion-journal.json", query_path,
+                        attempt_path, decision_journal_path,
                     } else 0o600)
 
                 def alter_transition(index: int, key: str, value: object) -> None:
@@ -1652,12 +1693,19 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     ("worker_status", lambda: alter_json(
                         run_dir / "status.json", "worker_model", "forged",
                     )),
+                    ("worker_status_anchored", lambda: alter_json(
+                        run_dir / "status.json", "task_id", "candidate-forged",
+                    )),
                     ("promotion_receipt", lambda: alter_json(
                         promotion_path, "plan_id", "plan_forged",
                     )),
                     ("promotion_mode", lambda: promotion_path.chmod(0o600)),
                     ("promotion_journal", lambda: alter_json(
                         run_dir / "promotion-journal.json", "phase", "PREPARED",
+                    )),
+                    ("promotion_journal_time", lambda: alter_json(
+                        run_dir / "promotion-journal.json", "committed_at",
+                        "2026-07-26T01:00:00Z",
                     )),
                     ("gate_query", lambda: alter_json(
                         query_path, "idempotency_key", digest("drifted-query"),
@@ -1666,9 +1714,18 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     ("attempt_journal", lambda: alter_json(
                         attempt_path, "phase", "PREPARED",
                     )),
+                    ("attempt_journal_extra", lambda: alter_json(
+                        attempt_path, "extra", "drifted",
+                    )),
                     ("missing_attempt_journal", attempt_path.unlink),
                     ("decision", lambda: alter_json(
                         decision_path, "decided_at", "drifted",
+                    )),
+                    ("decision_journal_extra", lambda: alter_json(
+                        decision_journal_path, "extra", "drifted",
+                    )),
+                    ("decision_journal_correlation", lambda: alter_json(
+                        decision_journal_path, "logical_gate_query_id", "gate_forged",
                     )),
                     ("decision_mode", lambda: decision_path.chmod(0o600)),
                     ("maturity_authority", lambda: alter_transition(
@@ -1701,6 +1758,41 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     path.stat().st_mode & 0o777 == 0o444
                     for path in terminal_authorities.values()
                 ))
+                transport_retry = [
+                    "record-gate-transport-attempt", "--plan-dir", str(plan),
+                    "--logical-gate-query-id", query["logical_gate_query_id"],
+                    "--transport-attempt-id",
+                    query["transport_attempts"][0]["transport_attempt_id"],
+                    "--execution-receipt", str(execution_path),
+                ]
+                decision_retry = [
+                    "apply-logical-gate-decision", "--plan-dir", str(plan),
+                    "--logical-gate-query-id", query["logical_gate_query_id"],
+                    "--execution-receipt", str(execution_path),
+                ]
+                for authority, producer in (
+                    (query_path, decision_retry),
+                    (attempt_path, transport_retry),
+                    (decision_journal_path, decision_retry),
+                ):
+                    for mode in (0o644, 0o600, 0o666):
+                        restore()
+                        authority.chmod(mode)
+                        snapshot = projection()
+                        self.invoke(*producer, ok=False)
+                        self.assertEqual(snapshot, projection())
+                for mutate, producer in (
+                    (lambda: alter_json(query_path, "extra", "drifted"), decision_retry),
+                    (lambda: alter_json(attempt_path, "extra", "drifted"), transport_retry),
+                    (lambda: alter_json(
+                        decision_journal_path, "logical_gate_query_id", "gate_forged",
+                    ), decision_retry),
+                ):
+                    restore()
+                    mutate()
+                    snapshot = projection()
+                    self.invoke(*producer, ok=False)
+                    self.assertEqual(snapshot, projection())
                 cases += [
                     (f"{name}_mode_{mode:o}",
                      lambda path=path, mode=mode: path.chmod(mode))
@@ -1735,6 +1827,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             status["worker_model"] = "gpt-5.6-sol"
             status_path.chmod(0o600)
             self.write(status_path, status)
+            status_path.chmod(0o444)
             proc = self.invoke(
                 "freeze-stage-candidate", "--plan-dir", str(plan),
                 "--candidate", str(candidate),
