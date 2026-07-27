@@ -16,7 +16,7 @@ REQUIRED_FIELDS = {
     "schema_version", "stage_report_id", "stage_cycle_id",
     "worker_identity", "candidate_sha256", "evidence_refs",
     "development_validator_receipts", "uncertainties",
-    "proposed_next_questions",
+    "proposed_next_questions", "scientific_summary", "findings",
 }
 OPTIONAL_FIELDS = {"role_visible_state_sha256"}
 
@@ -37,9 +37,58 @@ def _bounded_strings(value: Any, field: str, *, allow_empty: bool = False) -> No
         raise StageReportValidationError(f"{field} contains an invalid entry")
 
 
+def _validate_receipt_bindings(
+    value: Any, expected: list[dict[str, str]],
+) -> None:
+    if not isinstance(value, list) or not value or len(value) > 8:
+        raise StageReportValidationError(
+            "development_validator_receipts must be a bounded list"
+        )
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"kind", "path", "sha256"}
+            or item.get("kind") not in {
+                "observation_validation", "acceptance_evaluator_execution",
+            }
+            or not isinstance(item.get("path"), str)
+            or not item["path"]
+            or not SHA256_RE.fullmatch(str(item.get("sha256", "")))
+        ):
+            raise StageReportValidationError(
+                "development_validator_receipts contains an invalid binding"
+            )
+    if value != expected:
+        raise StageReportValidationError(
+            "development_validator_receipts must exactly match canonical terminal validation"
+        )
+
+
+def _validate_scientific_content(report: dict[str, Any], candidate_sha256: str) -> None:
+    summary = report.get("scientific_summary")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 8000:
+        raise StageReportValidationError("scientific_summary is invalid")
+    findings = report.get("findings")
+    if not isinstance(findings, list) or not findings or len(findings) > 64:
+        raise StageReportValidationError("findings must be a bounded list")
+    for item in findings:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"claim", "evidence_sha256"}
+            or not isinstance(item.get("claim"), str)
+            or not item["claim"].strip()
+            or len(item["claim"]) > 4000
+            or item.get("evidence_sha256") != candidate_sha256
+        ):
+            raise StageReportValidationError(
+                "findings must bind each claim to the canonical candidate"
+            )
+
+
 def validate_stage_report(
     report: dict[str, Any], *, stage_cycle_id: str, worker_model: str,
     candidate_sha256: str, authorized_evidence_refs: list[str],
+    expected_validator_receipts: list[dict[str, str]],
 ) -> None:
     """Validate one Worker report against Controller-known stage identity."""
     if not isinstance(report, dict):
@@ -72,10 +121,11 @@ def validate_stage_report(
         raise StageReportValidationError(
             "evidence_refs must exactly match the frozen stage envelope"
         )
-    _bounded_strings(
+    _validate_receipt_bindings(
         report.get("development_validator_receipts"),
-        "development_validator_receipts",
+        expected_validator_receipts,
     )
+    _validate_scientific_content(report, candidate_sha256)
     _bounded_strings(report.get("uncertainties"), "uncertainties", allow_empty=True)
     _bounded_strings(
         report.get("proposed_next_questions"), "proposed_next_questions",
@@ -98,7 +148,16 @@ def run_conformance_suite() -> dict[str, Any]:
         },
         "candidate_sha256": "a" * 64,
         "evidence_refs": ["evidence_stage_1"],
-        "development_validator_receipts": ["validator_receipt_1"],
+        "development_validator_receipts": [{
+            "kind": "observation_validation",
+            "path": "/plan/stage/observation-validation.json",
+            "sha256": "b" * 64,
+        }],
+        "scientific_summary": "The bounded observation stage produced a source inventory.",
+        "findings": [{
+            "claim": "The candidate records one source-grounded observation.",
+            "evidence_sha256": "a" * 64,
+        }],
         "uncertainties": ["Transfer is not yet measured."],
         "proposed_next_questions": ["Run the next bounded stage."],
     }
@@ -111,6 +170,14 @@ def run_conformance_suite() -> dict[str, Any]:
         }}, False),
         ("wrong_evidence", {**valid, "evidence_refs": ["other"]}, False),
         ("empty_receipts", {**valid, "development_validator_receipts": []}, False),
+        ("wrong_receipt_binding", {**valid, "development_validator_receipts": [{
+            "kind": "observation_validation",
+            "path": "/plan/stage/other-validation.json",
+            "sha256": "d" * 64,
+        }]}, False),
+        ("unbound_finding", {**valid, "findings": [{
+            "claim": "unbound", "evidence_sha256": "c" * 64,
+        }]}, False),
     ]
     results = []
     for case_id, payload, expected in cases:
@@ -120,6 +187,11 @@ def run_conformance_suite() -> dict[str, Any]:
                 payload, stage_cycle_id="stage_1", worker_model="MiniMax-M3",
                 candidate_sha256="a" * 64,
                 authorized_evidence_refs=["evidence_stage_1"],
+                expected_validator_receipts=[{
+                    "kind": "observation_validation",
+                    "path": "/plan/stage/observation-validation.json",
+                    "sha256": "b" * 64,
+                }],
             )
         except StageReportValidationError:
             accepted = False

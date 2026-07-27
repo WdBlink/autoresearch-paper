@@ -410,8 +410,12 @@ Per-version notes live in
 Quick highlights:
 
 - **v0.17.1** — explicitly inactive observation-only evaluation profiles and
-  a shipped, conformance-tested terminal-report validator close the two
-  execution-contract gaps found by real GPT-5.6 CP-01 field review.
+  a CP-01-frozen, conformance-tested terminal-report validator close the
+  execution-contract gaps found by real GPT-5.6 CP-01 field review. The
+  six-role terminal review sees candidate, decision, and validation evidence;
+  only an exact strongest-model `accept` may start the authorized next Worker.
+  Older three-role terminal-review packets fail closed and require a fresh
+  versioned stage/review path.
 - **v0.17.0** — sole-authority staged state with rebuildable projections,
   capacity v2 class isolation, and one idempotent, explicitly pre-authorized
   stage crossing through the start of one next-stage Worker. The isolated

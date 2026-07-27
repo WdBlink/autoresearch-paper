@@ -618,9 +618,12 @@ evaluator, and a Worker-authored development receipt cannot replace the
 Controller-owned observation-validation receipt.
 
 The terminal report must be a promoted MiniMax artifact. Runtime first applies
-the shipped `stage_report_validator.py`, whose conformance suite covers the
-closed shape, stage/candidate identity, Worker identity, evidence-list types,
-and development-receipt presence. Its source form omits
+the CP-01-frozen `stage_report_validator.py`, whose implementation must be
+byte-identical to Runtime and whose frozen eight-case conformance receipt must
+match Runtime execution. It covers the closed shape, stage/candidate identity,
+Worker identity, evidence-list types, bounded scientific summary/findings,
+claim-to-candidate hashes, and exact canonical terminal-validation receipt
+bindings. Its source form omits
 `role_visible_state_sha256` because that record exists only after the Worker
 call completes. The Controller then runs `record-role-visible-state` and
 `record-stage-report`; the latter injects exactly that provenance hash into the
@@ -706,8 +709,12 @@ There are two intentionally separate persistence paths. A frontier request
 created from a durable context capsule may use
 `commit-durable-frontier-result` after its registered controller transition.
 A terminal `STAGE-REVIEW` is not a durable work-unit commit: it must bind the
-canonical active contract, envelope, and immutable terminal stage report, then
-persist through `record-strong-stage-review`. Creating `STAGE-REVIEW` while a
+canonical active contract, envelope, immutable terminal stage report,
+candidate, Controller decision, and terminal validation receipt, then persist
+through `record-strong-stage-review`. Only a strongest-policy `accept` is
+continuation authority; `revise` and `block` veto compilation and dispatch.
+Pre-v0.17.1 three-role review packets fail closed and need a fresh versioned
+stage plus fresh review/capacity path. Creating `STAGE-REVIEW` while a
 stage is still `CONTRACTED` fails before reservation and directs the operator
 to CP-01 `approve_execution`. No command synthesizes or attaches a context
 capsule after request creation.

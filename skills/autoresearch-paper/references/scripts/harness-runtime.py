@@ -43,6 +43,7 @@ from source_inventory_validator import (
 )
 from stage_report_validator import (
     StageReportValidationError,
+    run_conformance_suite as run_stage_report_conformance_suite,
     validate_stage_report,
 )
 
@@ -135,6 +136,7 @@ CHECKPOINT_EVIDENCE_PROFILES = {
     },
     ("STAGE-REVIEW", None): {
         "optimization_contract", "stage_envelope", "stage_report",
+        "stage_candidate", "stage_decision", "terminal_validation_receipt",
     },
 }
 STAGED_CP01_EVIDENCE_PROFILE = {
@@ -145,12 +147,14 @@ STAGED_CP01_REVIEW_MATERIAL_PURPOSES = {
     "execution_plan", "acceptance_evaluator", "risk_and_stop_rules",
     "figure_strategy",
 }
+STAGED_REPORT_VALIDATOR_MATERIAL_PURPOSES = {
+    "stage_report_validator_implementation",
+    "stage_report_validator_conformance",
+}
 STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
     "evaluator_implementation", "evaluator_conformance",
     "acceptance_profile", "source_manifest", "citation_universe",
     "evaluation_profile", "evaluator_loader_parameters",
-    "stage_report_validator_implementation",
-    "stage_report_validator_conformance",
 }
 STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {
@@ -7294,6 +7298,9 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
         stage_dir = staged_stage_dir(
             plan_dir, staged_review_state["active_stage_id"],
         )
+        terminal_paths = staged_terminal_review_evidence_paths(
+            plan_dir, staged_review_state["active_stage_id"],
+        )
         expected_paths = {
             "optimization_contract": (
                 staged_root(plan_dir) / "contracts"
@@ -7301,6 +7308,7 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "stage_envelope": stage_dir / "envelope.json",
             "stage_report": stage_dir / "stage-report.json",
+            **terminal_paths,
         }
         for item in manifest:
             expected_path = expected_paths[item["purpose"]].resolve()
@@ -9445,11 +9453,16 @@ def staged_load_state(plan_dir: Path) -> dict[str, Any]:
         )
     contract = read_json(contract_path)
     envelope = read_json(envelope_path)
+    evaluation = read_json(evaluation_path)
     staged_validate_envelope(
         envelope, state["contract_version"],
         envelope.get("incumbent_sha256"),
         first=envelope.get("source_cycle_id") is None,
         plan_dir=plan_dir, require_manifest=False,
+    )
+    staged_validate_evaluation_profile(evaluation)
+    staged_validate_profile_envelope_compatibility(
+        evaluation, envelope, strict=False,
     )
     authorization_checks = {
         "contract_version": state["contract_version"],
@@ -9535,6 +9548,10 @@ def validate_staged_continuation_receipt(
         }.items()
     ):
         raise ContractError("derived continuation stage binding changed")
+    staged_validate_accepted_strong_review(
+        plan_dir, receipt["source_stage_id"],
+        read_json(next_envelope)["contract_version"],
+    )
     return receipt
 
 
@@ -9571,13 +9588,13 @@ def staged_derive_continuation_receipt(
     report_path = source_dir / "stage-report.json"
     review_path = source_dir / "strong-review.json"
     decision = read_json(decision_path)
-    review = read_json(review_path)
+    staged_validate_accepted_strong_review(
+        plan_dir, source_stage_id, state["contract_version"],
+    )
     if (
         decision.get("decision") not in STAGED_TERMINAL_DECISIONS
-        or review.get("stage_cycle_id") != source_stage_id
-        or review.get("stage_report_sha256") != sha256_file(report_path)
     ):
-        raise ContractError("bounded continuation requires terminal decision, report, and review")
+        raise ContractError("bounded continuation requires a terminal decision")
     stable = {
         "schema_version": 1,
         "continuation_id": continuation_id,
@@ -9686,6 +9703,9 @@ def validate_staged_continuation_receipt_source(
         or details.get("contract_version") != envelope.get("contract_version")
     ):
         raise ContractError("derived continuation source binding mismatch")
+    staged_validate_accepted_strong_review(
+        plan_dir, receipt["source_stage_id"], envelope["contract_version"],
+    )
     return receipt
 
 
@@ -9940,6 +9960,37 @@ def staged_validate_evaluation_profile(profile: dict[str, Any]) -> None:
     )
     if margin < 0:
         raise ContractError("gate_escalation_margin must be non-negative")
+
+
+def staged_validate_profile_envelope_compatibility(
+    profile: dict[str, Any], envelope: dict[str, Any], *, strict: bool = True,
+) -> None:
+    """Bind Gate authority to the exact semantics of one executable stage.
+
+    An inactive evaluation profile is valid only for a research stage that has
+    no logical Gate calls.  Every other executable stage needs the active Gate
+    fields.  This check is deliberately bidirectional so neither an inactive
+    profile can leak into evaluative work nor an active profile can make an
+    observation-only stage appear Gate-authorized.
+    """
+    budget = envelope.get("stage_budget_and_stop")
+    observation_only = (
+        envelope.get("stage_kind") == "research"
+        and isinstance(budget, dict)
+        and budget.get("evaluation_calls") == 0
+    )
+    inactive = profile.get("applicable") is False
+    if inactive and not observation_only:
+        raise ContractError(
+            "evaluation profile/stage envelope incompatibility: "
+            "active evaluation profile required"
+        )
+    if strict and observation_only and not inactive:
+        expected = "inactive" if observation_only else "active"
+        raise ContractError(
+            "evaluation profile/stage envelope incompatibility: "
+            f"{expected} evaluation profile required"
+        )
 
 
 def staged_validate_capacity(capacity: dict[str, Any]) -> None:
@@ -10281,6 +10332,7 @@ def staged_validate_envelope(
     allowed_material_purposes = (
         set(required_material_hashes)
         | STAGED_CP01_REVIEW_MATERIAL_PURPOSES
+        | STAGED_REPORT_VALIDATOR_MATERIAL_PURPOSES
         | STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES
     )
     if require_manifest and not materials:
@@ -10349,6 +10401,8 @@ def staged_validate_envelope(
     if len(material_purposes) != len(set(material_purposes)):
         raise ContractError("review material purposes must be unique")
     required_purposes = set(required_material_hashes)
+    if require_manifest:
+        required_purposes |= STAGED_REPORT_VALIDATOR_MATERIAL_PURPOSES
     if first and require_manifest:
         required_purposes |= STAGED_CP01_REVIEW_MATERIAL_PURPOSES
     if materials and (
@@ -10414,6 +10468,9 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         envelope, contract["contract_version"], args.incumbent_sha256,
         first=True, plan_dir=plan_dir,
         require_manifest=not state_path.exists(),
+    )
+    staged_validate_profile_envelope_compatibility(
+        evaluation, envelope, strict=not state_path.exists(),
     )
     if state_path.exists():
         repaired_legacy_copy = staged_repair_legacy_canonical_copies(
@@ -10598,6 +10655,7 @@ def command_revise_unstarted_stage(args: argparse.Namespace) -> dict[str, Any]:
             plan_dir=plan_dir,
             require_manifest=True,
         )
+        staged_validate_profile_envelope_compatibility(evaluation, envelope)
         authorization = validate_applied_action_receipt(
             plan_dir, authorization_path, "authorize_contract",
         )
@@ -11848,10 +11906,94 @@ def command_complete_observation_stage(args: argparse.Namespace) -> dict[str, An
     }
 
 
+def staged_terminal_review_evidence_paths(
+    plan_dir: Path, stage_id: str,
+) -> dict[str, Path]:
+    """Resolve and validate the canonical evidence a terminal reviewer must see."""
+    stage_dir = staged_stage_dir(plan_dir, stage_id)
+    candidate_path = stage_dir / "candidate.json"
+    decision_path = stage_dir / "decision.json"
+    staged_canonical_file(
+        candidate_path, candidate_path, "stage candidate", immutable=True,
+    )
+    staged_canonical_file(
+        decision_path, decision_path, "stage decision", immutable=True,
+    )
+    decision = read_json(decision_path)
+    if (
+        decision.get("stage_cycle_id") != stage_id
+        or decision.get("controller_authoritative") is not True
+    ):
+        raise ContractError("terminal stage decision is not Controller-authoritative")
+    if decision.get("decision_kind") == "observation_validation":
+        terminal_path = stage_dir / "observation-validation.json"
+        staged_canonical_file(
+            terminal_path, terminal_path,
+            "observation validation receipt", immutable=True,
+        )
+        receipt = read_json(terminal_path)
+        if (
+            decision.get("development_validator_receipt_path")
+            != str(terminal_path)
+            or decision.get("development_validator_receipt_sha256")
+            != sha256_file(terminal_path)
+            or receipt.get("stage_cycle_id") != stage_id
+            or receipt.get("candidate_sha256") != decision.get("candidate_sha256")
+            or receipt.get("result") != "pass"
+            or receipt.get("controller_authoritative") is not True
+        ):
+            raise ContractError("canonical observation validation binding changed")
+    else:
+        terminal_path = Path(
+            decision.get("evaluator_execution_receipt_path", "")
+        )
+        run = load_evaluator_run(plan_dir, terminal_path)
+        if (
+            decision.get("evaluator_execution_receipt_sha256")
+            != sha256_file(terminal_path)
+            or run.get("candidate_sha256") != decision.get("candidate_sha256")
+        ):
+            raise ContractError("canonical Gate execution binding changed")
+    return {
+        "stage_candidate": candidate_path,
+        "stage_decision": decision_path,
+        "terminal_validation_receipt": terminal_path,
+    }
+
+
+def staged_expected_report_validator_receipts(
+    plan_dir: Path, stage_id: str,
+) -> list[dict[str, str]]:
+    paths = staged_terminal_review_evidence_paths(plan_dir, stage_id)
+    decision = read_json(paths["stage_decision"])
+    return [{
+        "kind": (
+            "observation_validation"
+            if decision.get("decision_kind") == "observation_validation"
+            else "acceptance_evaluator_execution"
+        ),
+        "path": str(paths["terminal_validation_receipt"]),
+        "sha256": sha256_file(paths["terminal_validation_receipt"]),
+    }]
+
+
 def command_create_logical_gate_query(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
     stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    envelope = read_json(stage_dir / "envelope.json")
+    profile = read_json(staged_root(plan_dir) / "evaluation-profile.json")
+    staged_validate_profile_envelope_compatibility(
+        profile, envelope, strict=False,
+    )
+    if (
+        profile.get("applicable") is False
+        or envelope.get("stage_kind") == "research"
+        and envelope.get("stage_budget_and_stop", {}).get("evaluation_calls") == 0
+    ):
+        raise ContractError(
+            "inactive evaluation profile forbids a logical Gate query"
+        )
     candidate = read_json(stage_dir / "candidate.json")
     if args.candidate_sha256 != candidate["candidate_sha256"]:
         raise ContractError("logical Gate query candidate mismatch")
@@ -12484,6 +12626,53 @@ def staged_validate_gate_anchor_files(
             raise ContractError(f"{prefix} anchor hash changed")
 
 
+def staged_validate_frozen_report_validator(
+    plan_dir: Path, envelope: dict[str, Any],
+) -> None:
+    """Require the CP-01-frozen report validator used for terminal authority."""
+    materials = {
+        item.get("purpose"): item
+        for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") in {
+            "stage_report_validator_implementation",
+            "stage_report_validator_conformance",
+        }
+    }
+    if set(materials) != {
+        "stage_report_validator_implementation",
+        "stage_report_validator_conformance",
+    }:
+        raise ContractError(
+            "stage report requires a CP-01-frozen validator and conformance receipt"
+        )
+    implementation_path = normalize_owned_path(
+        plan_dir, str(plan_dir / materials[
+            "stage_report_validator_implementation"
+        ]["path"]),
+    )
+    conformance_path = normalize_owned_path(
+        plan_dir, str(plan_dir / materials[
+            "stage_report_validator_conformance"
+        ]["path"]),
+    )
+    shipped_path = SCRIPT_DIR / "stage_report_validator.py"
+    if (
+        implementation_path.is_symlink()
+        or conformance_path.is_symlink()
+        or implementation_path.stat().st_mode & 0o777 != 0o444
+        or conformance_path.stat().st_mode & 0o777 != 0o444
+        or sha256_file(implementation_path)
+        != materials["stage_report_validator_implementation"]["sha256"]
+        or sha256_file(conformance_path)
+        != materials["stage_report_validator_conformance"]["sha256"]
+        or sha256_file(implementation_path) != sha256_file(shipped_path)
+        or read_json(conformance_path) != run_stage_report_conformance_suite()
+    ):
+        raise ContractError(
+            "frozen stage report validator differs from Runtime authority"
+        )
+
+
 def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
@@ -12512,6 +12701,7 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("stage report lacks a canonical COMMITTED MiniMax promotion")
     stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
     envelope = read_json(stage_dir / "envelope.json")
+    staged_validate_frozen_report_validator(plan_dir, envelope)
     candidate = read_json(stage_dir / "candidate.json")
     try:
         validate_stage_report(
@@ -12520,6 +12710,11 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
             worker_model=status["worker_model"],
             candidate_sha256=candidate["candidate_sha256"],
             authorized_evidence_refs=envelope["authorized_evidence_refs"],
+            expected_validator_receipts=(
+                staged_expected_report_validator_receipts(
+                    plan_dir, state["active_stage_id"],
+                )
+            ),
         )
     except StageReportValidationError as exc:
         raise ContractError(f"stage report validator rejected source: {exc}") from exc
@@ -12597,6 +12792,9 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         ),
         "stage_envelope": stage_dir / "envelope.json",
         "stage_report": report_path,
+        **staged_terminal_review_evidence_paths(
+            plan_dir, state["active_stage_id"],
+        ),
     }
     by_role = {item["purpose"]: item for item in request["context_manifest"]}
     if set(by_role) != set(required_paths) or any(
@@ -12683,6 +12881,99 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         },
     )
     return {"ok": True, "path": str(target), "sha256": sha256_file(target)}
+
+
+def staged_validate_accepted_strong_review(
+    plan_dir: Path, stage_id: str, contract_version: str,
+) -> dict[str, Any]:
+    """Validate the strongest-model review as a hard continuation veto."""
+    stage_dir = staged_stage_dir(plan_dir, stage_id)
+    report_path = stage_dir / "stage-report.json"
+    envelope_path = stage_dir / "envelope.json"
+    review_path = stage_dir / "strong-review.json"
+    staged_canonical_file(
+        review_path, review_path, "strong stage review", immutable=True,
+    )
+    review = read_json(review_path)
+    required_fields = {
+        "schema_version", "review_receipt_id", "review_kind",
+        "contract_version", "stage_cycle_id", "stage_report_sha256",
+        "stage_envelope_sha256", "reviewer", "role_visible_state_sha256",
+        "recommendation", "findings_sha256", "frontier_request_id",
+        "frontier_request_sha256", "frontier_response_sha256",
+        "frontier_transition_sha256",
+    }
+    policy = load_policy(plan_dir)
+    policy_sha = sha256_file(policy_path(plan_dir))
+    expected_model = policy["top_level_plan_audit"]["reviewer_model"]
+    expected_effort = policy["top_level_plan_audit"]["reasoning_effort"]
+    expected_reviewer = {
+        "agent": "codex-frontier", "model": expected_model,
+        "reasoning_effort": expected_effort, "policy_sha256": policy_sha,
+    }
+    if (
+        set(review) != required_fields
+        or review.get("schema_version") != 1
+        or review.get("review_kind") != "terminal_stage_report"
+        or review.get("contract_version") != contract_version
+        or review.get("stage_cycle_id") != stage_id
+        or review.get("stage_report_sha256") != sha256_file(report_path)
+        or review.get("stage_envelope_sha256") != sha256_file(envelope_path)
+        or review.get("reviewer") != expected_reviewer
+        or review.get("recommendation") != "accept"
+    ):
+        raise ContractError(
+            "automatic continuation requires an accepted canonical strongest review"
+        )
+    request_id = review["frontier_request_id"]
+    request_path_value, request = load_request(plan_dir, request_id)
+    response_path = request_dir(plan_dir, request_id) / "response.json"
+    status = read_json(status_path(plan_dir, request_id))
+    response, _, _ = validate_frontier_response_integrity(
+        plan_dir, request_id, status, response_path,
+    )
+    transition_path = transition_receipt_path(
+        plan_dir, "record_stage_review", request_id,
+    )
+    visible_path = staged_root(plan_dir) / "role-visible" / f"{request_id}.json"
+    expected_paths = {
+        "optimization_contract": (
+            staged_root(plan_dir) / "contracts" / f"{contract_version}.json"
+        ),
+        "stage_envelope": envelope_path,
+        "stage_report": report_path,
+        **staged_terminal_review_evidence_paths(plan_dir, stage_id),
+    }
+    by_role = {item["purpose"]: item for item in request["context_manifest"]}
+    reviewer_profile = status.get("reviewer_profile")
+    if (
+        request.get("checkpoint") != "STAGE-REVIEW"
+        or request.get("decision_required") != "record_stage_review"
+        or set(by_role) != set(expected_paths)
+        or any(
+            Path(by_role[role]["path"]).resolve() != path.resolve()
+            or by_role[role]["sha256"] != sha256_file(path)
+            for role, path in expected_paths.items()
+        )
+        or status.get("state") != "APPLIED"
+        or reviewer_profile != {
+            "kind": "terminal_stage_report_review",
+            "model": expected_model,
+            "reasoning_effort": expected_effort,
+        }
+        or status.get("model_policy_sha256") != policy_sha
+        or response.get("model_id") != expected_model
+        or response.get("recommendation") != "accept"
+        or review.get("findings_sha256") != sha256_json(response["findings"])
+        or review.get("frontier_request_sha256") != sha256_file(request_path_value)
+        or review.get("frontier_response_sha256") != sha256_file(response_path)
+        or not transition_path.is_file()
+        or review.get("frontier_transition_sha256") != sha256_file(transition_path)
+        or not visible_path.is_file()
+        or review.get("role_visible_state_sha256") != sha256_file(visible_path)
+    ):
+        raise ContractError("accepted strongest review authority binding changed")
+    return review
 
 
 def staged_canonical_file(
@@ -13390,11 +13681,18 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     source_decision = read_json(
         staged_stage_dir(plan_dir, source_cycle_id) / "decision.json"
     )
+    staged_validate_accepted_strong_review(
+        plan_dir, source_cycle_id, state["contract_version"],
+    )
     staged_validate_envelope(
         incoming_envelope,
         state["contract_version"],
         source_decision["resulting_incumbent_sha256"],
         first=False, plan_dir=plan_dir, require_manifest=True,
+    )
+    staged_validate_profile_envelope_compatibility(
+        read_json(staged_root(plan_dir) / "evaluation-profile.json"),
+        incoming_envelope,
     )
     authorization_path = Path(args.authorization_receipt).resolve()
     if authorization_path.parent == (
@@ -13680,6 +13978,9 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         report_path = source_dir / "stage-report.json"
         review_path = source_dir / "strong-review.json"
         review = read_json(review_path)
+        staged_validate_accepted_strong_review(
+            plan_dir, source_stage_id, state["contract_version"],
+        )
         if (
             decision.get("decision") not in STAGED_TERMINAL_DECISIONS
             or not report_path.is_file()
@@ -14463,6 +14764,7 @@ def command_amend_staged_contract(args: argparse.Namespace) -> dict[str, Any]:
             state["current_incumbent_sha256"], first=False,
             plan_dir=plan_dir, require_manifest=True,
         )
+        staged_validate_profile_envelope_compatibility(evaluation, envelope)
         authorization_path = Path(
             rebaseline["authorization_receipt_path"]
         ).resolve()

@@ -5,10 +5,21 @@
 - Add an explicitly inactive evaluation-profile shape for observation-only
   stages; Gate metric, threshold, operator, margin, and query-limit fields are
   forbidden when `applicable=false`.
-- Add the shipped `stage_report_validator.py` and its six-case conformance
-  suite. `record-stage-report` now validates closed report shape, canonical
-  stage/candidate identity, MiniMax Worker identity, bounded evidence lists,
-  and development-receipt presence before adding Controller provenance.
+- Add the shipped `stage_report_validator.py` and its eight-case conformance
+  suite. Its implementation and conformance receipt are mandatory immutable
+  CP-01 review materials. `record-stage-report` validates closed report shape,
+  canonical stage/candidate identity, MiniMax Worker identity, bounded
+  scientific summary/findings, exact claim-to-candidate bindings, and exact
+  canonical terminal-validation receipts before adding Controller provenance.
+- Expand STAGE-REVIEW to the canonical contract, envelope, report, candidate,
+  decision, and terminal validation receipt. Only an exact strongest-policy
+  `accept` permits bounded continuation; `revise` and `block` are hard vetoes.
+- Bind active/inactive evaluation profiles bidirectionally for new and revised
+  stages. Legacy active-profile observation plans remain readable, but new
+  inactive profiles can never authorize an evaluative stage.
+- Pre-v0.17.1 in-flight three-role STAGE-REVIEW packets and envelopes without
+  the frozen report validator fail closed; create a fresh versioned stage and
+  fresh review/capacity path rather than reusing them.
 - Clarify that `RECORDED` is a candidate-recording state, not whole-stage
   acceptance. Terminal report, strongest-policy `STAGE-REVIEW`, and bounded
   continuation authorization remain mandatory before Stage 2 starts.

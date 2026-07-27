@@ -17,7 +17,7 @@ class StageReportValidatorTests(unittest.TestCase):
     def test_conformance_suite_passes_all_cases(self) -> None:
         receipt = MODULE.run_conformance_suite()
         self.assertEqual(receipt["status"], "PASS")
-        self.assertEqual(receipt["case_count"], 6)
+        self.assertEqual(receipt["case_count"], 8)
         self.assertTrue(all(case["passed"] for case in receipt["cases"]))
 
     def test_inactive_profile_style_report_accepts_empty_context_lists(self) -> None:
@@ -30,7 +30,16 @@ class StageReportValidatorTests(unittest.TestCase):
             },
             "candidate_sha256": "a" * 64,
             "evidence_refs": [],
-            "development_validator_receipts": ["receipt_1"],
+            "development_validator_receipts": [{
+                "kind": "observation_validation",
+                "path": "/plan/stage/observation-validation.json",
+                "sha256": "b" * 64,
+            }],
+            "scientific_summary": "A bounded observation was completed.",
+            "findings": [{
+                "claim": "The candidate contains the validated observation.",
+                "evidence_sha256": "a" * 64,
+            }],
             "uncertainties": [],
             "proposed_next_questions": [],
         }
@@ -40,6 +49,11 @@ class StageReportValidatorTests(unittest.TestCase):
             worker_model="MiniMax-M3",
             candidate_sha256="a" * 64,
             authorized_evidence_refs=[],
+            expected_validator_receipts=[{
+                "kind": "observation_validation",
+                "path": "/plan/stage/observation-validation.json",
+                "sha256": "b" * 64,
+            }],
         )
 
     def test_runtime_accepts_explicit_inactive_observation_profile(self) -> None:

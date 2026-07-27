@@ -526,11 +526,13 @@ this file.
 
 - **v0.17.1 (2026-07-27)** — Observation-only stages now use an
   explicitly inactive evaluation profile instead of an active-looking Gate
-  placeholder. MiniMax terminal reports are validated by a shipped,
-  conformance-tested closed-schema validator before the Controller injects
-  the post-call role-visible hash. `RECORDED` means the candidate validation
-  is durably recorded; terminal report, strongest-policy `STAGE-REVIEW`, and
-  the bounded continuation check remain separate mandatory steps.
+  placeholder. MiniMax terminal reports are validated by a CP-01-frozen,
+  conformance-tested closed-schema validator that binds substantive findings
+  and exact Controller terminal receipts before the Controller injects the
+  post-call role-visible hash. STAGE-REVIEW sees the canonical candidate,
+  decision, and terminal validation receipt; only `accept` permits automatic
+  continuation. `RECORDED` means candidate validation only. Pre-v0.17.1
+  three-role review packets fail closed and require a fresh stage/review path.
 - **v0.17.0 (2026-07-27)** — Canonical staged state is the sole runtime
   authority; progress and dossier files are rebuildable non-authoritative
   projections. Capacity v2 isolates per-stage and global Worker limits,
