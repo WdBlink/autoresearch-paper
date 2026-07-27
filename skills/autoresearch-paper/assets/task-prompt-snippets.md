@@ -29,6 +29,10 @@ Plan bootstrap inputs belong under `control/staged-inputs/`; immutable review
 materials belong under `control/review-materials/`. Never create or write
 `state/staged_research/v1/` directly. Only `init-staged-research` may publish
 the initial canonical state.
+Never read the human-action key or calculate its HMAC. Authorization must flow
+through `create-human-action` → `apply-human-action`; only the returned applied
+receipt may enter `init-staged-research`. Every capacity-v2 envelope declares
+its own `stage_budget_and_stop.worker_dispatches` quota.
 
 State-authority rule for every snippet: if
 `{PLAN_DIR}/state/staged_research/v1/state.json` exists, it is the sole

@@ -160,7 +160,18 @@ python3 references/scripts/harness-runtime.py create-human-action \
   --contract-version CONTRACT_VERSION --contract-sha256 CONTRACT_SHA256 \
   --stage-id STAGE_1 --stage-envelope-sha256 STAGE_1_SHA256 \
   --continuation-stage-id STAGE_2 --continuation-stage-limit 1
+python3 references/scripts/harness-runtime.py apply-human-action \
+  --plan-dir PLAN --record RECORD_PATH_FROM_CREATE_OUTPUT --key-file KEY \
+  --expected-action authorize_contract --operation-id op_64_HEX
 ```
+
+Pass the key pathname only through `--key-file`. An Agent must never read the
+key bytes, implement HMAC itself, write a synthetic authorization JSON, or feed
+the pending record directly to `init-staged-research`. The initializer accepts
+only the `receipt.receipt_path` returned by `apply-human-action`. For capacity
+v2, the first envelope must also declare
+`stage_budget_and_stop.worker_dispatches >= 1`; the plan-global
+`worker_dispatch_capacity` does not substitute for that per-stage quota.
 
 The signed payload contains only schema version, record ID, plan ID, action,
 32-byte URL-safe nonce, issue/expiry times, actor, key ID, and details. The
@@ -454,6 +465,9 @@ directory or a proposed contract snapshot. `init-staged-research` is the only
 publisher of that canonical namespace. If any manual write has already landed
 there, abandon that initialization attempt and restart from a clean plan
 identity rather than treating the bytes as controller authority.
+Create and apply the `authorize_contract` action using the exact sequence in
+Authenticated Human Actions above, then pass only the applied receipt path to
+the initializer. Never manufacture that receipt in a helper script.
 
 ```bash
 python3 references/scripts/harness-runtime.py init-staged-research \

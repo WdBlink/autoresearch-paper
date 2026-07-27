@@ -97,6 +97,9 @@ freeze the human-owned contract and exactly one first stage with init-staged-res
 prepare caller-authored bootstrap inputs only under control/staged-inputs/ and
   review materials only under control/review-materials/; never pre-create or
   write state/staged_research/v1/ because init-staged-research is its sole publisher
+create and apply authorize_contract only with harness-runtime.py
+  create-human-action then apply-human-action; never read the human-action key
+  or hand-build/HMAC-sign an authorization record
 run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
 run the strongest reviewer allowed by the frozen policy; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution

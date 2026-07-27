@@ -16,6 +16,10 @@ It is controller-owned from first publication: caller-authored bootstrap files
 must remain under `control/staged-inputs/` or `control/review-materials/`, and
 must never be written directly into the canonical namespace;
 `init-staged-research` is its only initial publisher.
+Authorization has the same controller boundary: Agents may pass a protected
+key pathname to `create-human-action` and `apply-human-action`, but must never
+read the key, compute an HMAC, or construct an authorization receipt. Only the
+applied receipt returned by the controller may initialize staged state.
 The controller derives `state/progress.json` and
 `state/research-dossier.md` from that namespace. Both are rebuildable,
 non-authoritative projections: editing, deleting, or forging either one cannot

@@ -358,6 +358,7 @@ def main() -> int:
             contains(
                 release_doc, "control/staged-inputs/",
                 "control/review-materials/", "init-staged-research",
+                "create-human-action", "apply-human-action",
             ),
             f"{release_doc} must keep bootstrap inputs outside canonical staged state",
             errors,
@@ -366,7 +367,8 @@ def main() -> int:
         contains(
             "assets/task-prompt-snippets.md", "control/staged-inputs/",
             "control/review-materials/", "init-staged-research",
-            "state/staged_research/v1/",
+            "state/staged_research/v1/", "create-human-action",
+            "apply-human-action", "worker_dispatches",
         ),
         "worker prompt assets must forbid direct canonical bootstrap writes",
         errors,

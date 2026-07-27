@@ -44,6 +44,10 @@ return snippet_map
   under `control/review-materials/`. Never create or write
   `state/staged_research/v1/` directly; only `init-staged-research` may publish
   the initial canonical state.
+- Never read a human-action key or hand-build/HMAC-sign an authorization JSON.
+  Use `create-human-action` followed by `apply-human-action`, then pass its
+  applied `receipt.receipt_path` to `init-staged-research`. Capacity v2 also
+  requires `stage_budget_and_stop.worker_dispatches >= 1` in each envelope.
 - Legacy capacity v1 is existing-plan lifecycle/replay compatibility and must
   not be copied into a new v0.17 plan or used for automatic stage crossing.
 - A Worker may propose Stage 2 material, but only
