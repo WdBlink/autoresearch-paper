@@ -766,6 +766,17 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             )
             self.assertIn("symbol/line_start is not exact", rejected.stderr)
 
+            prefix = self.raw_observation_preflight(plan)
+            prefix["source_manifest"][0]["symbol"] = "sour"
+            prefix_path = self.write(
+                plan / "inputs" / "prefix-symbol.json", prefix,
+            )
+            rejected = self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(prefix_path), ok=False,
+            )
+            self.assertIn("symbol/line_start is not exact", rejected.stderr)
+
     def test_observation_stage_rejects_ungrounded_candidate_without_transition(
         self,
     ) -> None:

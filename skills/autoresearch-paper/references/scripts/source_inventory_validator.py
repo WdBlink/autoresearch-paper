@@ -13,12 +13,22 @@ from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/3"
+VALIDATOR_VERSION = "source-inventory-validator/4"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
 class SourceInventoryValidationError(ValueError):
     pass
+
+
+def symbol_occurs_on_line(symbol: str, line: str) -> bool:
+    """Match one complete identifier or dotted identifier on a source line."""
+    if SYMBOL_RE.fullmatch(symbol) is None:
+        return False
+    return re.search(
+        rf"(?<![A-Za-z0-9_.]){re.escape(symbol)}(?![A-Za-z0-9_.])",
+        line,
+    ) is not None
 
 
 def _strict_json_loads(content: str) -> Any:
@@ -129,7 +139,7 @@ def validate_source_inventory(
                 f"source inventory record {index} line citation is out of range"
             )
         cited_line = lines[line_start - 1]
-        if symbol not in cited_line:
+        if not symbol_occurs_on_line(symbol, cited_line):
             raise SourceInventoryValidationError(
                 f"source inventory record {index} symbol citation is not exact"
             )
@@ -164,12 +174,63 @@ def run_conformance_suite() -> dict[str, Any]:
             }],
             "uncertainties_and_next_questions": ["Where is Alpha instantiated?"],
         }
-        cases: list[tuple[str, dict[str, Any], bool]] = [
-            ("valid_grounded_record", valid, True),
-            ("wrong_cardinality", {**valid, "records": []}, False),
+        dotted_path = Path(temp_dir) / "dotted.py"
+        dotted_path.write_text("register(pkg.mod.ClassName)\n")
+        dotted_sha = hashlib.sha256(dotted_path.read_bytes()).hexdigest()
+        dotted_manifest = [{
+            "path": str(dotted_path), "sha256": dotted_sha,
+            "symbol": "pkg.mod.ClassName", "line_start": 1,
+        }]
+        dotted = {
+            "schema_version": 1,
+            "records": [{
+                "path": str(dotted_path), "source_sha256": dotted_sha,
+                "symbol": "pkg.mod.ClassName", "line_start": 1,
+                "observation": "register(pkg.mod.ClassName)",
+                "hypothesis": "The dotted identifier may be registered here.",
+            }],
+            "uncertainties_and_next_questions": ["Who consumes the registry?"],
+        }
+        substring_path = Path(temp_dir) / "substring.py"
+        substring_path.write_text("class AlphaBeta:\nclass BetaAlpha:\n")
+        substring_sha = hashlib.sha256(substring_path.read_bytes()).hexdigest()
+        prefix_manifest = [{
+            "path": str(substring_path), "sha256": substring_sha,
+            "symbol": "Alpha", "line_start": 1,
+        }]
+        suffix_manifest = [{
+            "path": str(substring_path), "sha256": substring_sha,
+            "symbol": "Alpha", "line_start": 2,
+        }]
+        prefix = {
+            "schema_version": 1,
+            "records": [{
+                "path": str(substring_path), "source_sha256": substring_sha,
+                "symbol": "Alpha", "line_start": 1,
+                "observation": "class AlphaBeta:",
+                "hypothesis": "A prefix must not bind the Alpha identifier.",
+            }],
+            "uncertainties_and_next_questions": ["Is Alpha an exact symbol?"],
+        }
+        suffix = {
+            **prefix,
+            "records": [{
+                **prefix["records"][0],
+                "line_start": 2, "observation": "class BetaAlpha:",
+            }],
+        }
+        cases: list[
+            tuple[str, dict[str, Any], list[dict[str, Any]], bool]
+        ] = [
+            ("valid_grounded_record", valid, manifest, True),
+            ("valid_dotted_symbol", dotted, dotted_manifest, True),
+            ("symbol_prefix_collision", prefix, prefix_manifest, False),
+            ("symbol_suffix_collision", suffix, suffix_manifest, False),
+            ("wrong_cardinality", {**valid, "records": []}, manifest, False),
             (
                 "extra_record_field",
                 {**valid, "records": [{**valid["records"][0], "extra": "x"}]},
+                manifest,
                 False,
             ),
             (
@@ -177,11 +238,13 @@ def run_conformance_suite() -> dict[str, Any]:
                 {**valid, "records": [{
                     **valid["records"][0], "source_sha256": "0" * 64,
                 }]},
+                manifest,
                 False,
             ),
             (
                 "wrong_line",
                 {**valid, "records": [{**valid["records"][0], "line_start": 2}]},
+                manifest,
                 False,
             ),
             (
@@ -189,6 +252,7 @@ def run_conformance_suite() -> dict[str, Any]:
                 {**valid, "records": [{
                     **valid["records"][0], "symbol": "value",
                 }]},
+                manifest,
                 False,
             ),
             (
@@ -197,15 +261,16 @@ def run_conformance_suite() -> dict[str, Any]:
                     **valid["records"][0],
                     "observation": "Alpha definitely controls training.",
                 }]},
+                manifest,
                 False,
             ),
         ]
         results = []
-        for case_id, payload, should_accept in cases:
+        for case_id, payload, case_manifest, should_accept in cases:
             accepted = True
             try:
                 validate_source_inventory(
-                    json.dumps(payload, ensure_ascii=False), manifest,
+                    json.dumps(payload, ensure_ascii=False), case_manifest,
                 )
             except SourceInventoryValidationError:
                 accepted = False

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,7 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         result = validator.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 7)
+        self.assertEqual(result["case_count"], 10)
         self.assertTrue(all(item["passed"] for item in result["cases"]))
 
     def test_executable_adapter_emits_source_bound_receipt(self) -> None:
@@ -82,6 +83,71 @@ class SourceInventoryValidatorTests(unittest.TestCase):
             self.assertEqual(receipt["result"], "pass")
             self.assertEqual(receipt["source_manifest_sha256"], manifest_sha)
             self.assertEqual(json.loads(receipt_path.read_text()), receipt)
+
+    def test_symbol_matching_is_token_exact_and_cli_rejects_prefix(self) -> None:
+        validator_path = SCRIPTS / "source_inventory_validator.py"
+        validator = load_module(
+            "source_inventory_validator_symbol_test", validator_path,
+        )
+        self.assertTrue(validator.symbol_occurs_on_line("Alpha", "class Alpha:"))
+        self.assertTrue(
+            validator.symbol_occurs_on_line(
+                "pkg.mod.ClassName", "register(pkg.mod.ClassName)",
+            )
+        )
+        self.assertFalse(
+            validator.symbol_occurs_on_line("Alpha", "class AlphaBeta:"),
+        )
+        self.assertFalse(
+            validator.symbol_occurs_on_line("Alpha", "class BetaAlpha:"),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.py"
+            source.write_text("class AlphaBeta:\n    pass\n")
+            manifest = [{
+                "path": str(source),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "symbol": "Alpha",
+                "line_start": 1,
+                "size_bytes": source.stat().st_size,
+                "line_count": 2,
+            }]
+            manifest_sha = hashlib.sha256(json.dumps(
+                manifest, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            preflight = root / "preflight.json"
+            preflight.write_text(json.dumps({
+                "verified_source_manifest": manifest,
+                "verified_source_manifest_sha256": manifest_sha,
+            }))
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps({
+                "schema_version": 1,
+                "records": [{
+                    "path": str(source),
+                    "source_sha256": manifest[0]["sha256"],
+                    "symbol": "Alpha",
+                    "line_start": 1,
+                    "observation": "class AlphaBeta:",
+                    "hypothesis": "This prefix must not bind Alpha.",
+                }],
+                "uncertainties_and_next_questions": ["Is Alpha exact?"],
+            }))
+            receipt = root / "receipt.json"
+            rejected = subprocess.run(
+                [
+                    "python3", str(validator_path),
+                    "--candidate", str(candidate),
+                    "--preflight", str(preflight),
+                    "--receipt", str(receipt),
+                ],
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("symbol citation is not exact", rejected.stderr)
+            self.assertFalse(receipt.exists())
 
     def test_worker_receives_the_exact_closed_content_contract(self) -> None:
         runtime = load_module("harness_runtime_contract_test", SCRIPTS / "harness-runtime.py")

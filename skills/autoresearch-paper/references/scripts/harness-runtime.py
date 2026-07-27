@@ -38,6 +38,7 @@ from source_inventory_validator import (
     SYMBOL_RE,
     SourceInventoryValidationError,
     run_conformance_suite as run_source_inventory_conformance_suite,
+    symbol_occurs_on_line,
     validate_source_inventory,
 )
 
@@ -10794,7 +10795,7 @@ def staged_preflight_payload(
                 or isinstance(line_start, bool)
                 or not isinstance(line_start, int)
                 or not 1 <= line_start <= len(lines)
-                or symbol not in lines[line_start - 1]
+                or not symbol_occurs_on_line(symbol, lines[line_start - 1])
             ):
                 raise ContractError(
                     f"source_manifest[{index}] symbol/line_start is not exact"
@@ -11186,7 +11187,9 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
                 or isinstance(item["line_start"], bool)
                 or not isinstance(item["line_start"], int)
                 or not 1 <= item["line_start"] <= len(lines)
-                or item["symbol"] not in lines[item["line_start"] - 1]
+                or not symbol_occurs_on_line(
+                    item["symbol"], lines[item["line_start"] - 1]
+                )
             ):
                 raise ContractError(
                     "current-stage preflight source selection changed"
