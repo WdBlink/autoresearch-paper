@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.17.1"
+  version: "0.17.2"
 ---
 
 # Autoresearch Paper
@@ -524,6 +524,14 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.17.2 (2026-07-27)** — Real Plan021 CP-01 findings are closed without
+  mutating the blocked field record. Source inventories and stage reports now
+  require a true JSON integer schema version; their frozen conformance suites
+  include boolean-version adversarial cases. Worker-authored terminal reports
+  are also forbidden from supplying Controller-owned
+  `role_visible_state_sha256`; only Runtime may add the exact post-call binding.
+  Plan021 remains immutable negative evidence and a fresh plan/review is
+  mandatory.
 - **v0.17.1 (2026-07-27)** — Observation-only stages now use an
   explicitly inactive evaluation profile instead of an active-looking Gate
   placeholder. MiniMax terminal reports are validated by a CP-01-frozen,

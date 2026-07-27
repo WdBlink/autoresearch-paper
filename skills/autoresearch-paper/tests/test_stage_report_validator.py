@@ -17,7 +17,7 @@ class StageReportValidatorTests(unittest.TestCase):
     def test_conformance_suite_passes_all_cases(self) -> None:
         receipt = MODULE.run_conformance_suite()
         self.assertEqual(receipt["status"], "PASS")
-        self.assertEqual(receipt["case_count"], 8)
+        self.assertEqual(receipt["case_count"], 10)
         self.assertTrue(all(case["passed"] for case in receipt["cases"]))
 
     def test_inactive_profile_style_report_accepts_empty_context_lists(self) -> None:

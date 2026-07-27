@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.17.1
+- **Current version:** v0.17.2
 - **Stability:** Experimental; bounded stage-crossing acceptance target
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -204,7 +204,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.17.1 with a full bundle refresh so the
+Upgrade copied installations to v0.17.2 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -409,6 +409,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.17.2** — closes the remaining real Plan021 CP-01 findings: validator
+  schema versions require JSON integers rather than booleans, and a Worker
+  cannot pre-author Controller-owned role-visible provenance. Frozen source
+  inventory and stage-report conformance suites now contain eleven and ten
+  cases respectively. Plan021 remains immutable negative evidence; the field
+  gate requires a fresh plan and fresh real review.
 - **v0.17.1** — explicitly inactive observation-only evaluation profiles and
   a CP-01-frozen, conformance-tested terminal-report validator close the
   execution-contract gaps found by real GPT-5.6 CP-01 field review. The
@@ -503,7 +509,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.17.1}
+  version = {0.17.2}
 }
 ```
 
@@ -515,7 +521,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.17.1-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.17.2-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

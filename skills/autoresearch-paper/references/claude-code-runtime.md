@@ -619,13 +619,15 @@ Controller-owned observation-validation receipt.
 
 The terminal report must be a promoted MiniMax artifact. Runtime first applies
 the CP-01-frozen `stage_report_validator.py`, whose implementation must be
-byte-identical to Runtime and whose frozen eight-case conformance receipt must
+byte-identical to Runtime and whose frozen ten-case conformance receipt must
 match Runtime execution. It covers the closed shape, stage/candidate identity,
 Worker identity, evidence-list types, bounded scientific summary/findings,
-claim-to-candidate hashes, and exact canonical terminal-validation receipt
-bindings. Its source form omits
+claim-to-candidate hashes, exact canonical terminal-validation receipt
+bindings, strict JSON-integer version typing, and rejection of Worker-authored
+Controller provenance. Its source form must omit
 `role_visible_state_sha256` because that record exists only after the Worker
-call completes. The Controller then runs `record-role-visible-state` and
+call completes; supplying it is a closed-schema failure, even if the value
+would later happen to match. The Controller then runs `record-role-visible-state` and
 `record-stage-report`; the latter injects exactly that provenance hash into the
 canonical report while preserving all MiniMax-authored scientific fields.
 Controller synthesis or rewriting of summary, evidence, uncertainty, or next

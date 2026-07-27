@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 VALIDATOR_ID = "autoresearch-paper-stage-report-validator"
-VALIDATOR_VERSION = "stage-report-validator/1"
+VALIDATOR_VERSION = "stage-report-validator/2"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_FIELDS = {
@@ -18,7 +18,7 @@ REQUIRED_FIELDS = {
     "development_validator_receipts", "uncertainties",
     "proposed_next_questions", "scientific_summary", "findings",
 }
-OPTIONAL_FIELDS = {"role_visible_state_sha256"}
+OPTIONAL_FIELDS: set[str] = set()
 
 
 class StageReportValidationError(ValueError):
@@ -95,7 +95,11 @@ def validate_stage_report(
         raise StageReportValidationError("stage report must be a JSON object")
     if set(report) - (REQUIRED_FIELDS | OPTIONAL_FIELDS) or not REQUIRED_FIELDS <= set(report):
         raise StageReportValidationError("stage report has an invalid top-level shape")
-    if report.get("schema_version") != 1:
+    if (
+        isinstance(report.get("schema_version"), bool)
+        or not isinstance(report.get("schema_version"), int)
+        or report.get("schema_version") != 1
+    ):
         raise StageReportValidationError("stage report schema_version must be 1")
     if not isinstance(report.get("stage_report_id"), str) or not ID_RE.fullmatch(
         report["stage_report_id"]
@@ -131,11 +135,6 @@ def validate_stage_report(
         report.get("proposed_next_questions"), "proposed_next_questions",
         allow_empty=True,
     )
-    visible = report.get("role_visible_state_sha256")
-    if visible is not None and (
-        not isinstance(visible, str) or not SHA256_RE.fullmatch(visible)
-    ):
-        raise StageReportValidationError("role_visible_state_sha256 is invalid")
 
 
 def run_conformance_suite() -> dict[str, Any]:
@@ -164,6 +163,7 @@ def run_conformance_suite() -> dict[str, Any]:
     cases = [
         ("valid", valid, True),
         ("extra_field", {**valid, "summary": "unbound"}, False),
+        ("boolean_schema_version", {**valid, "schema_version": True}, False),
         ("wrong_stage", {**valid, "stage_cycle_id": "stage_2"}, False),
         ("wrong_model", {**valid, "worker_identity": {
             **valid["worker_identity"], "model": "other",
@@ -175,6 +175,9 @@ def run_conformance_suite() -> dict[str, Any]:
             "path": "/plan/stage/other-validation.json",
             "sha256": "d" * 64,
         }]}, False),
+        ("worker_authored_controller_provenance", {
+            **valid, "role_visible_state_sha256": "e" * 64,
+        }, False),
         ("unbound_finding", {**valid, "findings": [{
             "claim": "unbound", "evidence_sha256": "c" * 64,
         }]}, False),

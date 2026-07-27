@@ -32,7 +32,7 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         result = validator.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 10)
+        self.assertEqual(result["case_count"], 11)
         self.assertTrue(all(item["passed"] for item in result["cases"]))
 
     def test_executable_adapter_emits_source_bound_receipt(self) -> None:

@@ -1,11 +1,27 @@
 # Changelog
 
+## v0.17.2 — 2026-07-27
+
+- Close the remaining real CP-01 findings from frozen field plan
+  `fwvg-conf-2026-021`: JSON boolean values can no longer masquerade as
+  integer schema versions in source inventories or terminal stage reports.
+- Upgrade the source-inventory conformance suite to eleven cases and the
+  terminal-report suite to ten cases, including explicit boolean-version
+  negatives.
+- Make Controller provenance structurally unforgeable at the Worker boundary:
+  a MiniMax-authored report containing `role_visible_state_sha256` is rejected,
+  and only `record-stage-report` may inject the exact post-call binding into the
+  canonical report.
+- Preserve Plan021 as immutable negative field evidence. A fresh plan and fresh
+  real CP-01 review are required; this patch does not reinterpret or unlock the
+  blocked plan.
+
 ## v0.17.1 — 2026-07-27
 
 - Add an explicitly inactive evaluation-profile shape for observation-only
   stages; Gate metric, threshold, operator, margin, and query-limit fields are
   forbidden when `applicable=false`.
-- Add the shipped `stage_report_validator.py` and its eight-case conformance
+- Add the shipped `stage_report_validator.py` and its initial eight-case conformance
   suite. Its implementation and conformance receipt are mandatory immutable
   CP-01 review materials. `record-stage-report` validates closed report shape,
   canonical stage/candidate identity, MiniMax Worker identity, bounded

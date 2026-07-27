@@ -286,13 +286,13 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.17.1"' in read("SKILL.md"), "SKILL.md version must be 0.17.1", errors)
+    require('version: "0.17.2"' in read("SKILL.md"), "SKILL.md version must be 0.17.2", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.17.1" in repository_readme_text,
-            "README version must be 0.17.1",
+            "Current version:** v0.17.2" in repository_readme_text,
+            "README version must be 0.17.2",
             errors,
         )
         require(
@@ -316,7 +316,7 @@ def main() -> int:
         changelog_text = repository_changelog.read_text()
         require(
             all(token in changelog_text for token in (
-                "v0.17.1 — 2026-07-27", "stage_report_validator.py",
+                "v0.17.2 — 2026-07-27", "stage_report_validator.py",
                 "v0.17.0 — 2026-07-27", "rebuild-staged-projections",
                 "capacity v2", "max_automatic_crossings=1",
                 "does not claim second-stage completion",

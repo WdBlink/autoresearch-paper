@@ -13,7 +13,7 @@ from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/4"
+VALIDATOR_VERSION = "source-inventory-validator/5"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
@@ -59,7 +59,9 @@ def validate_source_inventory(
     records = inventory.get("records")
     questions = inventory.get("uncertainties_and_next_questions")
     if (
-        inventory.get("schema_version") != 1
+        isinstance(inventory.get("schema_version"), bool)
+        or not isinstance(inventory.get("schema_version"), int)
+        or inventory.get("schema_version") != 1
         or not isinstance(records, list)
         or len(records) != len(source_manifest)
         or not isinstance(questions, list)
@@ -224,6 +226,7 @@ def run_conformance_suite() -> dict[str, Any]:
         ] = [
             ("valid_grounded_record", valid, manifest, True),
             ("valid_dotted_symbol", dotted, dotted_manifest, True),
+            ("boolean_schema_version", {**valid, "schema_version": True}, manifest, False),
             ("symbol_prefix_collision", prefix, prefix_manifest, False),
             ("symbol_suffix_collision", suffix, suffix_manifest, False),
             ("wrong_cardinality", {**valid, "records": []}, manifest, False),

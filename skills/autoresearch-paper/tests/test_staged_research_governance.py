@@ -1419,7 +1419,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
 
     def prepare_worker_report(
         self, plan: Path, cycle: dict, suffix: str, *,
-        visible_crash: bool = False, omit_visible_binding: bool = False,
+        visible_crash: bool = False, omit_visible_binding: bool = True,
     ) -> tuple[Path, str]:
         run_id = "cwr_" + (suffix * 32)[:32]
         run_dir = plan / "state" / "worker_runs" / run_id

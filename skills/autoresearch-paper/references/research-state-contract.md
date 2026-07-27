@@ -78,10 +78,11 @@ plan-local/installed implementation hashes and byte-identity proof, then
 revalidates the promoted candidate under Controller authority at completion.
 
 A terminal Worker report is first checked by the shipped closed-schema
-`stage_report_validator.py` and its conformance-tested invariants. It cannot
+`stage_report_validator.py` and its conformance-tested invariants. JSON boolean
+values are not accepted as integer schema versions. The Worker report must not
 embed the hash of a role-visible record that is
 created only after the call completes. The promoted MiniMax report therefore
-owns every scientific field and may omit `role_visible_state_sha256`; after
+owns every scientific field and must omit `role_visible_state_sha256`; after
 recording the completed call's canonical visible state, the Controller adds
 only that provenance binding to the immutable canonical report. Any other
 content difference is a contract failure.
