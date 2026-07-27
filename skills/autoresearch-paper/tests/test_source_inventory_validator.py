@@ -201,7 +201,7 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
             source = root / "source.py"
-            source.write_text("class Alpha:\n    pass\n")
+            source.write_text("class Alpha: pass\n")
             source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
             declaration = {
                 "artifact_id": "source_inventory",
@@ -233,6 +233,36 @@ class SourceInventoryValidatorTests(unittest.TestCase):
                 runtime.ContractError, "must bind exactly path, sha256, symbol",
             ):
                 runtime.normalize_declared_output(root, broken)
+
+            for field, value in (
+                ("size_bytes", float(len(source.read_bytes()))),
+                ("line_count", True),
+            ):
+                typed = json.loads(json.dumps(declaration))
+                typed["content_validator"]["source_manifest"][0][field] = value
+                with self.assertRaisesRegex(
+                    runtime.ContractError, "size metadata changed",
+                ):
+                    runtime.normalize_declared_output(root, typed)
+
+            real_parent = root / "real"
+            real_parent.mkdir()
+            linked_parent = root / "linked"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+            linked_source = real_parent / "source.py"
+            linked_source.write_text("class Linked:\n    pass\n")
+            linked_sha = hashlib.sha256(linked_source.read_bytes()).hexdigest()
+            linked = json.loads(json.dumps(declaration))
+            linked["content_validator"]["source_manifest"] = [{
+                "path": str(linked_parent / "source.py"),
+                "sha256": linked_sha,
+                "symbol": "Linked",
+                "line_start": 1,
+            }]
+            with self.assertRaisesRegex(
+                runtime.ContractError, "must not traverse a symlink",
+            ):
+                runtime.normalize_declared_output(root, linked)
 
     def test_controller_enforces_byte_cap_for_normal_and_legacy_paths(self) -> None:
         runtime = load_module(

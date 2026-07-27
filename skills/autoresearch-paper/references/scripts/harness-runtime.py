@@ -513,10 +513,16 @@ def verify_source_inventory_manifest_items(
         declared_path = Path(raw_path)
         if not declared_path.is_absolute():
             declared_path = base_dir / declared_path
-        if declared_path.is_symlink():
-            raise ContractError(
-                f"source-inventory manifest source must not be a symlink: {declared_path}"
-            )
+        cursor = declared_path
+        while True:
+            if cursor.is_symlink():
+                raise ContractError(
+                    "source-inventory manifest source path must not traverse "
+                    f"a symlink: {cursor}"
+                )
+            if cursor == cursor.parent:
+                break
+            cursor = cursor.parent
         path = declared_path.resolve()
         canonical = str(path)
         if canonical in seen or not path.is_file():
@@ -547,7 +553,16 @@ def verify_source_inventory_manifest_items(
             )
         size_bytes = item.get("size_bytes", len(source_bytes))
         line_count = item.get("line_count", len(lines))
-        if size_bytes != len(source_bytes) or line_count != len(lines):
+        if (
+            ("size_bytes" in item and (
+                isinstance(size_bytes, bool) or not isinstance(size_bytes, int)
+            ))
+            or ("line_count" in item and (
+                isinstance(line_count, bool) or not isinstance(line_count, int)
+            ))
+            or size_bytes != len(source_bytes)
+            or line_count != len(lines)
+        ):
             raise ContractError(
                 f"source-inventory manifest entry {index} size metadata changed"
             )
