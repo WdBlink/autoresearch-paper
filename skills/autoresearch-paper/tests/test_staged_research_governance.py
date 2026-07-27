@@ -988,6 +988,41 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             ).stdout)
             self.apply_strong_review(plan, Path(report["path"]))
 
+            root = plan / "state" / "staged_research" / "v1"
+            decision_path = root / "stages" / "stage_1" / "decision.json"
+            canonical_decision = decision_path.read_bytes()
+            forged_decision = json.loads(canonical_decision)
+            forged_decision["resulting_incumbent_sha256"] = "f" * 64
+            decision_path.chmod(0o644)
+            decision_path.write_text(
+                json.dumps(forged_decision, sort_keys=True, indent=2) + "\n"
+            )
+            decision_path.chmod(0o444)
+            forged_stage2_value = self.envelope(
+                "stage_2", source="stage_1", incumbent="f" * 64,
+            )
+            forged_stage2_value["stage_budget_and_stop"]["evaluation_calls"] = 0
+            forged_stage2_value["authorized_evidence_refs"] = []
+            forged_stage2 = self.write(
+                plan / "inputs" / "forged-stage-2.json", forged_stage2_value,
+            )
+            rejected = self.invoke(
+                "advance-staged-research", "--plan-dir", str(plan),
+                "--stage-envelope", str(forged_stage2),
+                "--preflight-inputs", str(self.write(
+                    plan / "inputs" / "forged-stage-2-preflight.json",
+                    self.raw_observation_preflight(plan),
+                )),
+                "--task-contract", str(self.empty_worker_contract(
+                    plan, "stage_2",
+                )),
+                "--claude-bin", str(self.fake_claude(plan)), ok=False,
+            )
+            self.assertIn("hash mismatch", rejected.stderr)
+            decision_path.chmod(0o644)
+            decision_path.write_bytes(canonical_decision)
+            decision_path.chmod(0o444)
+
             stage2_value = self.envelope(
                 "stage_2", source="stage_1",
                 incumbent=cycle["candidate_sha256"],
@@ -1009,7 +1044,6 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             ).stdout)
             self.assertEqual(advanced["stage_id"], "stage_2")
             self.assertEqual(advanced["state"], "DEVELOPING")
-            root = plan / "state" / "staged_research" / "v1"
             state = json.loads((root / "state.json").read_text())
             self.assertEqual(state["active_stage_id"], "stage_2")
             self.assertEqual(state["state"], "DEVELOPING")

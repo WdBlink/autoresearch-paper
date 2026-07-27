@@ -11919,6 +11919,8 @@ def staged_terminal_review_evidence_paths(
     staged_canonical_file(
         decision_path, decision_path, "stage decision", immutable=True,
     )
+    candidate = read_json(candidate_path)
+    staged_resolve_candidate_chain(plan_dir, stage_dir, candidate)
     decision = read_json(decision_path)
     if (
         decision.get("stage_cycle_id") != stage_id
@@ -11932,15 +11934,58 @@ def staged_terminal_review_evidence_paths(
             "observation validation receipt", immutable=True,
         )
         receipt = read_json(terminal_path)
+        envelope = read_json(stage_dir / "envelope.json")
+        preflight = read_json(stage_dir / "preflight.json")
+        contract = read_json(
+            staged_root(plan_dir) / "contracts"
+            / f"{envelope['contract_version']}.json"
+        )
+        implementations = [
+            item for item in envelope.get("review_material_manifest", [])
+            if item.get("purpose") == "evaluator_implementation"
+        ]
+        if len(implementations) != 1:
+            raise ContractError(
+                "canonical observation decision lacks one evaluator implementation"
+            )
+        implementation_path = normalize_owned_path(
+            plan_dir, str(plan_dir / implementations[0]["path"]),
+        )
+        expected_receipt = {
+            "schema_version": 1,
+            "validation_kind": "observation_source_inventory",
+            "stage_cycle_id": stage_id,
+            "candidate_sha256": candidate["candidate_sha256"],
+            "source_manifest_sha256": sha256_json(
+                preflight["verified_source_manifest"]
+            ),
+            "development_validator_path": str(implementation_path),
+            "development_validator_sha256": sha256_file(implementation_path),
+            "result": "pass",
+            "controller_authoritative": True,
+        }
+        expected_decision = {
+            "schema_version": 1,
+            "stage_cycle_id": stage_id,
+            "decision_kind": "observation_validation",
+            "decision": "accept",
+            "prior_incumbent_sha256": candidate["incumbent_sha256"],
+            "candidate_sha256": candidate["candidate_sha256"],
+            "resulting_incumbent_sha256": candidate["candidate_sha256"],
+            "advancement_blocked": False,
+            "development_validator_receipt_path": str(terminal_path),
+            "development_validator_receipt_sha256": sha256_file(terminal_path),
+            "controller_authoritative": True,
+        }
         if (
-            decision.get("development_validator_receipt_path")
-            != str(terminal_path)
-            or decision.get("development_validator_receipt_sha256")
-            != sha256_file(terminal_path)
-            or receipt.get("stage_cycle_id") != stage_id
-            or receipt.get("candidate_sha256") != decision.get("candidate_sha256")
-            or receipt.get("result") != "pass"
-            or receipt.get("controller_authoritative") is not True
+            receipt != expected_receipt
+            or set(decision) != set(expected_decision) | {"decided_at"}
+            or any(decision.get(key) != value for key, value in expected_decision.items())
+            or not isinstance(decision.get("decided_at"), str)
+            or not decision["decided_at"]
+            or implementations[0].get("sha256") != sha256_file(implementation_path)
+            or contract.get("development_validator_sha256")
+            != sha256_file(implementation_path)
         ):
             raise ContractError("canonical observation validation binding changed")
     else:
