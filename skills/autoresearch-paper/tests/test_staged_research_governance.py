@@ -246,6 +246,18 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "gate_escalation_margin": 0.05,
         }
 
+    def inactive_observation_evaluation_profile(self) -> dict:
+        return {
+            "schema_version": 1,
+            "profile_id": "observation_evaluation_v1",
+            "applicable": False,
+            "reason": "observation_only_no_logical_gate",
+            "private_split_policy_sha256": digest("rotating-private-splits"),
+            "holdout_refresh_policy_sha256": digest("refresh-hidden-holdouts"),
+            "transfer_audit_schedule_sha256": digest("scheduled-transfer-audit"),
+            "external_suite_identity_sha256": digest("hidden-external-suite"),
+        }
+
     def capacity(self, *, remaining: int = 8) -> dict:
         return {
             "schema_version": 1,
@@ -370,6 +382,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         capacity_value: dict | None = None,
         continuation_stage_id: str | None = None,
         development_validator_sha256: str | None = None,
+        evaluation_profile_value: dict | None = None,
     ) -> dict:
         plan.mkdir(parents=True, exist_ok=True)
         if not (plan / "state" / "model_policy.json").exists():
@@ -397,7 +410,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             plan / "inputs" / "stage.json", envelope or self.envelope(),
         )
         evaluation = self.write(
-            plan / "inputs" / "evaluation.json", self.evaluation_profile(),
+            plan / "inputs" / "evaluation.json",
+            evaluation_profile_value or self.evaluation_profile(),
         )
         capacity = self.write(
             plan / "inputs" / "capacity.json",
@@ -849,6 +863,9 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 capacity_value=self.capacity_v2(workers=3),
                 continuation_stage_id="stage_2",
                 development_validator_sha256=validator_sha,
+                evaluation_profile_value=(
+                    self.inactive_observation_evaluation_profile()
+                ),
             )
             raw = self.raw_observation_preflight(plan)
             preflight = self.write(plan / "inputs" / "preflight.json", raw)
@@ -1228,6 +1245,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         visible = self.visible(
             plan, run_id, "worker", crash_record=visible_crash,
         )
+        envelope = json.loads((
+            plan / "state" / "staged_research" / "v1" / "stages"
+            / "stage_1" / "envelope.json"
+        ).read_text())
         report_value = {
             "schema_version": 1,
             "stage_report_id": "report_stage_1",
@@ -1238,7 +1259,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             },
             "role_visible_state_sha256": visible["sha256"],
             "candidate_sha256": cycle["candidate_sha256"],
-            "evidence_refs": ["evidence_stage_1"],
+            "evidence_refs": envelope["authorized_evidence_refs"],
             "development_validator_receipts": ["validator_receipt_1"],
             "uncertainties": ["transfer not yet measured"],
             "proposed_next_questions": ["run bounded ablation"],

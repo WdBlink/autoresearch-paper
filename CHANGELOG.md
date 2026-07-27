@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.17.1 — 2026-07-27
+
+- Add an explicitly inactive evaluation-profile shape for observation-only
+  stages; Gate metric, threshold, operator, margin, and query-limit fields are
+  forbidden when `applicable=false`.
+- Add the shipped `stage_report_validator.py` and its six-case conformance
+  suite. `record-stage-report` now validates closed report shape, canonical
+  stage/candidate identity, MiniMax Worker identity, bounded evidence lists,
+  and development-receipt presence before adding Controller provenance.
+- Clarify that `RECORDED` is a candidate-recording state, not whole-stage
+  acceptance. Terminal report, strongest-policy `STAGE-REVIEW`, and bounded
+  continuation authorization remain mandatory before Stage 2 starts.
+
 ## v0.17.0 — 2026-07-27
 
 - Make `state/staged_research/v1/` the sole runtime authority for staged

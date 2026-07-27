@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.17.0
+- **Current version:** v0.17.1
 - **Stability:** Experimental; bounded stage-crossing acceptance target
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -204,7 +204,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.17.0 with a full bundle refresh so the
+Upgrade copied installations to v0.17.1 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -409,6 +409,9 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.17.1** — explicitly inactive observation-only evaluation profiles and
+  a shipped, conformance-tested terminal-report validator close the two
+  execution-contract gaps found by real GPT-5.6 CP-01 field review.
 - **v0.17.0** — sole-authority staged state with rebuildable projections,
   capacity v2 class isolation, and one idempotent, explicitly pre-authorized
   stage crossing through the start of one next-stage Worker. The isolated
@@ -496,7 +499,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.17.0}
+  version = {0.17.1}
 }
 ```
 
@@ -508,7 +511,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.17.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.17.1-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

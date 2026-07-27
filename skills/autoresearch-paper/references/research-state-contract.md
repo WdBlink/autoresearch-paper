@@ -57,12 +57,14 @@ envelope. It then journals compile → preflight → authorize → the start of
 exactly one next-stage Worker. The command is replay-safe and stops at Worker
 start; it does not assert second-stage completion or scientific success.
 
-An observation-only bootstrap stage terminates without a logical Gate. After
+An observation-only bootstrap stage has an explicitly inactive evaluation
+profile and records its candidate without a logical Gate. After
 the MiniMax artifact has a committed promotion and is frozen, the Controller's
 `complete-observation-stage` command replays the canonical preflight source
 manifest through the exact immutable Runtime source-inventory validator. A
 passing artifact receives a typed `observation_validation` decision and the
-stage becomes `RECORDED`. This transition creates no Gate query, Gate-accepted
+candidate becomes `RECORDED`. This transition is not whole-stage acceptance
+and creates no Gate query, Gate-accepted
 maturity, reusable evidence receipt, or release authority. A terminal MiniMax
 report and fresh strongest-policy non-M3 review remain mandatory before any
 continuation.
@@ -75,7 +77,9 @@ candidate, emitting a development receipt. Runtime records independent
 plan-local/installed implementation hashes and byte-identity proof, then
 revalidates the promoted candidate under Controller authority at completion.
 
-A terminal Worker cannot embed the hash of a role-visible record that is
+A terminal Worker report is first checked by the shipped closed-schema
+`stage_report_validator.py` and its conformance-tested invariants. It cannot
+embed the hash of a role-visible record that is
 created only after the call completes. The promoted MiniMax report therefore
 owns every scientific field and may omit `role_visible_state_sha256`; after
 recording the completed call's canonical visible state, the Controller adds

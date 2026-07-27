@@ -573,6 +573,9 @@ staged state, so legacy v0.15 receipts remain readable.
 
 For an observation-only bootstrap stage (`stage_kind=research` and
 `evaluation_calls=0`), the controller does not create a logical Gate query.
+Its evaluation profile must declare `applicable=false` and
+`reason=observation_only_no_logical_gate`; Gate metric, operator, threshold,
+margin, and query-limit fields are forbidden in that inactive shape.
 The promoted MiniMax source inventory is frozen as the stage candidate, then
 the exact Runtime-shipped validator terminates it deterministically:
 
@@ -587,7 +590,8 @@ python3 references/scripts/harness-runtime.py complete-observation-stage \
 The second command requires the canonical observation-only preflight, the
 immutable byte-identical validator bound by the development contract, and a
 committed MiniMax promotion. It writes a typed `observation_validation`
-decision and moves the stage to `RECORDED`; it deliberately creates no
+decision and moves the candidate to `RECORDED`; this is not whole-stage
+acceptance. It deliberately creates no
 `gate-query.json`, Gate receipt, active reusable evidence, or release claim.
 The terminal MiniMax report and fresh strongest-policy `STAGE-REVIEW` remain
 mandatory before any bounded continuation.
@@ -606,12 +610,17 @@ python3 references/scripts/source_inventory_validator.py \
   --receipt DEVELOPMENT_RECEIPT_JSON
 ```
 
-Canonical preflight also records both the plan-local and Runtime implementation
-digests plus `runtime_byte_identity_verified=true`. The terminal Controller
-reruns the same implementation; a Worker-authored development receipt cannot
-replace the Controller-owned observation-validation receipt.
+The envelope, contract, and immutable review-material entry jointly bind the
+plan-local validator digest to the Runtime-shipped implementation digest. The
+terminal Controller reruns that same implementation under Controller
+authority; this is a replay under different authority, not an orthogonal
+evaluator, and a Worker-authored development receipt cannot replace the
+Controller-owned observation-validation receipt.
 
-The terminal report must be a promoted MiniMax artifact. Its source form omits
+The terminal report must be a promoted MiniMax artifact. Runtime first applies
+the shipped `stage_report_validator.py`, whose conformance suite covers the
+closed shape, stage/candidate identity, Worker identity, evidence-list types,
+and development-receipt presence. Its source form omits
 `role_visible_state_sha256` because that record exists only after the Worker
 call completes. The Controller then runs `record-role-visible-state` and
 `record-stage-report`; the latter injects exactly that provenance hash into the

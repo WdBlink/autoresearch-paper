@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.17.0"
+  version: "0.17.1"
 ---
 
 # Autoresearch Paper
@@ -524,6 +524,13 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.17.1 (2026-07-27)** — Observation-only stages now use an
+  explicitly inactive evaluation profile instead of an active-looking Gate
+  placeholder. MiniMax terminal reports are validated by a shipped,
+  conformance-tested closed-schema validator before the Controller injects
+  the post-call role-visible hash. `RECORDED` means the candidate validation
+  is durably recorded; terminal report, strongest-policy `STAGE-REVIEW`, and
+  the bounded continuation check remain separate mandatory steps.
 - **v0.17.0 (2026-07-27)** — Canonical staged state is the sole runtime
   authority; progress and dossier files are rebuildable non-authoritative
   projections. Capacity v2 isolates per-stage and global Worker limits,

@@ -41,6 +41,10 @@ from source_inventory_validator import (
     symbol_occurs_on_line,
     validate_source_inventory,
 )
+from stage_report_validator import (
+    StageReportValidationError,
+    validate_stage_report,
+)
 
 
 SCHEMA_VERSION = 1
@@ -145,6 +149,8 @@ STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
     "evaluator_implementation", "evaluator_conformance",
     "acceptance_profile", "source_manifest", "citation_universe",
     "evaluation_profile", "evaluator_loader_parameters",
+    "stage_report_validator_implementation",
+    "stage_report_validator_conformance",
 }
 STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {
@@ -9879,11 +9885,30 @@ def staged_validate_contract(contract: dict[str, Any]) -> None:
 
 
 def staged_validate_evaluation_profile(profile: dict[str, Any]) -> None:
-    required = {
+    common = {
         "schema_version", "profile_id",
-        "logical_gate_query_limit_per_candidate",
         "private_split_policy_sha256", "holdout_refresh_policy_sha256",
         "transfer_audit_schedule_sha256", "external_suite_identity_sha256",
+    }
+    inactive = common | {"applicable", "reason"}
+    if profile.get("applicable") is False:
+        missing = sorted(inactive - set(profile))
+        if missing:
+            raise ContractError(f"evaluation profile is incomplete: {missing}")
+        extra = sorted(set(profile) - inactive)
+        if extra:
+            raise ContractError(f"evaluation profile has forbidden fields: {extra}")
+        if (
+            profile.get("schema_version") != 1
+            or profile.get("reason") != "observation_only_no_logical_gate"
+        ):
+            raise ContractError("inactive evaluation profile reason is invalid")
+        staged_require_id(profile["profile_id"], "evaluation_profile.profile_id")
+        for field in common - {"schema_version", "profile_id"}:
+            staged_require_sha256(profile[field], f"evaluation_profile.{field}")
+        return
+    required = common | {
+        "logical_gate_query_limit_per_candidate",
         "gate_metric", "gate_operator", "gate_threshold",
         "gate_escalation_margin",
     }
@@ -9899,11 +9924,8 @@ def staged_validate_evaluation_profile(profile: dict[str, Any]) -> None:
     ):
         raise ContractError("evaluation profile must permit exactly one Gate query")
     staged_require_id(profile["profile_id"], "evaluation_profile.profile_id")
-    for field in required - {
+    for field in common - {
         "schema_version", "profile_id",
-        "logical_gate_query_limit_per_candidate",
-        "gate_metric", "gate_operator", "gate_threshold",
-        "gate_escalation_margin",
     }:
         staged_require_sha256(profile[field], f"evaluation_profile.{field}")
     if (
@@ -12488,17 +12510,19 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         )
     ):
         raise ContractError("stage report lacks a canonical COMMITTED MiniMax promotion")
-    required_content = {
-        "schema_version", "stage_report_id", "stage_cycle_id",
-        "worker_identity", "candidate_sha256",
-        "evidence_refs", "development_validator_receipts", "uncertainties",
-        "proposed_next_questions",
-    }
-    allowed_source = required_content | {"role_visible_state_sha256"}
-    if not required_content <= set(report) or set(report) - allowed_source:
-        raise ContractError("stage report is incomplete")
-    if report["schema_version"] != 1 or report["stage_cycle_id"] != state["active_stage_id"]:
-        raise ContractError("stage report identity mismatch")
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    envelope = read_json(stage_dir / "envelope.json")
+    candidate = read_json(stage_dir / "candidate.json")
+    try:
+        validate_stage_report(
+            report,
+            stage_cycle_id=state["active_stage_id"],
+            worker_model=status["worker_model"],
+            candidate_sha256=candidate["candidate_sha256"],
+            authorized_evidence_refs=envelope["authorized_evidence_refs"],
+        )
+    except StageReportValidationError as exc:
+        raise ContractError(f"stage report validator rejected source: {exc}") from exc
     worker = report["worker_identity"]
     if (
         not isinstance(worker, dict)
@@ -12517,9 +12541,6 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     visible_sha = sha256_file(visible_path)
     if report.get("role_visible_state_sha256") not in {None, visible_sha}:
         raise ContractError("stage report declares a different worker-visible state")
-    candidate = read_json(
-        staged_stage_dir(plan_dir, state["active_stage_id"]) / "candidate.json",
-    )
     if report["candidate_sha256"] != candidate["candidate_sha256"]:
         raise ContractError("stage report candidate mismatch")
     # The Worker cannot know the hash of the role-visible record that is
