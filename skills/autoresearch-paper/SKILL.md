@@ -525,6 +525,11 @@ this file.
   may explicitly pre-authorize one next stage; only a terminal decision,
   MiniMax report, and fresh strongest-policy review allow the controller to
   derive the bound receipt and idempotently start one next-stage Worker.
+  Current Codex custom-agent schemas are supported by disabling multi-agent
+  features without emitting the obsolete `agents.enabled=false` override.
+  An unattended top-level Claude controller must run under explicit operator
+  pre-authorization; `auto` classifier denial is a pre-launch Harness event,
+  not permission to consume or reassign research capacity.
   Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
   cannot use automatic stage crossing. This release claims a
   bounded stage-crossing capability and acceptance target only—not second-stage

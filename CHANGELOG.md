@@ -24,6 +24,14 @@
   crossing one first-stage terminal lineage into the start of one second-stage
   Worker. It does not claim second-stage completion, scientific success, 24h
   or 7x24 stability, production readiness, or full cutover.
+- Keep the isolated Codex reviewer compatible with the standalone custom-agent
+  schema: feature flags disable multi-agent execution, while the obsolete
+  `agents.enabled=false` TOML override is no longer emitted. The latter is
+  parsed as an invalid boolean role by current Codex releases.
+- Treat Claude Code `auto` permission classification as an outer Harness
+  boundary, not research capacity. Unattended operation requires an explicitly
+  pre-authorized controller session; classifier denial occurs before frontier
+  launch and must not consume a CP, review, retry, or Worker slot.
 
 ## v0.16.2 — 2026-07-26
 

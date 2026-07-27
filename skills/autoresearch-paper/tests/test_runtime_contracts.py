@@ -549,7 +549,7 @@ class RuntimeContracts(unittest.TestCase):
             self.assertIn("apps", argv)
             self.assertIn("multi_agent", argv)
             self.assertIn("multi_agent_v2", argv)
-            self.assertIn("agents.enabled=false", argv)
+            self.assertNotIn("agents.enabled=false", argv)
             self.assertIn(
                 "include_collaboration_mode_instructions=false", argv
             )

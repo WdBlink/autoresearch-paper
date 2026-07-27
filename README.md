@@ -404,9 +404,12 @@ Quick highlights:
 
 - **v0.17.0** — sole-authority staged state with rebuildable projections,
   capacity v2 class isolation, and one idempotent, explicitly pre-authorized
-  stage crossing through the start of one next-stage Worker. Legacy capacity
-  v1 retains existing-plan lifecycle/replay compatibility but cannot use
-  automatic stage crossing. No second-stage completion, scientific
+  stage crossing through the start of one next-stage Worker. The isolated
+  Codex surface now disables multi-agent features without the obsolete
+  `agents.enabled=false` override, and an unattended Claude controller must be
+  explicitly pre-authorized rather than relying on `auto` permission prompts.
+  Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
+  cannot use automatic stage crossing. No second-stage completion, scientific
   success, long-soak, production-readiness, or full-cutover claim is made.
 - **v0.16.2** — field-loop recovery for substantive CP-01 evidence closure,
   aggregate frontier-budget admission, isolated single-reviewer Codex

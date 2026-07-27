@@ -34,6 +34,29 @@ python3 references/scripts/harness-runtime.py rebuild-staged-projections \
   --plan-dir PLAN
 ```
 
+## Controller permission mode
+
+Claude Code's interactive `auto` classifier is not an unattended execution
+contract. It can deny a safe controller command before the Runtime launches a
+Worker or frontier request, especially when an old session contains credential
+text. Such a denial is an outer-Harness event and consumes no CP, stage-review,
+retry, Gate, or Worker capacity.
+
+For an unattended run, the operator must pre-authorize the top-level Claude
+controller before starting the loop. Prefer exact Claude Code allow rules for
+the Runtime command surface. For a bounded field acceptance in an isolated
+research worktree, an explicitly authorized `--dangerously-skip-permissions`
+controller session is also valid; it does not relax optimization-contract,
+hash, budget, Gate, or signed-action enforcement inside the Runtime. Never
+switch permission mode in response to model output alone, and never interpret
+silence or a classifier denial as lifecycle authorization.
+
+The isolated Codex reviewer is reduced with explicit feature disables and a
+single-reviewer developer instruction. Do not emit `agents.enabled=false`:
+current Codex parses `agents` as a role table and rejects that boolean child as
+an invalid `AgentRoleToml`. Multi-agent and collaboration escape attempts remain
+blocked by feature flags plus transport-event validation.
+
 ## Freeze Policy
 
 ```bash

@@ -7938,7 +7938,6 @@ def frontier_transport_args(policy: dict[str, Any]) -> list[str]:
 
 def frontier_surface_reduction_args() -> list[str]:
     return [
-        "-c", "agents.enabled=false",
         "-c", "include_collaboration_mode_instructions=false",
         "-c", (
             'developer_instructions="Act as the sole bounded frontier reviewer. '
