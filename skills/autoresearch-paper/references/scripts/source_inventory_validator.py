@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
@@ -12,7 +13,7 @@ from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/2"
+VALIDATOR_VERSION = "source-inventory-validator/3"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
@@ -64,6 +65,17 @@ def validate_source_inventory(
             "source inventory cardinality or questions are invalid"
         )
     for index, (record, source) in enumerate(zip(records, source_manifest)):
+        if (
+            not isinstance(source, dict)
+            or not {"path", "sha256", "symbol", "line_start"} <= set(source)
+            or set(source) - {
+                "path", "sha256", "symbol", "line_start",
+                "size_bytes", "line_count",
+            }
+        ):
+            raise SourceInventoryValidationError(
+                f"source manifest entry {index} has an invalid closed shape"
+            )
         required = {
             "path", "source_sha256", "symbol", "line_start",
             "observation", "hypothesis",
@@ -75,6 +87,8 @@ def validate_source_inventory(
         if (
             record.get("path") != source["path"]
             or record.get("source_sha256") != source["sha256"]
+            or record.get("symbol") != source["symbol"]
+            or record.get("line_start") != source["line_start"]
         ):
             raise SourceInventoryValidationError(
                 f"source inventory record {index} identity mismatch"
@@ -132,7 +146,12 @@ def run_conformance_suite() -> dict[str, Any]:
         source_path = Path(temp_dir) / "source.py"
         source_path.write_text("class Alpha:\n    value = 3\n")
         source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        manifest = [{"path": str(source_path), "sha256": source_sha}]
+        manifest = [{
+            "path": str(source_path),
+            "sha256": source_sha,
+            "symbol": "Alpha",
+            "line_start": 1,
+        }]
         valid = {
             "schema_version": 1,
             "records": [{
@@ -163,6 +182,13 @@ def run_conformance_suite() -> dict[str, Any]:
             (
                 "wrong_line",
                 {**valid, "records": [{**valid["records"][0], "line_start": 2}]},
+                False,
+            ),
+            (
+                "wrong_symbol",
+                {**valid, "records": [{
+                    **valid["records"][0], "symbol": "value",
+                }]},
                 False,
             ),
             (
@@ -200,3 +226,77 @@ def run_conformance_suite() -> dict[str, Any]:
             "cases": results,
             "status": "PASS",
         }
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_artifact(
+    candidate_path: Path, preflight_path: Path, receipt_path: Path,
+) -> dict[str, Any]:
+    """Validate one candidate against the Controller-verified source manifest."""
+    preflight = _strict_json_loads(preflight_path.read_text(encoding="utf-8"))
+    if not isinstance(preflight, dict):
+        raise SourceInventoryValidationError("preflight must be a JSON object")
+    source_manifest = preflight.get("verified_source_manifest")
+    expected_manifest_sha = preflight.get("verified_source_manifest_sha256")
+    if (
+        not isinstance(source_manifest, list)
+        or not source_manifest
+        or expected_manifest_sha != hashlib.sha256(
+            json.dumps(
+                source_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    ):
+        raise SourceInventoryValidationError(
+            "preflight source-manifest identity is missing or changed"
+        )
+    content = candidate_path.read_text(encoding="utf-8")
+    validate_source_inventory(content, source_manifest)
+    receipt = {
+        "schema_version": 1,
+        "validator_id": VALIDATOR_ID,
+        "validator_version": VALIDATOR_VERSION,
+        "candidate_path": str(candidate_path.resolve()),
+        "candidate_sha256": _sha256_file(candidate_path),
+        "preflight_path": str(preflight_path.resolve()),
+        "preflight_sha256": _sha256_file(preflight_path),
+        "source_manifest_sha256": expected_manifest_sha,
+        "record_count": len(source_manifest),
+        "result": "pass",
+    }
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate a frozen source inventory against canonical preflight",
+    )
+    parser.add_argument("--candidate", required=True)
+    parser.add_argument("--preflight", required=True)
+    parser.add_argument("--receipt", required=True)
+    args = parser.parse_args()
+    try:
+        receipt = validate_artifact(
+            Path(args.candidate).resolve(),
+            Path(args.preflight).resolve(),
+            Path(args.receipt).resolve(),
+        )
+    except (OSError, UnicodeError, SourceInventoryValidationError) as exc:
+        parser.error(str(exc))
+    print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -369,6 +369,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         noncanonical_contract: bool = False,
         capacity_value: dict | None = None,
         continuation_stage_id: str | None = None,
+        development_validator_sha256: str | None = None,
     ) -> dict:
         plan.mkdir(parents=True, exist_ok=True)
         if not (plan / "state" / "model_policy.json").exists():
@@ -385,6 +386,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         contract_value["acceptance_evaluator_sha256"] = hashlib.sha256(
             gate_evaluator.read_bytes()
         ).hexdigest()
+        if development_validator_sha256 is not None:
+            contract_value["development_validator_sha256"] = (
+                development_validator_sha256
+            )
         contract = self.write(plan / "inputs" / "contract.json", contract_value)
         if noncanonical_contract:
             contract.write_text(json.dumps(contract_value, separators=(",", ":")))
@@ -644,6 +649,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             raw["source_manifest"] = [{
                 "path": str(source.resolve()),
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "symbol": "invalid",
+                "line_start": 1,
             }]
             raw_path = self.write(plan / "inputs" / "non-utf8-preflight.json", raw)
             root = plan / "state" / "staged_research" / "v1"
@@ -659,6 +666,246 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertEqual(usage_path.read_bytes(), usage_before)
             self.assertFalse(
                 (root / "stages" / "stage_1" / "preflight.json").exists()
+            )
+
+    def test_observation_stage_completes_without_logical_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            validator_sha = hashlib.sha256(
+                (ROOT / "references" / "scripts" / "source_inventory_validator.py")
+                .read_bytes()
+            ).hexdigest()
+            self.initialize(
+                plan,
+                envelope=envelope,
+                capacity_value=self.capacity_v2(workers=3),
+                development_validator_sha256=validator_sha,
+            )
+            raw = self.raw_observation_preflight(plan)
+            preflight = self.write(plan / "inputs" / "preflight.json", raw)
+            self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            )
+            self.apply_cp01(plan)
+            source = Path(raw["source_manifest"][0]["path"])
+            candidate = self.write(plan / "out" / "source-inventory.json", {
+                "schema_version": 1,
+                "records": [{
+                    "path": str(source.resolve()),
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbol": "source",
+                    "line_start": 2,
+                    "observation": '"source": "immutable observation input"',
+                    "hypothesis": "source may identify the immutable fixture input",
+                }],
+                "uncertainties_and_next_questions": [
+                    "Which later stage should interpret this observation?",
+                ],
+            })
+            promotion = self.prepare_candidate_promotion(plan, candidate, "observation")
+            self.invoke(
+                "freeze-stage-candidate", "--plan-dir", str(plan),
+                "--candidate", str(candidate),
+                "--promotion-receipt", str(promotion),
+            )
+            completed = json.loads(self.invoke(
+                "complete-observation-stage", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertEqual(completed["state"], "RECORDED")
+            root = plan / "state" / "staged_research" / "v1"
+            stage = root / "stages" / "stage_1"
+            decision = json.loads((stage / "decision.json").read_text())
+            self.assertEqual(decision["decision_kind"], "observation_validation")
+            self.assertEqual(decision["decision"], "accept")
+            self.assertFalse((stage / "gate-query.json").exists())
+            self.assertFalse((stage / "evidence-receipt.json").exists())
+            receipt = json.loads((stage / "observation-validation.json").read_text())
+            self.assertEqual(receipt["result"], "pass")
+            replay = json.loads(self.invoke(
+                "complete-observation-stage", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertEqual(replay["decision_sha256"], completed["decision_sha256"])
+
+    def test_observation_preflight_requires_exact_symbol_and_line_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            validator_sha = hashlib.sha256(
+                (ROOT / "references" / "scripts" / "source_inventory_validator.py")
+                .read_bytes()
+            ).hexdigest()
+            self.initialize(
+                plan,
+                envelope=envelope,
+                capacity_value=self.capacity_v2(workers=2),
+                development_validator_sha256=validator_sha,
+            )
+            missing = self.raw_observation_preflight(plan)
+            del missing["source_manifest"][0]["symbol"]
+            missing_path = self.write(
+                plan / "inputs" / "missing-symbol.json", missing,
+            )
+            rejected = self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(missing_path), ok=False,
+            )
+            self.assertIn("must bind path, sha256, symbol", rejected.stderr)
+
+            mismatch = self.raw_observation_preflight(plan)
+            mismatch["source_manifest"][0]["symbol"] = "missing_symbol"
+            mismatch_path = self.write(
+                plan / "inputs" / "wrong-symbol.json", mismatch,
+            )
+            rejected = self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(mismatch_path), ok=False,
+            )
+            self.assertIn("symbol/line_start is not exact", rejected.stderr)
+
+    def test_observation_stage_rejects_ungrounded_candidate_without_transition(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            validator_sha = hashlib.sha256(
+                (ROOT / "references" / "scripts" / "source_inventory_validator.py")
+                .read_bytes()
+            ).hexdigest()
+            self.initialize(
+                plan,
+                envelope=envelope,
+                capacity_value=self.capacity_v2(workers=2),
+                development_validator_sha256=validator_sha,
+            )
+            raw = self.raw_observation_preflight(plan)
+            preflight = self.write(plan / "inputs" / "preflight.json", raw)
+            self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            )
+            self.authorize_fixture(plan)
+            source = Path(raw["source_manifest"][0]["path"])
+            candidate = self.write(plan / "out" / "invalid-inventory.json", {
+                "schema_version": 1,
+                "records": [{
+                    "path": str(source.resolve()),
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbol": "source",
+                    "line_start": 2,
+                    "observation": "invented source claim",
+                    "hypothesis": "invalid fixture",
+                }],
+                "uncertainties_and_next_questions": ["Is this grounded?"],
+            })
+            promotion = self.prepare_candidate_promotion(plan, candidate, "bad-observation")
+            self.invoke(
+                "freeze-stage-candidate", "--plan-dir", str(plan),
+                "--candidate", str(candidate),
+                "--promotion-receipt", str(promotion),
+            )
+            rejected = self.invoke(
+                "complete-observation-stage", "--plan-dir", str(plan),
+                ok=False,
+            )
+            self.assertIn("source inventory validator rejected", rejected.stderr)
+            root = plan / "state" / "staged_research" / "v1"
+            stage = root / "stages" / "stage_1"
+            self.assertEqual(
+                json.loads((root / "state.json").read_text())["state"],
+                "CANDIDATE_FROZEN",
+            )
+            self.assertFalse((stage / "decision.json").exists())
+            self.assertFalse((stage / "observation-validation.json").exists())
+
+    def test_observation_stage_review_crosses_and_starts_second_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            envelope = self.envelope()
+            envelope["stage_budget_and_stop"]["evaluation_calls"] = 0
+            validator_sha = hashlib.sha256(
+                (ROOT / "references" / "scripts" / "source_inventory_validator.py")
+                .read_bytes()
+            ).hexdigest()
+            self.initialize(
+                plan,
+                envelope=envelope,
+                capacity_value=self.capacity_v2(workers=3),
+                continuation_stage_id="stage_2",
+                development_validator_sha256=validator_sha,
+            )
+            raw = self.raw_observation_preflight(plan)
+            preflight = self.write(plan / "inputs" / "preflight.json", raw)
+            self.invoke(
+                "preflight-staged-research", "--plan-dir", str(plan),
+                "--preflight-inputs", str(preflight),
+            )
+            self.apply_cp01(plan)
+            source = Path(raw["source_manifest"][0]["path"])
+            candidate = self.write(plan / "out" / "source-inventory.json", {
+                "schema_version": 1,
+                "records": [{
+                    "path": str(source.resolve()),
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbol": "source",
+                    "line_start": 2,
+                    "observation": '"source": "immutable observation input"',
+                    "hypothesis": "source may identify the immutable fixture input",
+                }],
+                "uncertainties_and_next_questions": [
+                    "Which later stage should interpret this observation?",
+                ],
+            })
+            promotion = self.prepare_candidate_promotion(plan, candidate, "crossing")
+            self.invoke(
+                "freeze-stage-candidate", "--plan-dir", str(plan),
+                "--candidate", str(candidate),
+                "--promotion-receipt", str(promotion),
+            )
+            cycle = json.loads(self.invoke(
+                "complete-observation-stage", "--plan-dir", str(plan),
+            ).stdout)
+            report_path, worker_run_id = self.prepare_worker_report(
+                plan, cycle, "a",
+            )
+            report = json.loads(self.invoke(
+                "record-stage-report", "--plan-dir", str(plan),
+                "--stage-report", str(report_path),
+                "--worker-run-id", worker_run_id,
+            ).stdout)
+            self.apply_strong_review(plan, Path(report["path"]))
+
+            stage2_value = self.envelope(
+                "stage_2", source="stage_1",
+                incumbent=cycle["candidate_sha256"],
+            )
+            stage2_value["authorized_evidence_refs"] = []
+            stage2 = self.write(plan / "inputs" / "stage-2.json", stage2_value)
+            preflight2 = self.write(
+                plan / "inputs" / "stage-2-preflight.json", self.raw_preflight(),
+            )
+            task = self.empty_worker_contract(plan, "stage_2")
+            advanced = json.loads(self.invoke(
+                "advance-staged-research", "--plan-dir", str(plan),
+                "--stage-envelope", str(stage2),
+                "--preflight-inputs", str(preflight2),
+                "--task-contract", str(task),
+                "--claude-bin", str(self.fake_claude(plan)),
+            ).stdout)
+            self.assertEqual(advanced["stage_id"], "stage_2")
+            self.assertEqual(advanced["state"], "DEVELOPING")
+            root = plan / "state" / "staged_research" / "v1"
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual(state["active_stage_id"], "stage_2")
+            self.assertEqual(state["state"], "DEVELOPING")
+            capacity = json.loads((root / "capacity-ledger.json").read_text())
+            self.assertEqual(
+                capacity["worker_dispatch_capacity"]["spent_calls"], 1,
             )
 
     def test_developing_dispatch_capacity_rejects_before_scientific_budget(
@@ -791,6 +1038,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "source_manifest": [{
                 "path": str(source.resolve()),
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "symbol": "source",
+                "line_start": 2,
             }],
             "verdict_truth_table": {
                 "applicable": False,
@@ -944,7 +1193,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
 
     def prepare_worker_report(
         self, plan: Path, cycle: dict, suffix: str, *,
-        visible_crash: bool = False,
+        visible_crash: bool = False, omit_visible_binding: bool = False,
     ) -> tuple[Path, str]:
         run_id = "cwr_" + (suffix * 32)[:32]
         run_dir = plan / "state" / "worker_runs" / run_id
@@ -968,7 +1217,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         visible = self.visible(
             plan, run_id, "worker", crash_record=visible_crash,
         )
-        report_path = self.write(plan / "out" / f"stage-report-{suffix}.json", {
+        report_value = {
             "schema_version": 1,
             "stage_report_id": "report_stage_1",
             "stage_cycle_id": "stage_1",
@@ -982,7 +1231,12 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "development_validator_receipts": ["validator_receipt_1"],
             "uncertainties": ["transfer not yet measured"],
             "proposed_next_questions": ["run bounded ablation"],
-        })
+        }
+        if omit_visible_binding:
+            report_value.pop("role_visible_state_sha256")
+        report_path = self.write(
+            plan / "out" / f"stage-report-{suffix}.json", report_value,
+        )
         promotion = self.write(run_dir / "promotion-receipt.json", {
             "schema_version": 1, "plan_id": "plan_staged",
             "worker_run_id": run_id,
@@ -3397,6 +3651,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             cycle = self.run_terminal_cycle(plan, "accept")
             report_path, worker_run_id = self.prepare_worker_report(
                 plan, cycle, "a", visible_crash=True,
+                omit_visible_binding=True,
             )
             promotion_journal_path = (
                 plan / "state" / "worker_runs" / worker_run_id
@@ -3425,6 +3680,18 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             report = json.loads(self.invoke(
                 *report_args,
             ).stdout)
+            canonical_report = json.loads(Path(report["path"]).read_text())
+            visible_path = (
+                plan / "state" / "staged_research" / "v1" / "role-visible"
+                / f"{worker_run_id}.json"
+            )
+            self.assertEqual(
+                canonical_report["role_visible_state_sha256"],
+                hashlib.sha256(visible_path.read_bytes()).hexdigest(),
+            )
+            self.assertNotIn(
+                "role_visible_state_sha256", json.loads(report_path.read_text()),
+            )
             self.apply_strong_review(
                 plan, Path(report["path"]), crash_record=True,
             )

@@ -51,6 +51,13 @@ start writing.
   contract may pre-authorize exactly one named next stage, and the controller
   may cross only after the prior stage has a terminal decision, MiniMax report,
   and fresh strongest-policy review. Silence is never approval.
+  Observation-only bootstrap stages have an explicit non-Gate terminal path:
+  preflight freezes path/hash/symbol/line bindings, the shipped executable
+  validator checks the promoted inventory, and the controller records no
+  Gate-accepted or reusable evidence before the mandatory strong review.
+  Terminal scientific report content remains MiniMax-authored; after the call,
+  the controller adds only the otherwise unknowable role-visible provenance
+  hash to the canonical report.
   v0.16.2 expands content-addressed review material into the actual CP-01
   audit context, rejects underfunded multi-call policies, and uses a real
   Claude-to-first-work-unit run as field acceptance. It rejects unavailable
@@ -408,6 +415,12 @@ Quick highlights:
   Codex surface now disables multi-agent features without the obsolete
   `agents.enabled=false` override, and an unattended Claude controller must be
   explicitly pre-authorized rather than relying on `auto` permission prompts.
+  Observation-only Stage 1 now has a deterministic non-Gate terminal route,
+  exact source symbol/line selection, an executable receipt-producing
+  validator, and independent plan-local/Runtime byte-identity evidence.
+  Canonical stage reports also remove a real-call circular dependency by
+  allowing the controller to inject only the completed Worker's role-visible
+  hash into otherwise unchanged MiniMax-authored content.
   Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
   cannot use automatic stage crossing. No second-stage completion, scientific
   success, long-soak, production-readiness, or full-cutover claim is made.

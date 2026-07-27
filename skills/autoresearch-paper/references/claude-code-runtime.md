@@ -571,7 +571,56 @@ context, and every current artifact hash after restart. The generic
 the initial CP-01 approval. Its evidence profile is selected by versioned
 staged state, so legacy v0.15 receipts remain readable.
 
-After a candidate is frozen, the controller creates one logical Gate query.
+For an observation-only bootstrap stage (`stage_kind=research` and
+`evaluation_calls=0`), the controller does not create a logical Gate query.
+The promoted MiniMax source inventory is frozen as the stage candidate, then
+the exact Runtime-shipped validator terminates it deterministically:
+
+```bash
+python3 references/scripts/harness-runtime.py freeze-stage-candidate \
+  --plan-dir PLAN --candidate SOURCE_INVENTORY_JSON \
+  --promotion-receipt PROMOTION_RECEIPT
+python3 references/scripts/harness-runtime.py complete-observation-stage \
+  --plan-dir PLAN
+```
+
+The second command requires the canonical observation-only preflight, the
+immutable byte-identical validator bound by the development contract, and a
+committed MiniMax promotion. It writes a typed `observation_validation`
+decision and moves the stage to `RECORDED`; it deliberately creates no
+`gate-query.json`, Gate receipt, active reusable evidence, or release claim.
+The terminal MiniMax report and fresh strongest-policy `STAGE-REVIEW` remain
+mandatory before any bounded continuation.
+
+The raw observation preflight must bind
+`{path, sha256, symbol, line_start}` for every source. Runtime verifies that
+the selected symbol occurs on that exact one-based line and persists those
+fields in `verified_source_manifest`; the Worker is not allowed to invent the
+selection rule. The frozen validator is directly executable for development
+validation:
+
+```bash
+python3 references/scripts/source_inventory_validator.py \
+  --candidate SOURCE_INVENTORY_JSON \
+  --preflight CANONICAL_PREFLIGHT_JSON \
+  --receipt DEVELOPMENT_RECEIPT_JSON
+```
+
+Canonical preflight also records both the plan-local and Runtime implementation
+digests plus `runtime_byte_identity_verified=true`. The terminal Controller
+reruns the same implementation; a Worker-authored development receipt cannot
+replace the Controller-owned observation-validation receipt.
+
+The terminal report must be a promoted MiniMax artifact. Its source form omits
+`role_visible_state_sha256` because that record exists only after the Worker
+call completes. The Controller then runs `record-role-visible-state` and
+`record-stage-report`; the latter injects exactly that provenance hash into the
+canonical report while preserving all MiniMax-authored scientific fields.
+Controller synthesis or rewriting of summary, evidence, uncertainty, or next
+questions remains forbidden.
+
+For an evaluative stage, after a candidate is frozen the controller creates
+one logical Gate query.
 Transport retries append attempt IDs under the same idempotency binding and
 consume the independent retry ledger. `accept` promotes, `reject` retains the
 incumbent, and `escalate` blocks. Every terminal decision appends evidence. A
@@ -593,9 +642,10 @@ another class. Legacy capacity v1 keeps existing-plan lifecycle and idempotent
 replay compatibility; it is not valid as a v0.17 capacity template or as
 automatic-crossing authority.
 
-After Stage 1 has a canonical terminal Gate decision, persisted MiniMax report,
-and fresh strongest-policy non-M3 `STAGE-REVIEW`, cross the single initially
-authorized boundary with:
+After Stage 1 has a canonical terminal decision (logical Gate decision for an
+evaluative stage, or typed deterministic validation for an observation-only
+stage), persisted MiniMax report, and fresh strongest-policy non-M3
+`STAGE-REVIEW`, cross the single initially authorized boundary with:
 
 ```bash
 python3 references/scripts/harness-runtime.py advance-staged-research \

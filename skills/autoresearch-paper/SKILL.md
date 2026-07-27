@@ -113,6 +113,12 @@ initialize the canonical durable task graph and register its external trigger
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for capsule-bound Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
+for an observation-only first stage (research + evaluation_calls=0):
+    preflight binds path + sha256 + symbol + line_start for every source;
+    the frozen validator exposes an executable candidate/preflight adapter
+    freeze-stage-candidate -> complete-observation-stage; the Controller runs
+    the exact frozen source-inventory validator and records a typed non-Gate
+    decision without creating Gate-accepted or reusable evidence
 after a recorded stage decision: persist MiniMax report; create terminal STAGE-REVIEW -> send -> validate -> apply -> record-strong-stage-review
 if the initial signed contract explicitly pre-authorized the named next stage:
     advance-staged-research -> derive bound receipt -> compile -> preflight -> authorize -> start exactly one next-stage Worker
@@ -527,6 +533,18 @@ this file.
   derive the bound receipt and idempotently start one next-stage Worker.
   Current Codex custom-agent schemas are supported by disabling multi-agent
   features without emitting the obsolete `agents.enabled=false` override.
+  Observation-only bootstrap stages now terminate through deterministic
+  `complete-observation-stage`: the Controller validates the frozen promoted
+  source inventory, records an explicit non-Gate decision, and produces no
+  reusable Gate evidence before the mandatory terminal strong review.
+  Their preflight source manifest binds each selected symbol and one-based
+  source line in addition to path and digest; Runtime rejects an ambiguous or
+  drifting selection before model dispatch. The shipped validator also offers
+  a CLI adapter that emits a hash-bound development receipt.
+  A MiniMax terminal report contains the scientific fields but cannot know its
+  post-call role-visible hash. After the completed call is recorded, the
+  Controller may add only that provenance field to the canonical report; it
+  must not author or rewrite the report's scientific content.
   An unattended top-level Claude controller must run under explicit operator
   pre-authorization; `auto` classifier denial is a pre-launch Harness event,
   not permission to consume or reassign research capacity.

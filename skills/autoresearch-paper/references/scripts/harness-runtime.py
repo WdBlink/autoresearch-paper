@@ -35,6 +35,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from source_inventory_validator import (
+    SYMBOL_RE,
     SourceInventoryValidationError,
     run_conformance_suite as run_source_inventory_conformance_suite,
     validate_source_inventory,
@@ -10738,6 +10739,11 @@ def staged_preflight_payload(
         evaluator_conformance = {
             "implementation_path": str(implementation_path),
             "implementation_sha256": sha256_file(implementation_path),
+            "runtime_implementation_path": str(shipped_implementation_path),
+            "runtime_implementation_sha256": sha256_file(
+                shipped_implementation_path
+            ),
+            "runtime_byte_identity_verified": True,
             **suite,
         }
         source_manifest = raw["source_manifest"]
@@ -10747,12 +10753,17 @@ def staged_preflight_payload(
             )
         seen_paths: set[str] = set()
         for index, item in enumerate(source_manifest):
-            if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+            if not isinstance(item, dict) or set(item) != {
+                "path", "sha256", "symbol", "line_start",
+            }:
                 raise ContractError(
-                    f"source_manifest[{index}] must bind path and sha256"
+                    f"source_manifest[{index}] must bind path, sha256, symbol, "
+                    "and line_start"
                 )
             raw_source = item.get("path")
             expected_sha = item.get("sha256")
+            symbol = item.get("symbol")
+            line_start = item.get("line_start")
             if not isinstance(raw_source, str) or not Path(raw_source).is_absolute():
                 raise ContractError("source manifest paths must be absolute")
             staged_require_sha256(expected_sha, "source_manifest.sha256")
@@ -10776,11 +10787,24 @@ def staged_preflight_payload(
                 raise ContractError(
                     f"source manifest must be UTF-8 text: {raw_source}"
                 ) from exc
+            lines = source_text.splitlines()
+            if (
+                not isinstance(symbol, str)
+                or SYMBOL_RE.fullmatch(symbol) is None
+                or isinstance(line_start, bool)
+                or not isinstance(line_start, int)
+                or not 1 <= line_start <= len(lines)
+                or symbol not in lines[line_start - 1]
+            ):
+                raise ContractError(
+                    f"source_manifest[{index}] symbol/line_start is not exact"
+                )
             seen_paths.add(canonical_source)
             verified_source_manifest.append({
                 "path": canonical_source, "sha256": expected_sha,
+                "symbol": symbol, "line_start": line_start,
                 "size_bytes": source_path.stat().st_size,
-                "line_count": len(source_text.splitlines()),
+                "line_count": len(lines),
             })
     truth = raw["verdict_truth_table"]
     expected_truth = {
@@ -11133,7 +11157,8 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
         current_sources = []
         for item in verified_sources:
             if not isinstance(item, dict) or set(item) != {
-                "path", "sha256", "size_bytes", "line_count",
+                "path", "sha256", "symbol", "line_start",
+                "size_bytes", "line_count",
             }:
                 raise ContractError(
                     "current-stage preflight source identity is malformed"
@@ -11154,11 +11179,25 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
                 raise ContractError(
                     "current-stage preflight source is no longer UTF-8 text"
                 ) from exc
+            lines = source_text.splitlines()
+            if (
+                not isinstance(item["symbol"], str)
+                or SYMBOL_RE.fullmatch(item["symbol"]) is None
+                or isinstance(item["line_start"], bool)
+                or not isinstance(item["line_start"], int)
+                or not 1 <= item["line_start"] <= len(lines)
+                or item["symbol"] not in lines[item["line_start"] - 1]
+            ):
+                raise ContractError(
+                    "current-stage preflight source selection changed"
+                )
             current_sources.append({
                 "path": item["path"],
                 "sha256": item["sha256"],
+                "symbol": item["symbol"],
+                "line_start": item["line_start"],
                 "size_bytes": source_path.stat().st_size,
-                "line_count": len(source_text.splitlines()),
+                "line_count": len(lines),
             })
         if (
             current_sources != verified_sources
@@ -11176,6 +11215,10 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
             or sha256_file(implementation_path)
             != evaluator.get("implementation_sha256")
             or sha256_file(implementation_path) != sha256_file(shipped_path)
+            or evaluator.get("runtime_implementation_path") != str(shipped_path)
+            or evaluator.get("runtime_implementation_sha256")
+            != sha256_file(shipped_path)
+            or evaluator.get("runtime_byte_identity_verified") is not True
         ):
             raise ContractError(
                 "current-stage preflight evaluator implementation changed"
@@ -11633,6 +11676,151 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
         },
     )
     return {"ok": True, **record}
+
+
+def command_complete_observation_stage(args: argparse.Namespace) -> dict[str, Any]:
+    """Deterministically terminate an observation-only research stage.
+
+    Observation-only stages intentionally have no logical acceptance Gate. The
+    Controller therefore validates the frozen MiniMax artifact with the exact
+    Runtime-shipped source-inventory validator, records a typed non-Gate
+    decision, and moves the stage to RECORDED so it can receive a fresh strong
+    stage review. This command never manufactures reusable Gate evidence.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    state = staged_load_state(plan_dir)
+    stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
+    envelope = read_json(stage_dir / "envelope.json")
+    preflight_path = stage_dir / "preflight.json"
+    preflight = read_json(preflight_path)
+    budget = envelope["stage_budget_and_stop"]
+    if not (
+        envelope.get("stage_kind") == "research"
+        and budget.get("evaluation_calls") == 0
+        and preflight.get("validators", {}).get("verdict_truth_table")
+        == "not_applicable"
+    ):
+        raise ContractError(
+            "observation completion requires an observation-only research stage"
+        )
+    if state["state"] not in {"CANDIDATE_FROZEN", "RECORDED"}:
+        raise ContractError(
+            "observation completion requires one frozen promoted Worker artifact"
+        )
+
+    candidate_path = stage_dir / "candidate.json"
+    candidate = read_json(candidate_path)
+    candidate_chain = staged_resolve_candidate_chain(
+        plan_dir, stage_dir, candidate,
+    )
+    implementation = [
+        item for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") == "evaluator_implementation"
+    ]
+    if len(implementation) != 1:
+        raise ContractError(
+            "observation completion requires one frozen evaluator implementation"
+        )
+    implementation_path = normalize_owned_path(
+        plan_dir, str(plan_dir / implementation[0]["path"]),
+    )
+    shipped_path = SCRIPT_DIR / "source_inventory_validator.py"
+    implementation_sha = sha256_file(implementation_path)
+    contract = read_json(
+        staged_root(plan_dir) / "contracts"
+        / f"{state['contract_version']}.json",
+    )
+    if (
+        implementation_path.is_symlink()
+        or implementation_path.stat().st_mode & 0o777 != 0o444
+        or implementation[0].get("sha256") != implementation_sha
+        or implementation_sha != sha256_file(shipped_path)
+        or implementation_sha != contract["development_validator_sha256"]
+    ):
+        raise ContractError(
+            "observation completion validator is not the frozen Runtime implementation"
+        )
+
+    source_manifest = preflight.get("verified_source_manifest")
+    if not isinstance(source_manifest, list) or not source_manifest:
+        raise ContractError("observation completion lacks a frozen source manifest")
+    frozen_candidate = Path(candidate["candidate_path"])
+    try:
+        validate_source_inventory(
+            frozen_candidate.read_text(encoding="utf-8"), source_manifest,
+        )
+    except (OSError, UnicodeError, SourceInventoryValidationError) as exc:
+        raise ContractError(f"source inventory validator rejected candidate: {exc}") from exc
+
+    validation = {
+        "schema_version": 1,
+        "validation_kind": "observation_source_inventory",
+        "stage_cycle_id": state["active_stage_id"],
+        "candidate_sha256": candidate["candidate_sha256"],
+        "source_manifest_sha256": sha256_json(source_manifest),
+        "development_validator_path": str(implementation_path),
+        "development_validator_sha256": implementation_sha,
+        "result": "pass",
+        "controller_authoritative": True,
+    }
+    validation_path = stage_dir / "observation-validation.json"
+    if validation_path.exists():
+        if read_json(validation_path) != validation:
+            raise ContractError("observation validation receipt collision")
+    else:
+        atomic_write_json(validation_path, validation, immutable=True)
+        _staged_fault_after_artifact("observation_validation")
+
+    stable_decision = {
+        "schema_version": 1,
+        "stage_cycle_id": state["active_stage_id"],
+        "decision_kind": "observation_validation",
+        "decision": "accept",
+        "prior_incumbent_sha256": candidate["incumbent_sha256"],
+        "candidate_sha256": candidate["candidate_sha256"],
+        "resulting_incumbent_sha256": candidate["candidate_sha256"],
+        "advancement_blocked": False,
+        "development_validator_receipt_path": str(validation_path),
+        "development_validator_receipt_sha256": sha256_file(validation_path),
+        "controller_authoritative": True,
+    }
+    decision_path = stage_dir / "decision.json"
+    if decision_path.exists():
+        decision = read_json(decision_path)
+        if {
+            key: decision.get(key) for key in stable_decision
+        } != stable_decision:
+            raise ContractError("observation decision collision")
+    else:
+        decision = {**stable_decision, "decided_at": utc_now()}
+        atomic_write_json(decision_path, decision, immutable=True)
+        _staged_fault_after_artifact("observation_decision")
+
+    state["current_incumbent_sha256"] = candidate["candidate_sha256"]
+    state["state"] = "RECORDED"
+    atomic_write_json(staged_state_path(plan_dir), state)
+    _staged_ensure_audit_once_locked(
+        plan_dir,
+        "observation_stage_completed",
+        {"stage_id": state["active_stage_id"]},
+        {
+            "candidate_sha256": candidate["candidate_sha256"],
+            "worker_run_id": candidate_chain["worker_run_id"],
+            "development_validator_receipt_sha256": sha256_file(validation_path),
+            "logical_gate_applied": False,
+            "controller_authoritative": True,
+        },
+    )
+    return {
+        "ok": True,
+        "stage_id": state["active_stage_id"],
+        "state": state["state"],
+        "candidate_sha256": candidate["candidate_sha256"],
+        "decision_path": str(decision_path),
+        "decision_sha256": sha256_file(decision_path),
+        "validation_receipt_path": str(validation_path),
+        "validation_receipt_sha256": sha256_file(validation_path),
+    }
 
 
 def command_create_logical_gate_query(args: argparse.Namespace) -> dict[str, Any]:
@@ -12297,13 +12485,14 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         )
     ):
         raise ContractError("stage report lacks a canonical COMMITTED MiniMax promotion")
-    required = {
+    required_content = {
         "schema_version", "stage_report_id", "stage_cycle_id",
-        "worker_identity", "role_visible_state_sha256", "candidate_sha256",
+        "worker_identity", "candidate_sha256",
         "evidence_refs", "development_validator_receipts", "uncertainties",
         "proposed_next_questions",
     }
-    if not required <= set(report):
+    allowed_source = required_content | {"role_visible_state_sha256"}
+    if not required_content <= set(report) or set(report) - allowed_source:
         raise ContractError("stage report is incomplete")
     if report["schema_version"] != 1 or report["stage_cycle_id"] != state["active_stage_id"]:
         raise ContractError("stage report identity mismatch")
@@ -12318,19 +12507,29 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     visible_path = staged_root(plan_dir) / "role-visible" / f"{args.worker_run_id}.json"
     if (
         not visible_path.is_file()
-        or sha256_file(visible_path) != report["role_visible_state_sha256"]
         or read_json(visible_path).get("role") != "worker"
         or read_json(visible_path).get("call_id") != args.worker_run_id
     ):
         raise ContractError("stage report lacks its exact worker-visible state")
+    visible_sha = sha256_file(visible_path)
+    if report.get("role_visible_state_sha256") not in {None, visible_sha}:
+        raise ContractError("stage report declares a different worker-visible state")
     candidate = read_json(
         staged_stage_dir(plan_dir, state["active_stage_id"]) / "candidate.json",
     )
     if report["candidate_sha256"] != candidate["candidate_sha256"]:
         raise ContractError("stage report candidate mismatch")
+    # The Worker cannot know the hash of the role-visible record that is
+    # created only after its call completes. Preserve every scientific field
+    # byte-for-value and let the Controller add only that provenance binding.
+    canonical_report = {**report, "role_visible_state_sha256": visible_sha}
     target = staged_stage_dir(plan_dir, state["active_stage_id"]) / "stage-report.json"
     target_was_absent = not target.exists()
-    staged_copy_immutable(source, target)
+    if target.exists():
+        if read_json(target) != canonical_report:
+            raise ContractError("canonical stage report changed")
+    else:
+        atomic_write_json(target, canonical_report, immutable=True)
     if target_was_absent:
         _staged_fault_after_artifact("stage_report")
     _staged_ensure_audit_once_locked(
@@ -14350,6 +14549,9 @@ command_record_role_visible_state = staged_locked_command(
 command_freeze_stage_candidate = staged_locked_command(
     command_freeze_stage_candidate
 )
+command_complete_observation_stage = staged_locked_command(
+    command_complete_observation_stage
+)
 command_create_logical_gate_query = staged_locked_command(
     command_create_logical_gate_query
 )
@@ -14468,6 +14670,17 @@ def build_parser() -> argparse.ArgumentParser:
     gate_decision.add_argument("--execution-receipt", required=True)
     gate_decision.add_argument("--simulate-crash-after-prepare", action="store_true")
     gate_decision.set_defaults(handler=command_apply_logical_gate_decision)
+
+    observation_complete = sub.add_parser(
+        "complete-observation-stage",
+        help=(
+            "validate and record one observation-only stage without a logical Gate"
+        ),
+    )
+    observation_complete.add_argument("--plan-dir", required=True)
+    observation_complete.set_defaults(
+        handler=command_complete_observation_stage,
+    )
 
     stage_report = sub.add_parser(
         "record-stage-report",
