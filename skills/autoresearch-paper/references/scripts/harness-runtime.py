@@ -11993,12 +11993,58 @@ def staged_terminal_review_evidence_paths(
             decision.get("evaluator_execution_receipt_path", "")
         )
         run = load_evaluator_run(plan_dir, terminal_path)
+        envelope = read_json(stage_dir / "envelope.json")
+        profile = read_json(staged_root(plan_dir) / "evaluation-profile.json")
+        staged_validate_profile_envelope_compatibility(
+            profile, envelope, strict=False,
+        )
+        audit_path = staged_root(plan_dir) / "audit.jsonl"
+        audit = [
+            strict_json_loads(line)
+            for line in audit_path.read_text().splitlines() if line.strip()
+        ] if audit_path.exists() else []
+        value = require_finite_number(run.get("value"), "Gate evaluator value")
+        threshold = profile["gate_threshold"]
+        margin = profile["gate_escalation_margin"]
+        if abs(value - threshold) <= margin:
+            expected_decision = "escalate"
+        elif profile["gate_operator"] == "ge":
+            expected_decision = "accept" if value >= threshold else "reject"
+        else:
+            expected_decision = "accept" if value <= threshold else "reject"
+        expected_resulting = (
+            candidate["candidate_sha256"]
+            if expected_decision == "accept"
+            else candidate["incumbent_sha256"]
+        )
         if (
             decision.get("evaluator_execution_receipt_sha256")
             != sha256_file(terminal_path)
             or run.get("candidate_sha256") != decision.get("candidate_sha256")
+            or decision.get("decision") != expected_decision
+            or decision.get("prior_incumbent_sha256")
+            != candidate["incumbent_sha256"]
+            or decision.get("resulting_incumbent_sha256") != expected_resulting
+            or decision.get("advancement_blocked")
+            is not (expected_decision == "escalate")
         ):
             raise ContractError("canonical Gate execution binding changed")
+        staged_validate_terminal_gate_replay(
+            plan_dir,
+            {
+                "contract_version": envelope["contract_version"],
+                "audit_revision": len(audit),
+                "current_incumbent_sha256": expected_resulting,
+                "state": (
+                    "PAUSED"
+                    if expected_decision == "escalate" else "RECORDED"
+                ),
+            },
+            stage_dir,
+            stage_dir / "gate-query.json",
+            read_json(stage_dir / "gate-query.json"),
+            profile, run, decision,
+        )
     return {
         "stage_candidate": candidate_path,
         "stage_decision": decision_path,

@@ -1841,6 +1841,68 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         self.apply_strong_review(plan, Path(report["path"]))
         return cycle
 
+    def test_forged_gate_resulting_incumbent_cannot_compile_empty_evidence_stage(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.prepare_compilable_stage(plan, "e")
+            root = plan / "state" / "staged_research" / "v1"
+            decision_path = root / "stages" / "stage_1" / "decision.json"
+            decision = json.loads(decision_path.read_text())
+            decision["resulting_incumbent_sha256"] = "f" * 64
+            decision_path.chmod(0o644)
+            decision_path.write_text(
+                json.dumps(decision, sort_keys=True, indent=2) + "\n"
+            )
+            decision_path.chmod(0o444)
+            envelope = self.envelope(
+                "stage_2", source="stage_1", incumbent="f" * 64,
+            )
+            envelope["authorized_evidence_refs"] = []
+            envelope_path = self.write(
+                plan / "inputs" / "forged-gate-stage-2.json", envelope,
+            )
+            authorization = self.authorize_next_stage(plan, envelope_path)
+            rejected = self.invoke(
+                "compile-next-stage", "--plan-dir", str(plan),
+                "--stage-envelope", str(envelope_path),
+                "--authorization-receipt", authorization, ok=False,
+            )
+            self.assertIn("hash mismatch", rejected.stderr)
+            self.assertFalse(
+                (root / "stages" / "stage_1" / "next-stage.json").exists()
+            )
+
+    def test_forged_gate_semantics_fail_before_stage_report_review(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            cycle = self.run_terminal_cycle(plan, "accept")
+            root = plan / "state" / "staged_research" / "v1"
+            decision_path = root / "stages" / "stage_1" / "decision.json"
+            decision = json.loads(decision_path.read_text())
+            decision["resulting_incumbent_sha256"] = "f" * 64
+            decision_path.chmod(0o644)
+            decision_path.write_text(
+                json.dumps(decision, sort_keys=True, indent=2) + "\n"
+            )
+            decision_path.chmod(0o444)
+            report_path, worker_run_id = self.prepare_worker_report(
+                plan, cycle, "f",
+            )
+            rejected = self.invoke(
+                "record-stage-report", "--plan-dir", str(plan),
+                "--stage-report", str(report_path),
+                "--worker-run-id", worker_run_id, ok=False,
+            )
+            self.assertIn("canonical Gate execution binding changed", rejected.stderr)
+            self.assertFalse(
+                (root / "stages" / "stage_1" / "stage-report.json").exists()
+            )
+
     def test_contract_preflight_and_cp01_bind_exactly_one_stage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = Path(td) / "plan"
