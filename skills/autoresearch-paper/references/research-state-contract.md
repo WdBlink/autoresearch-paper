@@ -12,6 +12,10 @@ enable CP-03.
 ## Canonical staged authority
 
 For staged research, `state/staged_research/v1/` is the sole runtime truth.
+It is controller-owned from first publication: caller-authored bootstrap files
+must remain under `control/staged-inputs/` or `control/review-materials/`, and
+must never be written directly into the canonical namespace;
+`init-staged-research` is its only initial publisher.
 The controller derives `state/progress.json` and
 `state/research-dossier.md` from that namespace. Both are rebuildable,
 non-authoritative projections: editing, deleting, or forging either one cannot

@@ -40,6 +40,10 @@ return snippet_map
   `STAGE-REVIEW`, and CP-01/CP-02/CP-04 (optionally CP-03) separate. Prompt text
   cannot transfer those classes, and a frontier top-up cannot add Worker
   allowance.
+- Prepare bootstrap JSON under `control/staged-inputs/` and review materials
+  under `control/review-materials/`. Never create or write
+  `state/staged_research/v1/` directly; only `init-staged-research` may publish
+  the initial canonical state.
 - Legacy capacity v1 is existing-plan lifecycle/replay compatibility and must
   not be copied into a new v0.17 plan or used for automatic stage crossing.
 - A Worker may propose Stage 2 material, but only

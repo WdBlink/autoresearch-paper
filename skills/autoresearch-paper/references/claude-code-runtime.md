@@ -446,6 +446,15 @@ The commit journal recovers an applied work-unit result without duplication.
 For a new v0.17 staged plan, use capacity v2 and initialize only the first
 executable stage:
 
+Before this command, write caller-authored contract, envelope, evaluation,
+capacity, and raw-preflight inputs under `PLAN/control/staged-inputs/`; place
+their immutable review materials under `PLAN/control/review-materials/STAGE/`.
+Do not create `PLAN/state/staged_research/v1/` yourself, even for an empty
+directory or a proposed contract snapshot. `init-staged-research` is the only
+publisher of that canonical namespace. If any manual write has already landed
+there, abandon that initialization attempt and restart from a clean plan
+identity rather than treating the bytes as controller authority.
+
 ```bash
 python3 references/scripts/harness-runtime.py init-staged-research \
   --plan-dir PLAN --plan-id PLAN_ID \

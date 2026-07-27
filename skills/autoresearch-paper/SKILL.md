@@ -94,6 +94,9 @@ task_graph = generate_plan_yaml(
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
 freeze the human-owned contract and exactly one first stage with init-staged-research
+prepare caller-authored bootstrap inputs only under control/staged-inputs/ and
+  review materials only under control/review-materials/; never pre-create or
+  write state/staged_research/v1/ because init-staged-research is its sole publisher
 run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
 run the strongest reviewer allowed by the frozen policy; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
@@ -219,7 +222,10 @@ lives in `references/tier-decision-tree.md`.
 Generated plans must initialize:
 
 - canonical `state/staged_research/v1/` governance for new v0.17 plans, using
-  capacity v2
+  capacity v2, exclusively through `init-staged-research`; preparatory contract,
+  envelope, profile, capacity, preflight, and review-material inputs belong
+  under `control/staged-inputs/` or `control/review-materials/`, never under the
+  canonical namespace
 - generated `state/progress.json` and `state/research-dossier.md` projections;
   neither is transition authority
 - `state/directions_tried.json`

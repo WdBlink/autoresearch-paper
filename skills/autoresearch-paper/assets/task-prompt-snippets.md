@@ -25,6 +25,11 @@ When the plan generator writes `<plan-dir>/plan.yaml`, each task's
 The generator **must** not edit the snippets — they are versioned with
 the skill. Tier-specific gates live in the plan templates, not here.
 
+Plan bootstrap inputs belong under `control/staged-inputs/`; immutable review
+materials belong under `control/review-materials/`. Never create or write
+`state/staged_research/v1/` directly. Only `init-staged-research` may publish
+the initial canonical state.
+
 State-authority rule for every snippet: if
 `{PLAN_DIR}/state/staged_research/v1/state.json` exists, it is the sole
 research lifecycle authority. A Worker must never create or edit
