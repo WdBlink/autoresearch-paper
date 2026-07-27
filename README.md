@@ -20,8 +20,8 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.16.2
-- **Stability:** Production for personal use, early for shared plans
+- **Current version:** v0.17.0
+- **Stability:** Experimental; bounded stage-crossing acceptance target
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
@@ -39,11 +39,18 @@ start writing.
   binds source data, transformations, renderer identity, commands, outputs,
   hashes, a figure-stage-frozen expected set, an exact inventory, and
   output-bound human review before writing.
-  New v0.16 plans freeze a human-owned optimization contract and exactly one
+  New staged plans freeze a human-owned optimization contract and exactly one
   first-stage envelope. CP-01 uses the strongest allowed Codex reviewer, while
   the deterministic controller remains authoritative. Each candidate gets one
   logical isolated Gate decision; terminal MiniMax reports receive fresh
   non-M3 review before at most one next stage is compiled.
+  v0.17 makes `state/staged_research/v1/` the sole runtime truth;
+  `state/progress.json` and `state/research-dossier.md` are rebuildable,
+  non-authoritative views. Capacity v2 separates per-stage and global Worker
+  limits from STAGE-REVIEW and named checkpoint capacity. An initial signed
+  contract may pre-authorize exactly one named next stage, and the controller
+  may cross only after the prior stage has a terminal decision, MiniMax report,
+  and fresh strongest-policy review. Silence is never approval.
   v0.16.2 expands content-addressed review material into the actual CP-01
   audit context, rejects underfunded multi-call policies, and uses a real
   Claude-to-first-work-unit run as field acceptance. It rejects unavailable
@@ -51,9 +58,10 @@ start writing.
   dispatch/scientific capacity under one controller lock. v0.16.1 added typed negative frontier
   advice, conservative unknown-usage charging, fail-fast stage-review routing,
   and signed prospective capacity grants without refunding launched calls.
-  The measured soak in this
-  release is intentionally short, so 24h/7×24/full-cutover stability is not
-  claimed.
+  v0.17 claims only a bounded stage-crossing capability and acceptance target:
+  one first-stage-terminal to second-stage-Worker-start crossing. It does not
+  claim second-stage completion, scientific success, 24h or 7×24 stability,
+  production readiness, or full cutover.
   MAVIS is available only as explicit legacy compatibility. See
   [`skills/autoresearch-paper/references/claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md), the design notes in
   [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
@@ -104,6 +112,9 @@ heartbeat watchdogs, and manifest-driven cleanup.
   a frozen budget before sparse Codex checkpoint audits.
 - Registers a session-independent launchd trigger with exactly-one tick claims,
   rebuildable canonical state, and fresh hash-bound task capsules.
+- Treats `state/staged_research/v1/` as the only staged runtime authority and
+  uses `rebuild-staged-projections` to rebuild `state/progress.json` plus
+  `state/research-dossier.md` as disposable operator projections.
 - Blocks unattended conference/journal autonomy until evaluator authority,
   replay, regression, immutable inputs, search space, and complexity policy
   pass executable admission; any identity drift revokes eligibility.
@@ -160,6 +171,15 @@ Cleanup requires an authenticated receipt and refuses shared or escaping paths.
 human record. The deterministic controller writes canonical receipts and keeps
 the durable plan state available across Claude sessions.
 
+**Bounded staged continuation:** Capacity v2 keeps the active stage's Worker
+quota, the plan-global Worker allowance, terminal `STAGE-REVIEW`, and
+CP-01/CP-02/CP-04 (optionally CP-03) in separate non-transferable classes. A
+frontier top-up never increases Worker capacity. If the initial signed
+`authorize_contract` names exactly one next stage, `advance-staged-research`
+may derive one bound continuation receipt after terminal decision/report/review
+evidence and start exactly one Worker for that next stage. No response or
+operator silence counts as approval.
+
 For the deeper plan structure, see
 [`skills/autoresearch-paper/SKILL.md`](skills/autoresearch-paper/SKILL.md).
 
@@ -177,7 +197,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.16.2 with a full bundle refresh so the
+Upgrade copied installations to v0.17.0 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -382,6 +402,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.17.0** — sole-authority staged state with rebuildable projections,
+  capacity v2 class isolation, and one idempotent, explicitly pre-authorized
+  stage crossing through the start of one next-stage Worker. Legacy capacity
+  v1 retains existing-plan lifecycle/replay compatibility but cannot use
+  automatic stage crossing. No second-stage completion, scientific
+  success, long-soak, production-readiness, or full-cutover claim is made.
 - **v0.16.2** — field-loop recovery for substantive CP-01 evidence closure,
   aggregate frontier-budget admission, isolated single-reviewer Codex
   transport, external read-only Worker inputs, disclosed closed evaluators,
@@ -454,7 +480,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.16.2}
+  version = {0.17.0}
 }
 ```
 
@@ -466,7 +492,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.16.2-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.17.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

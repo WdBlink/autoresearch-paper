@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.16.2"
+  version: "0.17.0"
 ---
 
 # Autoresearch Paper
@@ -32,6 +32,15 @@ file-backed state.
   first-stage envelope, its deterministic preflight, and named checkpoint
   capacity to an independent strongest-policy Codex review. The review is
   advisory; only the deterministic controller may authorize the stage.
+- Never use `state/progress.json` or `state/research-dossier.md` to authorize a
+  staged transition. `state/staged_research/v1/` is the sole runtime truth;
+  those two files are rebuildable, non-authoritative projections.
+- Never infer continuation authority from silence. The initial signed
+  `authorize_contract` may pre-authorize exactly one explicitly named next
+  stage, with `max_automatic_crossings=1` and `silence_is_approval=false`.
+- Never transfer capacity between a stage's Worker quota, the global Worker
+  capacity, `STAGE-REVIEW`, or CP-01/CP-02/CP-04 (and optional CP-03). A signed
+  frontier top-up does not increase any Worker allowance.
 - Never create a new staged envelope without the exact plan-relative,
   content-addressed `review_material_manifest` for objective, intervention,
   entry/exit, budget, report schema, and stop policy. Legacy v0.16 envelopes
@@ -97,12 +106,15 @@ advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for capsule-bound Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
 after a recorded stage decision: persist MiniMax report; create terminal STAGE-REVIEW -> send -> validate -> apply -> record-strong-stage-review
-compile at most one next stage from the incumbent and authorized evidence
+if the initial signed contract explicitly pre-authorized the named next stage:
+    advance-staged-research -> derive bound receipt -> compile -> preflight -> authorize -> start exactly one next-stage Worker
+else: require a fresh signed reauthorize_stage receipt before compile-next-stage
+rebuild progress.json and research-dossier.md from canonical staged state with rebuild-staged-projections when needed
 at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
-    observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
+    observe canonical staged state + last_seen.jsonl + generated projections + l0/watchdog health
     honor status, pause, resume, stop, cleanup, rescue-status commands
     surface watchdog/L0 findings without destructive action
 on finish or user stop:
@@ -116,6 +128,14 @@ Read `references/claude-code-runtime.md` before dispatch. The current target
 adapter provides:
 
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
+- sole-authority `state/staged_research/v1/` state plus deterministic
+  `rebuild-staged-projections` output for legacy progress and the human dossier;
+- capacity v2 separation of per-stage Worker dispatches, global Worker
+  dispatches, `STAGE-REVIEW`, and named CP slots, with no Worker capacity from
+  frontier top-ups;
+- exactly one initial-contract-pre-authorized crossing, gated on a terminal
+  decision, MiniMax report, and fresh strongest-policy review, ending at one
+  next-stage Worker start;
 - a mandatory independent CP-01 top-level-plan audit pinned to
   `gpt-5.6-sol` at `ultra`, with reviewer identity and policy hash carried into
   the durable `approve_execution` receipt;
@@ -198,7 +218,10 @@ lives in `references/tier-decision-tree.md`.
 
 Generated plans must initialize:
 
-- `state/progress.json`
+- canonical `state/staged_research/v1/` governance for new v0.17 plans, using
+  capacity v2
+- generated `state/progress.json` and `state/research-dossier.md` projections;
+  neither is transition authority
 - `state/directions_tried.json`
 - `state/candidate_registry.jsonl`
 - `state/scoreboard.tsv`
@@ -206,7 +229,6 @@ Generated plans must initialize:
 - a closed `metric_contract` input for CP-02; do not pre-create
   `state/evaluator_contract.json` (the controller freezes it after CP-02)
 - `state/failure_state.json`
-- versioned `state/staged_research/v1/` governance for new v0.16 plans
 - `control/`
 - `resource_manifest.json`
 - `last_seen.jsonl`
@@ -463,8 +485,10 @@ On completion, report:
 - `references/figure-requirements.schema.json` — expected figure identities;
   legacy v0.15 plans freeze them at CP-01, while v0.16 freezes them at the
   figure stage
-- `references/staged-research.schema.json` — aggregate v1 contract, stage,
-  capacity, Gate, report, review, and evidence definitions
+- `references/staged-research.schema.json` — aggregate staged-governance v1
+  contract, stage, Gate, report, review, and evidence definitions, including
+  capacity v2; legacy capacity v1 retains existing-plan lifecycle/replay
+  compatibility but cannot use automatic stage crossing
 - `references/role-visible-state.schema.json` — exact per-role rendered state
   and ordered context transformations, distinct from audit history
 - `references/frontier-response.schema.json` — Codex advisory response schema
@@ -483,6 +507,18 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.17.0 (2026-07-27)** — Canonical staged state is the sole runtime
+  authority; progress and dossier files are rebuildable non-authoritative
+  projections. Capacity v2 isolates per-stage and global Worker limits,
+  terminal `STAGE-REVIEW`, and named CP capacity. An initial signed contract
+  may explicitly pre-authorize one next stage; only a terminal decision,
+  MiniMax report, and fresh strongest-policy review allow the controller to
+  derive the bound receipt and idempotently start one next-stage Worker.
+  Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
+  cannot use automatic stage crossing. This release claims a
+  bounded stage-crossing capability and acceptance target only—not second-stage
+  completion, scientific success, 24h or 7x24 stability, production readiness,
+  or full cutover.
 - **v0.16.2 (2026-07-26)** — Field-loop recovery: staged CP-01 now expands
   readable plan/evaluator/risk/figure materials into the Codex audit boundary,
   plan-wide ChatGPT budgets must fund every declared call, frontier review is

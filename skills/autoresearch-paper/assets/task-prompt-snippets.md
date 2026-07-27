@@ -25,6 +25,16 @@ When the plan generator writes `<plan-dir>/plan.yaml`, each task's
 The generator **must** not edit the snippets — they are versioned with
 the skill. Tier-specific gates live in the plan templates, not here.
 
+State-authority rule for every snippet: if
+`{PLAN_DIR}/state/staged_research/v1/state.json` exists, it is the sole
+research lifecycle authority. A Worker must never create or edit
+`state/progress.json`; that file is a controller-generated, non-authoritative
+legacy projection. The Worker must return candidate and stage-report payloads
+through its declared task output, and only the deterministic controller may
+validate and record them as canonical staged artifacts. If the staged state
+does not exist, the explicit legacy `progress.json` and registry instructions
+below remain available for compatibility.
+
 ---
 
 ## T0-evaluator-freeze — evaluator and success contract
@@ -53,8 +63,9 @@ Outputs (write to {PLAN_DIR}/state):
   strongest known baseline or SOTA when available.
 - allowed_search_space.md — what method families, data sources, and
   compute budgets are allowed.
-- progress.json — initialize status=running, iteration=0,
-  research_status=not_started.
+- For a legacy plan only, progress.json — initialize status=running,
+  iteration=0, research_status=not_started. For a staged plan, do not create
+  or edit progress.json; the controller renders it from canonical staged state.
 - failure_state.json — initialize independent typed failure counters and the
   frozen scientific pivot threshold.
 - directions_tried.json — initialize {"directions":[]}.
@@ -186,7 +197,9 @@ Outputs (write to {OUT_DIR}):
 - Also update {PLAN_DIR}/state/directions_tried.json with a unique
   direction id before implementation starts. Read existing directions
   first and do not retry discarded/exhausted ideas.
-- Append a PROPOSED row to {PLAN_DIR}/state/candidate_registry.jsonl.
+- For a legacy plan, append a PROPOSED row to
+  {PLAN_DIR}/state/candidate_registry.jsonl. For a staged plan, return the
+  proposed candidate payload and let the controller validate and record it.
 
 Gate: method-spec.md must be detailed enough that an implementer
 agent (T4) can build the system without asking you questions. The
@@ -310,9 +323,10 @@ criteria. Producer self-claims do not count.
 Outputs:
 - {OUT_DIR}/candidate-evaluation.md — exact metric comparison, baseline
   deltas, uncertainty, and file evidence.
-- Append one row to {PLAN_DIR}/state/scoreboard.tsv.
-- Append one JSON line to {PLAN_DIR}/state/candidate_registry.jsonl with
-  verdict KEEP, DISCARD, PIVOT, or ESCALATE.
+- For a legacy plan, append one row to {PLAN_DIR}/state/scoreboard.tsv and one
+  JSON line to {PLAN_DIR}/state/candidate_registry.jsonl with verdict KEEP,
+  DISCARD, PIVOT, or ESCALATE. For a staged plan, return the evaluation report
+  and candidate payload only; the controller validates and records them.
 
 Gate: every metric claim must cite a raw result file or table. If raw
 results contain ERROR/TypeError records, verdict is DISCARD unless the
@@ -325,7 +339,8 @@ error is explicitly out-of-scope and quantified.
 You are making the research decision after independent evaluation.
 
 Inputs:
-- {PLAN_DIR}/state/progress.json
+- canonical staged state when present; otherwise the legacy
+  {PLAN_DIR}/state/progress.json projection
 - {PLAN_DIR}/state/directions_tried.json
 - {PLAN_DIR}/state/candidate_registry.jsonl
 - {PLAN_DIR}/state/scoreboard.tsv
@@ -346,7 +361,8 @@ Decision rules:
 
 Outputs:
 - verdict input for {PLAN_DIR}/state/evaluator_verdicts/<candidate-id>.json
-- updated {PLAN_DIR}/state/progress.json
+- for a legacy plan only, updated {PLAN_DIR}/state/progress.json; for a staged
+  plan, return the candidate/report payload and let the controller record it
 - if pivot/escalation is needed: {PLAN_DIR}/control/pivot_requested.json
   or {PLAN_DIR}/control/override_requested.json
 
@@ -363,7 +379,8 @@ You are designing the next research direction after the previous
 candidate failed.
 
 Inputs:
-- {PLAN_DIR}/state/progress.json
+- canonical staged state when present; otherwise the legacy
+  {PLAN_DIR}/state/progress.json projection
 - {PLAN_DIR}/state/directions_tried.json
 - {PLAN_DIR}/state/candidate_registry.jsonl
 - {PLAN_DIR}/state/scoreboard.tsv
@@ -384,7 +401,9 @@ Rules:
 Outputs:
 - update directions_tried.json with the failed direction and the new
   direction.
-- update progress.json iteration and last_direction.
+- for a legacy plan only, update progress.json iteration and last_direction;
+  for a staged plan, return the proposed next-direction report without editing
+  progress.json, and let the controller record the canonical transition.
 - write {OUT_DIR}/pivot-brief.md routing the plan back to T3/T4/T5/T6.
 
 Gate: before returning PASS, run:

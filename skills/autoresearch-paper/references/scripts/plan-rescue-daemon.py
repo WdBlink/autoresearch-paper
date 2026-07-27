@@ -53,6 +53,20 @@ PAUSE_REQUEST = "pause_requested.json"
 STOP_REQUEST = "stop_requested.json"
 RESUME_SIGNAL = "resume_signal.json"
 DISABLE_FLAG = "local_llm_disabled"
+STAGED_STATE_RELATIVE = Path("state/staged_research/v1/state.json")
+STAGED_ACTIVE_STATES = {
+    "CONTRACTED",
+    "STAGE_AUTHORIZED",
+    "DEVELOPING",
+    "CANDIDATE_FROZEN",
+    "GATE_QUERIED",
+    "ACCEPTED",
+    "REJECTED",
+    "ESCALATED",
+    "RECORDED",
+    "PAUSED",
+}
+STAGED_STATES = STAGED_ACTIVE_STATES | {"COMPLETE"}
 
 # Thresholds (seconds)
 PAUSED_TIMEOUT_SEC = 600      # 10 min — auto-judge if no owner action
@@ -107,27 +121,61 @@ def find_active_plans() -> list[Path]:
         if resolved in seen:
             continue
         seen.add(resolved)
-        state = read_state(d)
-        status = state.get("status")
-        if status in ("running", "paused"):
+        state, source = read_state_with_source(d)
+        if is_active_state(state, source):
             plans.append(d)
     return plans
 
 
-def read_state(plan_dir: Path) -> dict[str, Any]:
+def read_state_with_source(plan_dir: Path) -> tuple[dict[str, Any], str]:
+    staged = plan_dir / STAGED_STATE_RELATIVE
+    if staged.exists():
+        try:
+            data = json.loads(staged.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {
+                "state": "INVALID",
+                "failure": "canonical_staged_state_unreadable",
+            }, "staged_invalid"
+        if not isinstance(data, dict) or data.get("state") not in STAGED_STATES:
+            return {
+                "state": "INVALID",
+                "failure": "canonical_staged_state_invalid",
+            }, "staged_invalid"
+        return data, "staged_research/v1"
     state_json = plan_dir / "state.json"
     if state_json.exists():
         try:
             data = json.loads(state_json.read_text())
-            return data.get("state", data)
+            state = data.get("state", data)
+            if isinstance(state, dict) and state.get("status") is not None:
+                return state, "legacy_state"
         except json.JSONDecodeError:
             pass
     progress = plan_dir / "state" / "progress.json"
     try:
         data = json.loads(progress.read_text())
-        return data if isinstance(data, dict) else {}
+        return (data, "legacy_progress") if isinstance(data, dict) else ({}, "none")
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return {}, "none"
+
+
+def read_state(plan_dir: Path) -> dict[str, Any]:
+    return read_state_with_source(plan_dir)[0]
+
+
+def is_active_state(state: dict[str, Any], source: str) -> bool:
+    if source == "staged_invalid":
+        return True
+    if source == "staged_research/v1":
+        return state.get("state") in STAGED_ACTIVE_STATES
+    return state.get("status") in {"running", "paused"}
+
+
+def is_paused_state(state: dict[str, Any], source: str) -> bool:
+    if source == "staged_research/v1":
+        return state.get("state") == "PAUSED"
+    return state.get("status") == "paused"
 
 
 def write_rescue_log(plan_dir: Path, entry: dict[str, Any]) -> None:
@@ -297,13 +345,29 @@ def apply_explicit_stop_request(plan_id: str) -> tuple[str, str]:
 def patrol_plan(plan_dir: Path, dry_run: bool = False, legacy_mavis: bool = False) -> dict[str, Any]:
     """Patrol one plan, return action taken."""
     plan_id = plan_dir.name
-    state = read_state(plan_dir)
+    state, state_source = read_state_with_source(plan_dir)
     if not state:
         return {"plan_id": plan_id, "action": "skipped", "reason": "no state"}
 
-    status = state.get("status")
+    status = (
+        state.get("state")
+        if state_source in {"staged_research/v1", "staged_invalid"}
+        else state.get("status")
+    )
     cycle = state.get("cycle")
     phase = state.get("phase")
+
+    if state_source == "staged_invalid":
+        entry = {
+            "plan_id": plan_id,
+            "action": "invalid_staged_state",
+            "state_source": state_source,
+            "status": status,
+            "reason": state.get("failure"),
+        }
+        if not dry_run:
+            write_rescue_log(plan_dir, {"ts": now_iso(), **entry})
+        return entry
 
     # Honor user pause/resume/stop requests. New scripts write under
     # control/, but root/state paths remain supported for older runs.
@@ -370,10 +434,11 @@ def patrol_plan(plan_dir: Path, dry_run: bool = False, legacy_mavis: bool = Fals
             write_rescue_log(plan_dir, {"ts": now_iso(), **entry})
         return entry
 
-    if status != "paused":
+    if not is_paused_state(state, state_source):
         l0 = call_l0_guard(plan_dir, dry_run=dry_run)
         return {"plan_id": plan_id, "action": f"l0_{l0.get('action', 'checked')}",
                 "reason": f"status={status}; delegated non-paused patrol to L0",
+                "state_source": state_source,
                 "l0": l0}
 
     # Honor local LLM disable flag only for paused auto-judge. L0 liveness

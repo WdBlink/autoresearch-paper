@@ -29,9 +29,24 @@ return snippet_map
   `{PLAN_DIR}`, `{OUT_DIR}`, and `{MATERIALS}`.
 - Keep tier-specific gates in the plan templates; keep reusable worker
   prompts in the asset.
-- Generated v0.16 plans use one authorized stage at a time. Worker prompts may
+- Generated v0.17 plans use one executable stage at a time. Worker prompts may
   propose next questions but cannot create executable downstream stages,
   apply Gate decisions, or widen their role-visible evidence.
+- `state/staged_research/v1/` is the sole runtime truth. Never place
+  `state/progress.json` or `state/research-dossier.md` in a prompt as authority;
+  they are rebuildable, non-authoritative projections. If an operator view is
+  missing or suspect, use `rebuild-staged-projections` from canonical state.
+- `capacity v2` keeps per-stage Worker quota, global Worker capacity,
+  `STAGE-REVIEW`, and CP-01/CP-02/CP-04 (optionally CP-03) separate. Prompt text
+  cannot transfer those classes, and a frontier top-up cannot add Worker
+  allowance.
+- Legacy capacity v1 is existing-plan lifecycle/replay compatibility and must
+  not be copied into a new v0.17 plan or used for automatic stage crossing.
+- A Worker may propose Stage 2 material, but only
+  `advance-staged-research` may use an initial signed pre-authorization for one
+  named next stage. It requires the prior terminal decision, MiniMax report,
+  and fresh strongest-policy review before deriving a bound receipt and
+  starting exactly one next-stage Worker; `silence_is_approval=false`.
 - If a task references a missing snippet heading, stop plan generation and
   repair the template or asset before showing the preview.
 

@@ -20,8 +20,19 @@ compatibility flags.
   key file of at least 32 bytes and POSIX mode `0600`.
 - The controller owns state transitions, hash checks, budget reservation,
   replay protection, and append-only audit records.
+- For staged research, `state/staged_research/v1/` is the sole runtime truth.
+  `state/progress.json` and `state/research-dossier.md` are rebuildable,
+  non-authoritative projections and are never controller inputs.
 - Mutable snapshots use atomic replacement. Successful audit appends are
   flushed and fsynced.
+
+Rebuild the operator views after repair or suspected hand editing without
+changing canonical staged state:
+
+```bash
+python3 references/scripts/harness-runtime.py rebuild-staged-projections \
+  --plan-dir PLAN
+```
 
 ## Freeze Policy
 
@@ -123,7 +134,9 @@ evidence; worker output never advances the task graph directly.
 Allowed actions are `pause`, `resume`, `stop`, `cancel_worker`,
 `waive_acceptance`, `override_acceptance`, `cleanup_resource`, and
 proposal-only `authorize_evaluator_change`. Staged plans also support
-`authorize_frontier_capacity`, a positive future-only capacity grant.
+`authorize_frontier_capacity`, a positive future-only capacity grant. The
+initial `authorize_contract` may also carry bounded continuation authority for
+exactly one explicitly named next stage.
 
 ```bash
 python3 references/scripts/harness-runtime.py create-human-action \
@@ -140,6 +153,13 @@ python3 references/scripts/harness-runtime.py create-human-action \
 python3 references/scripts/harness-runtime.py apply-human-action \
   --plan-dir PLAN --record RECORD --key-file KEY \
   --expected-action authorize_frontier_capacity --operation-id op_64_HEX
+
+python3 references/scripts/harness-runtime.py create-human-action \
+  --plan-dir PLAN --plan-id PLAN_ID --action authorize_contract \
+  --key-file KEY --expires-in 300 \
+  --contract-version CONTRACT_VERSION --contract-sha256 CONTRACT_SHA256 \
+  --stage-id STAGE_1 --stage-envelope-sha256 STAGE_1_SHA256 \
+  --continuation-stage-id STAGE_2 --continuation-stage-limit 1
 ```
 
 The signed payload contains only schema version, record ID, plan ID, action,
@@ -154,12 +174,20 @@ or a fresh operation ID is rejected. The same inner-journal binding applies to
 owned cleanup. Downstream gates consume immutable applied receipts
 present in the audit, never pending signed records.
 
+The bounded continuation object is valid only on the initial signed
+`authorize_contract`. It fixes one `allowed_stage_ids` entry,
+`max_automatic_crossings=1`, and `silence_is_approval=false`; omission means
+there is no automatic continuation authority. A later chat message, lack of a
+reply, timeout, or operator silence never grants approval.
+
 Capacity grants bind the immutable model policy, current active stage and
 envelope, and the exact global budget, staged capacity, and active-stage usage
 ledger hashes. A PREPARED/COMMITTED journal rolls all three projections
 forward exactly once. The grant only raises future capacity: it cannot name,
 refund, validate, or rewrite a launched request, cannot move CP-01/CP-02/CP-04
-slots, and cannot violate `remaining_calls >= mandatory_future_calls`.
+slots, and cannot violate `remaining_calls >= mandatory_future_calls` for a
+legacy capacity-v1 plan. Under capacity v2, the same frontier top-up changes no
+per-stage or global Worker allowance, `STAGE-REVIEW` capacity, or CP slot.
 
 ## Worker input and recovery boundary
 
@@ -374,7 +402,7 @@ The registry and dependent transitions are fixed:
 | CP-04 | `acceptance_dispute` | `accept` | `resolve_acceptance_dispute` |
 | CP-04 | `prewriting_final_evidence` | `accept` | `start_writing` |
 
-CP-01 is not a self-review. New v0.16 plans bind an immutable human-owned
+CP-01 is not a self-review. New staged plans bind an immutable human-owned
 optimization contract, exactly one executable first-stage envelope, its
 deterministic preflight, and named checkpoint capacity. These artifacts are
 independently reviewed by the strongest Codex profile allowed by the frozen
@@ -415,7 +443,8 @@ correlation. Codex remains read-only and advisory: durable completion consumes
 the controller-issued dependent-transition receipt, never the response itself.
 The commit journal recovers an applied work-unit result without duplication.
 
-For a v0.16 staged plan:
+For a new v0.17 staged plan, use capacity v2 and initialize only the first
+executable stage:
 
 ```bash
 python3 references/scripts/harness-runtime.py init-staged-research \
@@ -451,7 +480,10 @@ python3 references/scripts/harness-runtime.py assert-transition \
 ```
 
 The owner receipt must be a canonical applied `authorize_contract` action
-binding the contract version/hash and first-stage ID/envelope hash.
+binding the contract version/hash and first-stage ID/envelope hash. It may also
+bind exactly one future stage ID using the continuation flags shown above; that
+does not make the future envelope executable or bypass its later evidence,
+compile, preflight, and authorization checks.
 Every newly initialized or compiled stage must also carry a closed
 `review_material_manifest`. Each entry is
 `{id,path,sha256,purpose}`; `path` is canonical and relative to the plan,
@@ -485,6 +517,43 @@ consume the independent retry ledger. `accept` promotes, `reject` retains the
 incumbent, and `escalate` blocks. Every terminal decision appends evidence. A
 terminal MiniMax-M3 report and fresh strongest-policy non-M3 review must exist
 before `compile-next-stage` authorizes at most one next envelope.
+
+Capacity v2 keeps five concerns non-fungible:
+
+- each envelope's `stage_budget_and_stop.worker_dispatches` is the per-stage
+  Worker quota;
+- `worker_dispatch_capacity` is the plan-global Worker allowance;
+- `stage_review_capacity` is reserved only for terminal `STAGE-REVIEW` calls;
+- CP-01, CP-02, and CP-04 each have their own named slot, with CP-03 optional;
+- Gate transport retry capacity remains independent.
+
+A Worker dispatch must pass both the active stage quota and the global Worker
+allowance. Spending or topping up one class cannot mint, refund, or transfer
+another class. Legacy capacity v1 keeps existing-plan lifecycle and idempotent
+replay compatibility; it is not valid as a v0.17 capacity template or as
+automatic-crossing authority.
+
+After Stage 1 has a canonical terminal Gate decision, persisted MiniMax report,
+and fresh strongest-policy non-M3 `STAGE-REVIEW`, cross the single initially
+authorized boundary with:
+
+```bash
+python3 references/scripts/harness-runtime.py advance-staged-research \
+  --plan-dir PLAN \
+  --stage-envelope stage-2.json \
+  --preflight-inputs stage-2-preflight.json \
+  --task-contract stage-2-first-worker.json \
+  --authorized-evidence EVIDENCE_ID
+```
+
+The command derives a continuation receipt bound to the initial applied
+authorization, source decision, MiniMax report, fresh strong review, and exact
+next envelope. Its recoverable journal then performs compile → preflight →
+authorize → start exactly one Stage 2 Worker. Replay returns the same run; it
+does not start a second Worker. The bounded outcome stops at Worker start—it
+does not establish Stage 2 completion or scientific success. Without that
+initial explicit pre-authorization, use the existing signed
+`reauthorize_stage` plus `compile-next-stage` path.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
 `status=completed` and evidence citations bound to the frozen manifest.
@@ -557,6 +626,11 @@ seven-scenario profile, validates fault and multi-session evidence, and issues
 only duration-bounded claim receipts through `start-acceptance-profile`,
 `complete-acceptance-profile`, and `validate-acceptance-claim`. Short bounded
 acceptance never implies 24h, 7×24, or full-cutover evidence.
+
+The v0.17 release claim is only a bounded stage-crossing capability and
+acceptance target: one first-stage terminal lineage through the start of one
+second-stage Worker. It does not claim Stage 2 completion, scientific success,
+24h or 7x24 stability, production readiness, or full cutover.
 
 ## M1 Closed Conformance Entry
 

@@ -267,6 +267,38 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "mandatory_future_calls": 3,
         }
 
+    def capacity_v2(self, *, workers: int = 2, cp03: bool = False) -> dict:
+        checkpoints = {
+            name: {
+                "slot_id": f"slot_{name.lower().replace('-', '')}",
+                "reserved": 1, "spent": 0, "transferable": False,
+            }
+            for name in ("CP-01", "CP-02", "CP-04")
+        }
+        if cp03:
+            checkpoints["CP-03"] = {
+                "slot_id": "slot_cp03", "reserved": 1,
+                "spent": 0, "transferable": False,
+            }
+        return {
+            "schema_version": 2,
+            "worker_dispatch_capacity": {
+                "authorized_calls": workers,
+                "spent_calls": 0,
+                "remaining_calls": workers,
+            },
+            "stage_review_capacity": {
+                "authorized_calls": 2, "spent_calls": 0,
+                "remaining_calls": 2, "transferable": False,
+            },
+            "checkpoint_capacity": checkpoints,
+            "retry_budget": {
+                "remaining_attempts": 3,
+                "per_attempt_call_limit": 1,
+                "per_attempt_token_limit": 1000,
+            },
+        }
+
     def envelope(
         self, stage_id: str = "stage_1", *, source: str | None = None,
         incumbent: str | None = None, kind: str = "research",
@@ -293,6 +325,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "review_tokens": 30000,
                 "retry_attempts": 3,
                 "evaluation_calls": 1,
+                "worker_dispatches": 2,
                 "stop_policy_sha256": digest(
                     "plateau-rejection-risk-deadline-human-stop"
                 ),
@@ -334,6 +367,8 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         self, plan: Path, *, remaining: int = 8,
         envelope: dict | None = None,
         noncanonical_contract: bool = False,
+        capacity_value: dict | None = None,
+        continuation_stage_id: str | None = None,
     ) -> dict:
         plan.mkdir(parents=True, exist_ok=True)
         if not (plan / "state" / "model_policy.json").exists():
@@ -360,12 +395,13 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             plan / "inputs" / "evaluation.json", self.evaluation_profile(),
         )
         capacity = self.write(
-            plan / "inputs" / "capacity.json", self.capacity(remaining=remaining),
+            plan / "inputs" / "capacity.json",
+            capacity_value or self.capacity(remaining=remaining),
         )
         key = plan / "owner.key"
         key.write_bytes(b"x" * 32)
         key.chmod(0o600)
-        created = json.loads(self.invoke(
+        create_args = [
             "create-human-action", "--plan-dir", str(plan),
             "--plan-id", "plan_staged", "--action", "authorize_contract",
             "--key-file", str(key), "--expires-in", "3600",
@@ -374,7 +410,13 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             (envelope or self.envelope())["stage_id"],
             "--contract-sha256", hashlib.sha256(contract.read_bytes()).hexdigest(),
             "--stage-envelope-sha256", hashlib.sha256(stage.read_bytes()).hexdigest(),
-        ).stdout)
+        ]
+        if continuation_stage_id is not None:
+            create_args += [
+                "--continuation-stage-id", continuation_stage_id,
+                "--continuation-stage-limit", "1",
+            ]
+        created = json.loads(self.invoke(*create_args).stdout)
         applied = json.loads(self.invoke(
             "apply-human-action", "--plan-dir", str(plan),
             "--record", created["record_path"], "--key-file", str(key),
@@ -1207,6 +1249,54 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         for role, path in artifacts.items():
             args += ["--artifact", f"{path}::{role}"]
         self.invoke(*args)
+
+    def apply_cp01(self, plan: Path, request_id: str = "far_initial_cp01") -> None:
+        self.create_cp01_request(plan, request_id)
+        self.invoke(
+            "send-frontier-request", "--plan-dir", str(plan),
+            "--request-id", request_id,
+            "--codex-bin", str(self.fake_codex(plan)),
+        )
+        self.invoke(
+            "validate-frontier-response", "--plan-dir", str(plan),
+            "--request-id", request_id,
+        )
+        self.invoke(
+            "apply-frontier-response", "--plan-dir", str(plan),
+            "--request-id", request_id,
+            "--dependent-transition", "approve_execution",
+            "--controller-note", "controller accepted bounded CP-01 advice",
+        )
+
+    def fake_claude(self, plan: Path) -> Path:
+        executable = plan / "fake-claude"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "print(json.dumps({'artifacts': []}))\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
+    def empty_worker_contract(self, plan: Path, stage_id: str) -> Path:
+        return self.write(plan / "inputs" / f"{stage_id}-worker.json", {
+            "schema_version": 1,
+            "task_id": f"{stage_id}-first-worker",
+            "instruction": "Perform one bounded read-only development step.",
+            "inputs": [],
+            "allowed_tools": [],
+            "allowed_write_paths": [],
+            "artifact_outputs": [],
+            "output_schema": {
+                "type": "object", "additionalProperties": False,
+                "required": ["artifacts"],
+                "properties": {
+                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+            "completion_check": {"type": "output_schema", "assertion": "valid"},
+            "stage_resource_request": {"tool_calls": 1, "worker_tokens": 10},
+        })
 
     def prepare_compilable_stage(self, plan: Path, suffix: str) -> dict:
         self.initialize(plan)
@@ -3681,6 +3771,250 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--authorization-receipt", figure_authorization,
             ).stdout)
             self.assertEqual(compiled["next_stage_id"], "stage_figures")
+
+    def test_staged_projection_rebuild_ignores_tampering_and_is_byte_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            state_before = (root / "state.json").read_bytes()
+            audit_before = (root / "audit.jsonl").read_bytes()
+            progress = plan / "state" / "progress.json"
+            dossier = plan / "state" / "research-dossier.md"
+            canonical_progress = progress.read_bytes()
+            canonical_dossier = dossier.read_bytes()
+            progress.write_text('{"status":"forged","authoritative":true}\n')
+            dossier.write_text("# forged authority\n")
+
+            first = json.loads(self.invoke(
+                "rebuild-staged-projections", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertEqual(progress.read_bytes(), canonical_progress)
+            self.assertEqual(dossier.read_bytes(), canonical_dossier)
+            self.assertEqual((root / "state.json").read_bytes(), state_before)
+            self.assertEqual((root / "audit.jsonl").read_bytes(), audit_before)
+            second = json.loads(self.invoke(
+                "rebuild-staged-projections", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertEqual(first["progress_sha256"], second["progress_sha256"])
+            self.assertEqual(first["dossier_sha256"], second["dossier_sha256"])
+            view = json.loads(progress.read_text())
+            self.assertFalse(view["authoritative"])
+            self.assertEqual(
+                view["canonical"]["audit_revision"],
+                json.loads(state_before)["audit_revision"],
+            )
+
+    def test_legacy_v1_capacity_and_stage_budget_remain_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            legacy_envelope = self.envelope()
+            legacy_envelope["stage_budget_and_stop"].pop("worker_dispatches")
+            initialized = self.initialize(
+                plan, envelope=legacy_envelope, capacity_value=self.capacity(),
+            )
+            self.assertEqual(initialized["state"], "CONTRACTED")
+            preflight = self.preflight(plan)
+            self.assertTrue(Path(preflight["preflight_path"]).is_file())
+            ledger = json.loads((
+                plan / "state" / "staged_research" / "v1" / "capacity-ledger.json"
+            ).read_text())
+            self.assertEqual(ledger["schema_version"], 1)
+
+    def test_capacity_v2_keeps_worker_review_and_named_slots_isolated(self) -> None:
+        spec = importlib.util.spec_from_file_location("capacity_v2_runtime", RUNTIME)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan, capacity_value=self.capacity_v2(workers=3, cp03=True))
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            root = plan / "state" / "staged_research" / "v1"
+            capacity_path = root / "capacity-ledger.json"
+
+            runtime.staged_reserve_worker_dispatch_and_budget(
+                plan.resolve(), dispatch_id="cwr_" + "d" * 32,
+                usage={"tool_calls": 1, "worker_tokens": 10},
+            )
+            after_worker = json.loads(capacity_path.read_text())
+            self.assertEqual(
+                after_worker["worker_dispatch_capacity"],
+                {"authorized_calls": 3, "spent_calls": 1, "remaining_calls": 2},
+            )
+            self.assertEqual(after_worker["stage_review_capacity"]["spent_calls"], 0)
+            self.assertTrue(all(
+                slot["spent"] == 0
+                for slot in after_worker["checkpoint_capacity"].values()
+            ))
+
+            runtime.staged_reserve_dispatch(
+                plan.resolve(), checkpoint="STAGE-REVIEW", dispatch_id="far_v2_review",
+            )
+            after_review = json.loads(capacity_path.read_text())
+            self.assertEqual(
+                after_review["worker_dispatch_capacity"],
+                after_worker["worker_dispatch_capacity"],
+            )
+            self.assertEqual(after_review["stage_review_capacity"]["spent_calls"], 1)
+            runtime.staged_reserve_dispatch(
+                plan.resolve(), checkpoint="CP-03", dispatch_id="far_v2_cp03",
+            )
+            after_cp03 = json.loads(capacity_path.read_text())
+            self.assertEqual(
+                after_cp03["worker_dispatch_capacity"],
+                after_worker["worker_dispatch_capacity"],
+            )
+            self.assertEqual(after_cp03["stage_review_capacity"], after_review["stage_review_capacity"])
+            self.assertEqual(after_cp03["checkpoint_capacity"]["CP-03"]["spent"], 1)
+            runtime.staged_reserve_worker_dispatch_and_budget(
+                plan.resolve(), dispatch_id="cwr_" + "e" * 32,
+                usage={"tool_calls": 1, "worker_tokens": 10},
+            )
+            before_rejected = capacity_path.read_bytes()
+            with self.assertRaisesRegex(
+                runtime.ContractError, "stage worker_dispatches capacity is exhausted",
+            ):
+                runtime.staged_reserve_worker_dispatch_and_budget(
+                    plan.resolve(), dispatch_id="cwr_" + "f" * 32,
+                    usage={"tool_calls": 1, "worker_tokens": 10},
+                )
+            self.assertEqual(capacity_path.read_bytes(), before_rejected)
+            self.assertEqual(
+                json.loads(capacity_path.read_text())["worker_dispatch_capacity"][
+                    "remaining_calls"
+                ],
+                1,
+            )
+
+    def test_advance_staged_research_fault_retry_starts_one_second_stage_worker(self) -> None:
+        for phase in ("continuation", "compile", "preflight", "authorize", "dispatch"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as td:
+                plan = Path(td) / "plan"
+                self.initialize(
+                    plan, capacity_value=self.capacity_v2(workers=3),
+                    continuation_stage_id="stage_2",
+                )
+                self.preflight(plan)
+                self.apply_cp01(plan)
+                cycle = self.run_terminal_cycle(plan, "accept")
+                report_path, worker_run_id = self.prepare_worker_report(plan, cycle, "9")
+                report = json.loads(self.invoke(
+                    "record-stage-report", "--plan-dir", str(plan),
+                    "--stage-report", str(report_path), "--worker-run-id", worker_run_id,
+                ).stdout)
+                self.apply_strong_review(plan, Path(report["path"]))
+                stage2 = self.write(
+                    plan / "inputs" / "stage-2.json",
+                    self.envelope(
+                        "stage_2", source="stage_1",
+                        incumbent=cycle["resulting_incumbent_sha256"],
+                    ),
+                )
+                preflight2 = self.write(
+                    plan / "inputs" / "stage-2-preflight.json", self.raw_preflight(),
+                )
+                task = self.empty_worker_contract(plan, "stage_2")
+                args = (
+                    "advance-staged-research", "--plan-dir", str(plan),
+                    "--stage-envelope", str(stage2),
+                    "--preflight-inputs", str(preflight2),
+                    "--task-contract", str(task),
+                    "--authorized-evidence", "evidence_stage_1",
+                    "--claude-bin", str(self.fake_claude(plan)),
+                )
+                env = dict(os.environ)
+                env["HARNESS_FAULT_AFTER_STAGED_ADVANCE_PHASE"] = phase
+                crashed = self.invoke(*args, ok=False, env=env)
+                self.assertEqual(crashed.returncode, 89, crashed.stderr)
+                advanced = json.loads(self.invoke(*args).stdout)
+                replay = json.loads(self.invoke(*args).stdout)
+                self.assertEqual(advanced["state"], "DEVELOPING")
+                self.assertEqual(replay["worker_run_id"], advanced["worker_run_id"])
+                root = plan / "state" / "staged_research" / "v1"
+                state = json.loads((root / "state.json").read_text())
+                self.assertEqual(state["active_stage_id"], "stage_2")
+                self.assertEqual(state["state"], "DEVELOPING")
+                runs = [
+                    path for path in (plan / "state" / "worker_runs").glob("cwr_*")
+                    if path.name == advanced["worker_run_id"]
+                ]
+                self.assertEqual(len(runs), 1)
+                reservations = list((root / "dispatch-reservations").glob(
+                    f"{advanced['worker_run_id']}.json"
+                ))
+                self.assertEqual(len(reservations), 1)
+                capacity = json.loads((root / "capacity-ledger.json").read_text())
+                self.assertEqual(capacity["worker_dispatch_capacity"]["spent_calls"], 1)
+                receipts = list((root / "continuation-receipts").glob("*.json"))
+                self.assertEqual(len(receipts), 1)
+                audit = [
+                    json.loads(line) for line in (root / "audit.jsonl").read_text().splitlines()
+                    if line.strip()
+                ]
+                self.assertEqual(sum(
+                    item.get("event") == "bounded_stage_crossing_completed"
+                    for item in audit
+                ), 1)
+
+    def test_advance_staged_research_rejects_legacy_shared_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan, continuation_stage_id="stage_2")
+            stage2 = self.write(
+                plan / "inputs" / "stage-2.json",
+                self.envelope("stage_2", source="stage_1"),
+            )
+            preflight2 = self.write(
+                plan / "inputs" / "stage-2-preflight.json", self.raw_preflight(),
+            )
+            task = self.empty_worker_contract(plan, "stage_2")
+            capacity_path = (
+                plan / "state" / "staged_research" / "v1"
+                / "capacity-ledger.json"
+            )
+            before = capacity_path.read_bytes()
+            proc = self.invoke(
+                "advance-staged-research", "--plan-dir", str(plan),
+                "--stage-envelope", str(stage2),
+                "--preflight-inputs", str(preflight2),
+                "--task-contract", str(task),
+                "--claude-bin", str(self.fake_claude(plan)), ok=False,
+            )
+            self.assertIn("requires separated capacity v2", proc.stderr)
+            self.assertEqual(capacity_path.read_bytes(), before)
+
+    def test_v2_frontier_topup_does_not_mint_worker_or_checkpoint_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan, capacity_value=self.capacity_v2(workers=3, cp03=True))
+            root = plan / "state" / "staged_research" / "v1"
+            capacity_path = root / "capacity-ledger.json"
+            before = json.loads(capacity_path.read_text())
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_staged", "--action", "authorize_frontier_capacity",
+                "--key-file", str(plan / "owner.key"), "--expires-in", "3600",
+                "--record-id", "har_v2_frontier_only", "--actor", "research-owner",
+                "--add-frontier-calls", "2",
+                "--add-frontier-input-tokens", "10000",
+                "--add-frontier-output-tokens", "1000",
+            ).stdout)
+            self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"],
+                "--key-file", str(plan / "owner.key"),
+                "--expected-action", "authorize_frontier_capacity",
+            )
+            after = json.loads(capacity_path.read_text())
+            self.assertEqual(
+                after["worker_dispatch_capacity"], before["worker_dispatch_capacity"],
+            )
+            self.assertEqual(after["stage_review_capacity"], before["stage_review_capacity"])
+            self.assertEqual(after["checkpoint_capacity"], before["checkpoint_capacity"])
+            self.assertEqual(after["capacity_authorization_ids"], ["har_v2_frontier_only"])
 
 
 if __name__ == "__main__":

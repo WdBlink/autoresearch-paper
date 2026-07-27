@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.17.0 — 2026-07-27
+
+- Make `state/staged_research/v1/` the sole runtime authority for staged
+  research. `state/progress.json` and `state/research-dossier.md` are now
+  explicitly rebuildable, non-authoritative projections; operators can restore
+  both with `rebuild-staged-projections` without changing canonical state.
+- Introduce capacity v2 with independent accounting for each stage's Worker
+  dispatch quota, plan-global Worker dispatch capacity, non-transferable
+  `STAGE-REVIEW` capacity, and non-fungible CP-01/CP-02/CP-04 slots. CP-03 is an
+  optional named slot. Signed frontier top-ups do not mint or transfer Worker,
+  stage-review, or checkpoint capacity.
+- Allow the initial signed `authorize_contract` receipt to pre-authorize
+  exactly one named next stage. After the source stage has a terminal decision,
+  MiniMax report, and fresh strongest-policy review, `advance-staged-research`
+  derives a receipt bound to that lineage, then compile → preflight → authorize
+  → start exactly one next-stage Worker through an idempotent journal. Silence
+  is never approval; the signed contract records `max_automatic_crossings=1`.
+- Retain existing-plan lifecycle and idempotent replay compatibility for
+  legacy capacity v1, but reject `advance-staged-research` unless the plan uses
+  separated capacity v2. New v0.17 plan generation uses capacity v2.
+- The release claim is only the bounded capability and acceptance target of
+  crossing one first-stage terminal lineage into the start of one second-stage
+  Worker. It does not claim second-stage completion, scientific success, 24h
+  or 7x24 stability, production readiness, or full cutover.
+
 ## v0.16.2 — 2026-07-26
 
 - Expand every content-addressed first-stage review material into the bounded

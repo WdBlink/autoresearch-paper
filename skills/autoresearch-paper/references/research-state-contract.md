@@ -9,6 +9,42 @@ Research and runtime health are separate state machines. Heartbeat or worker
 failure cannot become scientific evidence, request a structural pivot, or
 enable CP-03.
 
+## Canonical staged authority
+
+For staged research, `state/staged_research/v1/` is the sole runtime truth.
+The controller derives `state/progress.json` and
+`state/research-dossier.md` from that namespace. Both are rebuildable,
+non-authoritative projections: editing, deleting, or forging either one cannot
+authorize a transition. Run `rebuild-staged-projections --plan-dir PLAN` to
+regenerate them after canonical validation.
+
+Legacy fallback is permitted only when the canonical staged namespace is
+absent. If it exists but its state is unreadable, malformed, or unknown,
+monitoring fails closed as `staged_invalid`; it must not consult or mutate the
+legacy projection.
+
+New v0.17 plans use capacity v2. The active envelope's
+`stage_budget_and_stop.worker_dispatches` limits Workers in that stage, while
+the capacity ledger's `worker_dispatch_capacity` limits Workers across the
+plan. `stage_review_capacity` is separate and non-transferable. CP-01, CP-02,
+and CP-04 have distinct non-fungible slots; CP-03 may have its own optional
+slot. A dispatch must have capacity in its own class, and Worker dispatch must
+also satisfy both the per-stage and global Worker limits. A signed frontier top-up
+(`authorize_frontier_capacity`) does not increase, refund, or transfer
+Worker, `STAGE-REVIEW`, or checkpoint capacity. Legacy capacity v1 keeps
+existing-plan lifecycle and idempotent replay compatibility, but it cannot
+authorize `advance-staged-research`.
+
+The initial signed and applied `authorize_contract` may pre-authorize exactly
+one explicit next-stage ID and one automatic crossing. Absence of that field is
+not permission: `silence_is_approval` is always false. Once the source stage has
+a canonical terminal decision, persisted MiniMax report, and fresh strongest-policy
+non-M3 review, `advance-staged-research` derives a continuation
+receipt bound to those artifacts, the initial authorization, and the exact next
+envelope. It then journals compile → preflight → authorize → the start of
+exactly one next-stage Worker. The command is replay-safe and stops at Worker
+start; it does not assert second-stage completion or scientific success.
+
 ## Frozen evaluator
 
 `run-evaluator` is a controller-owned execution that persists immutable
