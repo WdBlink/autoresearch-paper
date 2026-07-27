@@ -48,6 +48,10 @@ return snippet_map
   Use `create-human-action` followed by `apply-human-action`, then pass its
   applied `receipt.receipt_path` to `init-staged-research`. Capacity v2 also
   requires `stage_budget_and_stop.worker_dispatches >= 1` in each envelope.
+- Select a stable authorization `RECORD_ID` before hashing the contract. Put it
+  in `contract.authorization_receipt_id` and pass the identical value through
+  `create-human-action --record-id`; never use a placeholder or edit the
+  contract after signing.
 - Legacy capacity v1 is existing-plan lifecycle/replay compatibility and must
   not be copied into a new v0.17 plan or used for automatic stage crossing.
 - A Worker may propose Stage 2 material, but only

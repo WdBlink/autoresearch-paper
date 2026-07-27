@@ -156,7 +156,7 @@ python3 references/scripts/harness-runtime.py apply-human-action \
 
 python3 references/scripts/harness-runtime.py create-human-action \
   --plan-dir PLAN --plan-id PLAN_ID --action authorize_contract \
-  --key-file KEY --expires-in 300 \
+  --key-file KEY --expires-in 300 --record-id RECORD_ID \
   --contract-version CONTRACT_VERSION --contract-sha256 CONTRACT_SHA256 \
   --stage-id STAGE_1 --stage-envelope-sha256 STAGE_1_SHA256 \
   --continuation-stage-id STAGE_2 --continuation-stage-limit 1
@@ -172,6 +172,12 @@ only the `receipt.receipt_path` returned by `apply-human-action`. For capacity
 v2, the first envelope must also declare
 `stage_budget_and_stop.worker_dispatches >= 1`; the plan-global
 `worker_dispatch_capacity` does not substitute for that per-stage quota.
+There is no placeholder-replacement step: choose `RECORD_ID` first, write that
+exact value into `optimization_contract.authorization_receipt_id`, freeze and
+hash the contract, and pass the same value to
+`create-human-action --record-id RECORD_ID`. Editing the contract after action
+creation invalidates the signed hash; allowing the CLI to generate a random ID
+creates an unresolvable binding unless that ID was already in the contract.
 
 The signed payload contains only schema version, record ID, plan ID, action,
 32-byte URL-safe nonce, issue/expiry times, actor, key ID, and details. The

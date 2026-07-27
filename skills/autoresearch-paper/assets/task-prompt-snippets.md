@@ -33,6 +33,10 @@ Never read the human-action key or calculate its HMAC. Authorization must flow
 through `create-human-action` → `apply-human-action`; only the returned applied
 receipt may enter `init-staged-research`. Every capacity-v2 envelope declares
 its own `stage_budget_and_stop.worker_dispatches` quota.
+Before contract hashing, select a stable authorization `RECORD_ID`, store it in
+`contract.authorization_receipt_id`, and pass the identical value to
+`create-human-action --record-id`. Do not use a placeholder or mutate the
+contract after the action is created.
 
 State-authority rule for every snippet: if
 `{PLAN_DIR}/state/staged_research/v1/state.json` exists, it is the sole
