@@ -32,6 +32,11 @@
   boundary, not research capacity. Unattended operation requires an explicitly
   pre-authorized controller session; classifier denial occurs before frontier
   launch and must not consume a CP, review, retry, or Worker slot.
+- Allow staged CP-01 envelopes to bind the concrete acceptance profile, source
+  manifest, citation universe, evaluation profile, and evaluator loader
+  parameters as independently hashed review materials. These remain optional
+  at the generic schema layer, but a research contract may make them mandatory
+  through its own execution and acceptance policy.
 
 ## v0.16.2 — 2026-07-26
 

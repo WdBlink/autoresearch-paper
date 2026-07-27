@@ -141,6 +141,8 @@ STAGED_CP01_REVIEW_MATERIAL_PURPOSES = {
 }
 STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
     "evaluator_implementation", "evaluator_conformance",
+    "acceptance_profile", "source_manifest", "citation_universe",
+    "evaluation_profile", "evaluator_loader_parameters",
 }
 STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {

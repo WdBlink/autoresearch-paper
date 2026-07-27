@@ -57,6 +57,14 @@ current Codex parses `agents` as a role table and rejects that boolean child as
 an invalid `AgentRoleToml`. Multi-agent and collaboration escape attempts remain
 blocked by feature flags plus transport-event validation.
 
+For evidence-grounded research stages, bind concrete provenance rather than
+describing it only in prose. CP-01 review-material manifests may include
+`acceptance_profile`, `source_manifest`, `citation_universe`,
+`evaluation_profile`, and `evaluator_loader_parameters` in addition to the
+executable evaluator and its conformance result. The controller expands these
+files into the immutable frontier context, so the reviewer can audit exact
+identities and loader handoff instead of trusting aggregate preflight claims.
+
 ## Freeze Policy
 
 ```bash
