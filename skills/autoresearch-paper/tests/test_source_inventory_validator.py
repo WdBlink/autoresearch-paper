@@ -32,8 +32,28 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         result = validator.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 11)
+        self.assertEqual(result["case_count"], 12)
         self.assertTrue(all(item["passed"] for item in result["cases"]))
+
+    def test_conformance_cli_covers_the_executable_receipt_path(self) -> None:
+        completed = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS / "source_inventory_validator.py"),
+                "--conformance",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        receipt = json.loads(completed.stdout)
+        self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(receipt["case_count"], 12)
+        self.assertTrue(any(
+            case["case_id"] == "cli_validate_artifact_receipt"
+            and case["passed"]
+            for case in receipt["cases"]
+        ))
 
     def test_executable_adapter_emits_source_bound_receipt(self) -> None:
         validator = load_module(

@@ -530,8 +530,9 @@ this file.
   include boolean-version adversarial cases. Worker-authored terminal reports
   are also forbidden from supplying Controller-owned
   `role_visible_state_sha256`; only Runtime may add the exact post-call binding.
-  Plan021 remains immutable negative evidence and a fresh plan/review is
-  mandatory.
+  Source validator conformance also runs the actual CLI artifact/receipt path.
+  Plan021 and Plan022 remain immutable negative evidence and a fresh
+  plan/review is mandatory.
 - **v0.17.1 (2026-07-27)** — Observation-only stages now use an
   explicitly inactive evaluation profile instead of an active-looking Gate
   placeholder. MiniMax terminal reports are validated by a CP-01-frozen,

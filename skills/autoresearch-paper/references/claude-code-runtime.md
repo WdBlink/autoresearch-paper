@@ -617,6 +617,10 @@ authority; this is a replay under different authority, not an orthogonal
 evaluator, and a Worker-authored development receipt cannot replace the
 Controller-owned observation-validation receipt.
 
+The frozen source validator's twelve-case `--conformance` run includes a real
+CLI invocation of the `validate_artifact` and hash-bound receipt path;
+function-only conformance evidence is insufficient for CP-01 readiness.
+
 The terminal report must be a promoted MiniMax artifact. Runtime first applies
 the CP-01-frozen `stage_report_validator.py`, whose implementation must be
 byte-identical to Runtime and whose frozen ten-case conformance receipt must

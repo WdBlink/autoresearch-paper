@@ -412,8 +412,9 @@ Quick highlights:
 - **v0.17.2** — closes the remaining real Plan021 CP-01 findings: validator
   schema versions require JSON integers rather than booleans, and a Worker
   cannot pre-author Controller-owned role-visible provenance. Frozen source
-  inventory and stage-report conformance suites now contain eleven and ten
-  cases respectively. Plan021 remains immutable negative evidence; the field
+  inventory and stage-report conformance suites now contain twelve and ten
+  cases respectively; the former proves the actual CLI receipt path. Plan021
+  and Plan022 remain immutable negative evidence; the field
   gate requires a fresh plan and fresh real review.
 - **v0.17.1** — explicitly inactive observation-only evaluation profiles and
   a CP-01-frozen, conformance-tested terminal-report validator close the

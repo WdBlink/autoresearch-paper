@@ -5,14 +5,16 @@
 - Close the remaining real CP-01 findings from frozen field plan
   `fwvg-conf-2026-021`: JSON boolean values can no longer masquerade as
   integer schema versions in source inventories or terminal stage reports.
-- Upgrade the source-inventory conformance suite to eleven cases and the
+- Upgrade the source-inventory conformance suite to twelve cases and the
   terminal-report suite to ten cases, including explicit boolean-version
-  negatives.
+  negatives. The source suite now exposes `--conformance` and exercises its
+  real CLI → `validate_artifact` → hash-bound receipt path, closing the final
+  Plan022 CP-01 audit warning.
 - Make Controller provenance structurally unforgeable at the Worker boundary:
   a MiniMax-authored report containing `role_visible_state_sha256` is rejected,
   and only `record-stage-report` may inject the exact post-call binding into the
   canonical report.
-- Preserve Plan021 as immutable negative field evidence. A fresh plan and fresh
+- Preserve Plan021 and Plan022 as immutable negative field evidence. A fresh plan and fresh
   real CP-01 review are required; this patch does not reinterpret or unlock the
   blocked plan.
 

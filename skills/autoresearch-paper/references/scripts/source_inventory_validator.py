@@ -7,13 +7,15 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/5"
+VALIDATOR_VERSION = "source-inventory-validator/6"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
@@ -283,6 +285,58 @@ def run_conformance_suite() -> dict[str, Any]:
                 "observed": "accept" if accepted else "reject",
                 "passed": accepted is should_accept,
             })
+        preflight_path = Path(temp_dir) / "preflight.json"
+        candidate_path = Path(temp_dir) / "candidate.json"
+        receipt_path = Path(temp_dir) / "receipt.json"
+        manifest_sha = hashlib.sha256(json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        preflight_path.write_text(json.dumps({
+            "verified_source_manifest": manifest,
+            "verified_source_manifest_sha256": manifest_sha,
+        }), encoding="utf-8")
+        candidate_path.write_text(
+            json.dumps(valid, ensure_ascii=False), encoding="utf-8",
+        )
+        cli_passed = False
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--candidate", str(candidate_path),
+                    "--preflight", str(preflight_path),
+                    "--receipt", str(receipt_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            stdout_receipt = json.loads(completed.stdout)
+            disk_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            cli_passed = (
+                completed.returncode == 0
+                and stdout_receipt == disk_receipt
+                and disk_receipt.get("result") == "pass"
+                and disk_receipt.get("validator_version") == VALIDATOR_VERSION
+                and disk_receipt.get("source_manifest_sha256") == manifest_sha
+                and disk_receipt.get("candidate_sha256")
+                    == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+                and disk_receipt.get("preflight_sha256")
+                    == hashlib.sha256(preflight_path.read_bytes()).hexdigest()
+            )
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            cli_passed = False
+        results.append({
+            "case_id": "cli_validate_artifact_receipt",
+            "expected": "accept",
+            "observed": "accept" if cli_passed else "reject",
+            "passed": cli_passed,
+        })
         if not all(item["passed"] for item in results):
             raise SourceInventoryValidationError(
                 "source inventory conformance suite failed"
@@ -350,10 +404,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate a frozen source inventory against canonical preflight",
     )
-    parser.add_argument("--candidate", required=True)
-    parser.add_argument("--preflight", required=True)
-    parser.add_argument("--receipt", required=True)
+    parser.add_argument("--conformance", action="store_true")
+    parser.add_argument("--candidate")
+    parser.add_argument("--preflight")
+    parser.add_argument("--receipt")
     args = parser.parse_args()
+    artifact_args = (args.candidate, args.preflight, args.receipt)
+    if args.conformance:
+        if any(artifact_args):
+            parser.error("--conformance cannot be combined with artifact arguments")
+        print(json.dumps(run_conformance_suite(), ensure_ascii=False, sort_keys=True))
+        return 0
+    if not all(artifact_args):
+        parser.error("--candidate, --preflight, and --receipt are required")
     try:
         receipt = validate_artifact(
             Path(args.candidate).resolve(),
