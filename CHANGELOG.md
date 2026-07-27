@@ -22,6 +22,10 @@
   validation before any signature, emits exact file-byte hashes and the
   canonical proposal, and forces create/apply/init to bind the same record ID,
   profile, capacity, incumbent, and proposal. Plan024 remains negative evidence.
+- Close the sole real Plan025 CP-01 finding by recording the frozen
+  `stage-report-validator/2` path, Runtime path, both exact hashes,
+  byte-identity result, conformance receipt identity, and ten-case result in
+  canonical preflight. Runtime revalidates that attestation after CP-01.
 
 ## v0.17.1 — 2026-07-27
 

@@ -641,6 +641,11 @@ Controller-owned observation-validation receipt.
 The frozen source validator's twelve-case `--conformance` run includes a real
 CLI invocation of the `validate_artifact` and hash-bound receipt path;
 function-only conformance evidence is insufficient for CP-01 readiness.
+Canonical observation preflight also records the plan-local and Runtime paths
+and hashes for `stage-report-validator/2`, an explicit byte-identity result,
+the frozen conformance receipt path/hash, and the complete ten-case result.
+`staged_require_preflight` revalidates that attestation after CP-01; a frozen
+conformance file without Runtime identity is not sufficient review evidence.
 
 The terminal report must be a promoted MiniMax artifact. Runtime first applies
 the CP-01-frozen `stage_report_validator.py`, whose implementation must be

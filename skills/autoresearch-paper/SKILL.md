@@ -241,7 +241,9 @@ Generated plans must initialize:
   through `init-staged-research`; preparatory contract,
   envelope, profile, capacity, preflight, and review-material inputs belong
   under `control/staged-inputs/` or `control/review-materials/`, never under the
-  canonical namespace
+  canonical namespace. Observation preflight must attest both frozen
+  validators: source inventory and terminal stage report, each with plan-local
+  path/hash, Runtime path/hash, byte identity, and exact conformance result
 - generated `state/progress.json` and `state/research-dossier.md` projections;
   neither is transition authority
 - `state/directions_tried.json`
@@ -536,8 +538,10 @@ this file.
   are also forbidden from supplying Controller-owned
   `role_visible_state_sha256`; only Runtime may add the exact post-call binding.
   Source validator conformance also runs the actual CLI artifact/receipt path.
-  Plan021 and Plan022 remain immutable negative evidence and a fresh
-  plan/review is mandatory.
+  Canonical preflight now records and revalidates the equivalent Runtime
+  identity and ten-case result for `stage-report-validator/2`, closing the sole
+  Plan025 CP-01 critical finding. Plan021, Plan022, and Plan025 remain immutable
+  negative evidence and a fresh plan/review is mandatory.
 - **v0.17.1 (2026-07-27)** — Observation-only stages now use an
   explicitly inactive evaluation profile instead of an active-looking Gate
   placeholder. MiniMax terminal reports are validated by a CP-01-frozen,

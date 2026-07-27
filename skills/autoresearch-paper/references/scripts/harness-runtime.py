@@ -10960,6 +10960,7 @@ def staged_preflight_payload(
     staged_validate_capacity(capacity)
     verified_source_manifest: list[dict[str, Any]] = []
     evaluator_conformance: dict[str, Any] | None = None
+    report_validator_conformance: dict[str, Any] | None = None
     if observation_only:
         implementation_materials = [
             item for item in envelope.get("review_material_manifest", [])
@@ -11001,6 +11002,64 @@ def staged_preflight_payload(
             ),
             "runtime_byte_identity_verified": True,
             **suite,
+        }
+        report_materials = {
+            item.get("purpose"): item
+            for item in envelope.get("review_material_manifest", [])
+            if item.get("purpose") in {
+                "stage_report_validator_implementation",
+                "stage_report_validator_conformance",
+            }
+        }
+        if set(report_materials) != {
+            "stage_report_validator_implementation",
+            "stage_report_validator_conformance",
+        }:
+            raise ContractError(
+                "observation-only preflight requires one frozen stage-report "
+                "validator implementation and conformance receipt"
+            )
+        report_implementation_path = normalize_owned_path(
+            plan_dir,
+            str(plan_dir / report_materials[
+                "stage_report_validator_implementation"
+            ]["path"]),
+        )
+        report_conformance_path = normalize_owned_path(
+            plan_dir,
+            str(plan_dir / report_materials[
+                "stage_report_validator_conformance"
+            ]["path"]),
+        )
+        shipped_report_path = SCRIPT_DIR / "stage_report_validator.py"
+        report_suite = run_stage_report_conformance_suite()
+        if (
+            report_implementation_path.is_symlink()
+            or report_conformance_path.is_symlink()
+            or not report_implementation_path.is_file()
+            or not report_conformance_path.is_file()
+            or report_materials[
+                "stage_report_validator_implementation"
+            ]["sha256"] != sha256_file(report_implementation_path)
+            or report_materials[
+                "stage_report_validator_conformance"
+            ]["sha256"] != sha256_file(report_conformance_path)
+            or sha256_file(report_implementation_path)
+            != sha256_file(shipped_report_path)
+            or read_json(report_conformance_path) != report_suite
+        ):
+            raise ContractError(
+                "frozen stage-report validator does not match Runtime enforcement"
+            )
+        report_validator_conformance = {
+            "implementation_path": str(report_implementation_path),
+            "implementation_sha256": sha256_file(report_implementation_path),
+            "runtime_implementation_path": str(shipped_report_path),
+            "runtime_implementation_sha256": sha256_file(shipped_report_path),
+            "runtime_byte_identity_verified": True,
+            "conformance_path": str(report_conformance_path),
+            "conformance_sha256": sha256_file(report_conformance_path),
+            **report_suite,
         }
         source_manifest = raw["source_manifest"]
         if not isinstance(source_manifest, list) or not source_manifest:
@@ -11301,6 +11360,9 @@ def staged_preflight_payload(
         calculators["source_inventory_evaluator_conformance"] = (
             evaluator_conformance["validator_version"]
         )
+        calculators["stage_report_validator_conformance"] = (
+            report_validator_conformance["validator_version"]
+        )
     return {
         "schema_version": 1,
         "preflight_id": f"preflight_{state['active_stage_id']}",
@@ -11319,6 +11381,7 @@ def staged_preflight_payload(
             **({"source_manifest_identity": "pass"} if observation_only else {}),
             **({
                 "source_inventory_evaluator_conformance": "pass",
+                "stage_report_validator_conformance": "pass",
             } if observation_only else {}),
         },
         "critical_path": {
@@ -11345,6 +11408,9 @@ def staged_preflight_payload(
                 "authorized_worker_tokens": budget["worker_tokens"],
             },
             "evaluator_conformance": evaluator_conformance,
+            "stage_report_validator_conformance": (
+                report_validator_conformance
+            ),
         } if observation_only else {}),
         "failure": {"type": None, "evidence_sha256": None},
     }
@@ -11496,6 +11562,43 @@ def staged_require_preflight(plan_dir: Path) -> dict[str, Any]:
         if current_suite != recorded_suite:
             raise ContractError(
                 "current-stage preflight evaluator conformance changed"
+            )
+    report_evaluator = preflight.get("stage_report_validator_conformance")
+    if report_evaluator is not None:
+        implementation_path = Path(
+            report_evaluator.get("implementation_path", "")
+        )
+        conformance_path = Path(
+            report_evaluator.get("conformance_path", "")
+        )
+        shipped_path = SCRIPT_DIR / "stage_report_validator.py"
+        current_suite = run_stage_report_conformance_suite()
+        recorded_suite = {
+            key: report_evaluator.get(key) for key in (
+                "validator_id", "validator_version", "case_count", "cases",
+                "status",
+            )
+        }
+        if (
+            implementation_path.is_symlink()
+            or conformance_path.is_symlink()
+            or not implementation_path.is_file()
+            or not conformance_path.is_file()
+            or sha256_file(implementation_path)
+            != report_evaluator.get("implementation_sha256")
+            or sha256_file(implementation_path) != sha256_file(shipped_path)
+            or report_evaluator.get("runtime_implementation_path")
+            != str(shipped_path)
+            or report_evaluator.get("runtime_implementation_sha256")
+            != sha256_file(shipped_path)
+            or report_evaluator.get("runtime_byte_identity_verified") is not True
+            or sha256_file(conformance_path)
+            != report_evaluator.get("conformance_sha256")
+            or read_json(conformance_path) != current_suite
+            or recorded_suite != current_suite
+        ):
+            raise ContractError(
+                "current-stage preflight stage-report validator changed"
             )
     return preflight
 

@@ -789,6 +789,33 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--preflight-inputs", str(preflight),
             ).stdout)
             payload = json.loads(Path(result["preflight_path"]).read_text())
+            report_attestation = payload[
+                "stage_report_validator_conformance"
+            ]
+            shipped_report_validator = (
+                ROOT / "references" / "scripts" / "stage_report_validator.py"
+            )
+            self.assertEqual(
+                report_attestation["runtime_implementation_path"],
+                str(shipped_report_validator),
+            )
+            self.assertEqual(
+                report_attestation["runtime_implementation_sha256"],
+                hashlib.sha256(
+                    shipped_report_validator.read_bytes()
+                ).hexdigest(),
+            )
+            self.assertTrue(
+                report_attestation["runtime_byte_identity_verified"]
+            )
+            self.assertEqual(report_attestation["case_count"], 10)
+            self.assertEqual(report_attestation["status"], "PASS")
+            self.assertEqual(
+                payload["validators"][
+                    "stage_report_validator_conformance"
+                ],
+                "pass",
+            )
             self.assertEqual(
                 payload["critical_path"]["mandatory_checkpoint_ids"],
                 ["CP-01"],

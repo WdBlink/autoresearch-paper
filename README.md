@@ -417,7 +417,9 @@ Quick highlights:
   and Plan022 remain immutable negative evidence; the field
   gate requires a fresh plan and fresh real review. A pre-authorization
   `prepare-staged-research` pass now closes the Plan024 hash/receipt loop before
-  any owner signature is created.
+  any owner signature is created. Observation preflight also records exact
+  Runtime path/hash, byte identity, and the ten-case conformance result for the
+  terminal report validator, closing Plan025's sole CP-01 finding.
 - **v0.17.1** — explicitly inactive observation-only evaluation profiles and
   a CP-01-frozen, conformance-tested terminal-report validator close the
   execution-contract gaps found by real GPT-5.6 CP-01 field review. The
