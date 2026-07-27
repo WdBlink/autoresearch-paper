@@ -93,15 +93,19 @@ task_graph = generate_plan_yaml(
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
-freeze the human-owned contract and exactly one first stage with init-staged-research
 prepare caller-authored bootstrap inputs only under control/staged-inputs/ and
   review materials only under control/review-materials/; never pre-create or
   write state/staged_research/v1/ because init-staged-research is its sole publisher
+run prepare-staged-research before any signature; it validates the complete
+  contract/envelope/profile/capacity/material closure, writes the canonical
+  authorization proposal, and returns exact file-byte hashes
 create and apply authorize_contract only with harness-runtime.py
-  create-human-action then apply-human-action; never read the human-action key
+  create-human-action then apply-human-action using the unchanged proposal,
+  record ID, prepared operation ID, and hashes returned above; never read the human-action key
   or hand-build/HMAC-sign an authorization record
 choose one stable RECORD_ID before hashing the contract, store the same value in
   contract.authorization_receipt_id, and pass it as create-human-action --record-id
+freeze the human-owned contract and exactly one first stage with init-staged-research
 run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
 run the strongest reviewer allowed by the frozen policy; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
@@ -233,7 +237,8 @@ lives in `references/tier-decision-tree.md`.
 Generated plans must initialize:
 
 - canonical `state/staged_research/v1/` governance for new v0.17 plans, using
-  capacity v2, exclusively through `init-staged-research`; preparatory contract,
+  capacity v2, prepared with `prepare-staged-research` and published exclusively
+  through `init-staged-research`; preparatory contract,
   envelope, profile, capacity, preflight, and review-material inputs belong
   under `control/staged-inputs/` or `control/review-materials/`, never under the
   canonical namespace

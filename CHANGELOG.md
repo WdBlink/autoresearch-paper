@@ -17,6 +17,11 @@
 - Preserve Plan021 and Plan022 as immutable negative field evidence. A fresh plan and fresh
   real CP-01 review are required; this patch does not reinterpret or unlock the
   blocked plan.
+- Add `prepare-staged-research` after Plan024 reproduced a pre-authorization
+  hash/receipt loop. The command runs the initializer's complete deterministic
+  validation before any signature, emits exact file-byte hashes and the
+  canonical proposal, and forces create/apply/init to bind the same record ID,
+  profile, capacity, incumbent, and proposal. Plan024 remains negative evidence.
 
 ## v0.17.1 — 2026-07-27
 

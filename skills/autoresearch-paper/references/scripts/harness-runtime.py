@@ -767,6 +767,28 @@ def command_create_human_action(args: argparse.Namespace) -> dict[str, Any]:
             or proposal.get("prepared_operation_id") != args.prepared_operation_id
         ):
             raise ContractError("human action proposal operation identity mismatch")
+        if args.action == "authorize_contract":
+            proposal_expected = {
+                "proposal_kind": "authorize_contract",
+                "plan_id": args.plan_id,
+                "record_id": record_id,
+                "contract_version": args.contract_version,
+                "contract_sha256": args.contract_sha256,
+                "stage_id": args.stage_id,
+                "stage_envelope_sha256": args.stage_envelope_sha256,
+                "continuation_stage_id": (
+                    continuation_stage_ids[0] if continuation_stage_ids else None
+                ),
+                "continuation_stage_limit": continuation_stage_limit or 0,
+            }
+            if any(
+                proposal.get(field) != value
+                for field, value in proposal_expected.items()
+            ):
+                raise ContractError(
+                    "human action flags do not match the canonical "
+                    "authorization proposal"
+                )
         details.update({
             "authorization_proposal_path": str(proposal_path),
             "authorization_proposal_sha256": sha256_file(proposal_path),
@@ -10449,6 +10471,121 @@ def staged_validate_envelope(
         )
 
 
+def command_prepare_staged_research(args: argparse.Namespace) -> dict[str, Any]:
+    """Validate the complete bootstrap closure before owner authorization.
+
+    This command publishes no staged runtime state and uses no signing key.  It
+    freezes the exact file-byte hashes that create-human-action and
+    init-staged-research must reuse, preventing post-signature lint/hash loops.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    if staged_state_path(plan_dir).exists():
+        raise ContractError(
+            "staged initialization preparation requires a fresh plan"
+        )
+    staged_require_id(args.plan_id, "plan_id")
+    if args.plan_id != plan_identity(plan_dir):
+        raise ContractError(
+            "prepared plan_id does not match resource_manifest.json"
+        )
+    record_id = staged_require_id(args.record_id, "record_id")
+    prepared_operation_id = staged_require_id(
+        args.prepared_operation_id, "prepared_operation_id",
+    )
+    contract_path = Path(args.contract).resolve()
+    envelope_path = Path(args.stage_envelope).resolve()
+    evaluation_path = Path(args.evaluation_profile).resolve()
+    capacity_path = Path(args.checkpoint_capacity).resolve()
+    contract = read_json(contract_path)
+    envelope = read_json(envelope_path)
+    evaluation = read_json(evaluation_path)
+    capacity = read_json(capacity_path)
+    staged_validate_contract(contract)
+    staged_validate_evaluation_profile(evaluation)
+    staged_validate_capacity(capacity)
+    incumbent_sha256 = staged_require_sha256(
+        args.incumbent_sha256, "incumbent_sha256",
+    )
+    staged_validate_envelope(
+        envelope,
+        contract["contract_version"],
+        incumbent_sha256,
+        first=True,
+        plan_dir=plan_dir,
+        require_manifest=True,
+    )
+    staged_validate_profile_envelope_compatibility(
+        evaluation, envelope, strict=True,
+    )
+    if contract["authorization_receipt_id"] != record_id:
+        raise ContractError(
+            "optimization contract authorization receipt ID does not match "
+            "the prepared record ID"
+        )
+    continuation_stage_id = getattr(args, "continuation_stage_id", None)
+    if continuation_stage_id:
+        continuation_stage_id = staged_require_id(
+            continuation_stage_id, "continuation_stage_id",
+        )
+        if continuation_stage_id == envelope["stage_id"]:
+            raise ContractError(
+                "continuation stage must differ from the first stage"
+            )
+    proposal = {
+        "schema_version": 1,
+        "status": "AWAITING_HUMAN_AUTHORIZATION",
+        "prepared_operation_id": prepared_operation_id,
+        "proposal_kind": "authorize_contract",
+        "plan_id": args.plan_id,
+        "record_id": record_id,
+        "contract_version": contract["contract_version"],
+        "contract_path": str(contract_path),
+        "contract_sha256": sha256_file(contract_path),
+        "stage_id": envelope["stage_id"],
+        "stage_envelope_path": str(envelope_path),
+        "stage_envelope_sha256": sha256_file(envelope_path),
+        "evaluation_profile_path": str(evaluation_path),
+        "evaluation_profile_sha256": sha256_file(evaluation_path),
+        "checkpoint_capacity_path": str(capacity_path),
+        "checkpoint_capacity_sha256": sha256_file(capacity_path),
+        "incumbent_sha256": incumbent_sha256,
+        "continuation_stage_id": continuation_stage_id,
+        "continuation_stage_limit": 1 if continuation_stage_id else 0,
+    }
+    proposal_path = (
+        plan_dir / "control" / "human_authorization_required.json"
+    )
+    if proposal_path.exists() and read_json(proposal_path) != proposal:
+        bound_records = list(
+            (plan_dir / "control" / "human_actions" / "pending").glob("*.json")
+        ) + list(
+            (plan_dir / "state" / "human_actions" / "applied").glob("*.json")
+        )
+        if bound_records:
+            raise ContractError(
+                "authorization proposal is already bound; create a fresh plan"
+            )
+    atomic_write_json(proposal_path, proposal)
+    return {
+        "ok": True,
+        "authorization_proposal_path": str(proposal_path),
+        "authorization_proposal_sha256": sha256_file(proposal_path),
+        "prepared_operation_id": prepared_operation_id,
+        "record_id": record_id,
+        "contract_version": contract["contract_version"],
+        "contract_sha256": proposal["contract_sha256"],
+        "stage_id": envelope["stage_id"],
+        "stage_envelope_sha256": proposal["stage_envelope_sha256"],
+        "evaluation_profile_sha256": proposal["evaluation_profile_sha256"],
+        "checkpoint_capacity_sha256": proposal[
+            "checkpoint_capacity_sha256"
+        ],
+        "incumbent_sha256": incumbent_sha256,
+        "continuation_stage_id": continuation_stage_id,
+        "continuation_stage_limit": proposal["continuation_stage_limit"],
+    }
+
+
 def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state_path = staged_state_path(plan_dir)
@@ -10541,6 +10678,44 @@ def command_init_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     details = authorization.get("details", {})
     if any(details.get(key) != value for key, value in expected_authorization.items()):
         raise ContractError("owner authorization does not bind contract and first stage")
+    proposal_path_value = details.get("authorization_proposal_path")
+    proposal_sha256 = details.get("authorization_proposal_sha256")
+    if proposal_path_value is not None or proposal_sha256 is not None:
+        proposal_path = Path(str(proposal_path_value)).resolve()
+        canonical_proposal = (
+            plan_dir / "control" / "human_authorization_required.json"
+        ).resolve()
+        if (
+            proposal_path != canonical_proposal
+            or not proposal_path.is_file()
+            or sha256_file(proposal_path) != proposal_sha256
+        ):
+            raise ContractError("owner authorization proposal binding changed")
+        proposal = read_json(proposal_path)
+        proposal_expected = {
+            "status": "AWAITING_HUMAN_AUTHORIZATION",
+            "proposal_kind": "authorize_contract",
+            "plan_id": args.plan_id,
+            "record_id": authorization.get("record_id"),
+            "contract_version": contract["contract_version"],
+            "contract_path": str(contract_path),
+            "contract_sha256": sha256_file(contract_path),
+            "stage_id": envelope["stage_id"],
+            "stage_envelope_path": str(envelope_path),
+            "stage_envelope_sha256": sha256_file(envelope_path),
+            "evaluation_profile_path": str(evaluation_path),
+            "evaluation_profile_sha256": sha256_file(evaluation_path),
+            "checkpoint_capacity_path": str(capacity_path),
+            "checkpoint_capacity_sha256": sha256_file(capacity_path),
+            "incumbent_sha256": args.incumbent_sha256,
+        }
+        if any(
+            proposal.get(field) != value
+            for field, value in proposal_expected.items()
+        ):
+            raise ContractError(
+                "owner authorization proposal does not bind bootstrap closure"
+            )
     root = staged_root(plan_dir)
     root.mkdir(parents=True, exist_ok=True)
     contract_target = root / "contracts" / f"{contract['contract_version']}.json"
@@ -14954,6 +15129,9 @@ def staged_locked_command(handler: Any) -> Any:
     return locked
 
 
+command_prepare_staged_research = staged_locked_command(
+    command_prepare_staged_research
+)
 command_init_staged_research = staged_locked_command(
     command_init_staged_research
 )
@@ -14991,6 +15169,22 @@ command_record_evaluator_rebaseline = staged_locked_command(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    staged_prepare = sub.add_parser(
+        "prepare-staged-research",
+        help="validate bootstrap closure and prepare exact authorization hashes",
+    )
+    staged_prepare.add_argument("--plan-dir", required=True)
+    staged_prepare.add_argument("--plan-id", required=True)
+    staged_prepare.add_argument("--contract", required=True)
+    staged_prepare.add_argument("--stage-envelope", required=True)
+    staged_prepare.add_argument("--evaluation-profile", required=True)
+    staged_prepare.add_argument("--checkpoint-capacity", required=True)
+    staged_prepare.add_argument("--incumbent-sha256", required=True)
+    staged_prepare.add_argument("--record-id", required=True)
+    staged_prepare.add_argument("--prepared-operation-id", required=True)
+    staged_prepare.add_argument("--continuation-stage-id")
+    staged_prepare.set_defaults(handler=command_prepare_staged_research)
 
     staged_init = sub.add_parser(
         "init-staged-research",

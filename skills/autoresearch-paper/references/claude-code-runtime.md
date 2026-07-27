@@ -502,11 +502,32 @@ directory or a proposed contract snapshot. `init-staged-research` is the only
 publisher of that canonical namespace. If any manual write has already landed
 there, abandon that initialization attempt and restart from a clean plan
 identity rather than treating the bytes as controller authority.
+Before any signature, run `prepare-staged-research`. It reuses the initializer's
+closed validators, verifies immutable review-material hashes and modes, checks
+profile/capacity/envelope compatibility, and writes the canonical
+`control/human_authorization_required.json`. Its returned hashes are exact file
+byte hashes, not reserialized JSON hashes. If preparation fails, no pending or
+applied authorization exists; repair the unsigned draft or create a fresh plan.
+
 Create and apply the `authorize_contract` action using the exact sequence in
-Authenticated Human Actions above, then pass only the applied receipt path to
-the initializer. Never manufacture that receipt in a helper script.
+Authenticated Human Actions above and the unchanged preparation output. The
+signed record binds the proposal hash; initialization rechecks the proposal's
+contract, envelope, evaluation profile, capacity, and incumbent closure before
+publishing state. Never manufacture that receipt in a helper script.
 
 ```bash
+python3 references/scripts/harness-runtime.py prepare-staged-research \
+  --plan-dir PLAN --plan-id PLAN_ID \
+  --contract optimization-contract.json \
+  --stage-envelope first-stage.json \
+  --evaluation-profile evaluation-profile.json \
+  --checkpoint-capacity checkpoint-capacity.json \
+  --incumbent-sha256 INCUMBENT_SHA256 \
+  --record-id STABLE_OWNER_RECORD_ID \
+  --prepared-operation-id STABLE_PREPARED_ID \
+  --continuation-stage-id PREAUTHORIZED_NEXT_STAGE
+# create-human-action must reuse the returned record ID, hashes, proposal path,
+# prepared operation ID, and continuation stage; then apply-human-action.
 python3 references/scripts/harness-runtime.py init-staged-research \
   --plan-dir PLAN --plan-id PLAN_ID \
   --contract optimization-contract.json \

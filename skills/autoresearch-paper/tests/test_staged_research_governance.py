@@ -545,6 +545,181 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--preflight-inputs", str(preflight),
             )
 
+    def test_prepare_staged_research_closes_authorization_hash_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            plan.mkdir(parents=True)
+            self.init_policy(plan)
+            self.write(plan / "resource_manifest.json", {
+                "schema_version": 1, "plan_id": "plan_prepared",
+                "resources": [],
+            })
+            gate_evaluator = self.write(
+                plan / "inputs" / "gate-evaluator.json",
+                {"schema_version": 1, "kind": "isolated-gate-evaluator-v1"},
+            )
+            contract_value = self.contract()
+            contract_value.update({
+                "contract_version": "contract_prepared_v1",
+                "authorization_receipt_id": "har_prepared_owner_v1",
+                "acceptance_evaluator_sha256": hashlib.sha256(
+                    gate_evaluator.read_bytes(),
+                ).hexdigest(),
+            })
+            contract = self.write(
+                plan / "inputs" / "contract.json", contract_value,
+            )
+            incumbent = digest("prepared-incumbent")
+            envelope_value = self.envelope(
+                "stage_prepared", incumbent=incumbent,
+            )
+            envelope_value["contract_version"] = "contract_prepared_v1"
+            envelope = self.write(
+                plan / "inputs" / "stage.json", envelope_value,
+            )
+            evaluation = self.write(
+                plan / "inputs" / "evaluation.json", self.evaluation_profile(),
+            )
+            capacity = self.write(
+                plan / "inputs" / "capacity.json", self.capacity(),
+            )
+            prepared = json.loads(self.invoke(
+                "prepare-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_prepared", "--contract", str(contract),
+                "--stage-envelope", str(envelope),
+                "--evaluation-profile", str(evaluation),
+                "--checkpoint-capacity", str(capacity),
+                "--incumbent-sha256", incumbent,
+                "--record-id", "har_prepared_owner_v1",
+                "--prepared-operation-id", "prepare_plan_prepared_v1",
+                "--continuation-stage-id", "stage_prepared_2",
+            ).stdout)
+            self.assertEqual(
+                prepared["contract_sha256"],
+                hashlib.sha256(contract.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                prepared["stage_envelope_sha256"],
+                hashlib.sha256(envelope.read_bytes()).hexdigest(),
+            )
+            proposal = json.loads(
+                Path(prepared["authorization_proposal_path"]).read_text(),
+            )
+            self.assertEqual(proposal["record_id"], "har_prepared_owner_v1")
+            key = plan / "owner.key"
+            key.write_bytes(b"x" * 32)
+            key.chmod(0o600)
+            mismatched = self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_prepared", "--action", "authorize_contract",
+                "--key-file", str(key), "--expires-in", "3600",
+                "--record-id", prepared["record_id"], "--actor", "owner",
+                "--contract-version", prepared["contract_version"],
+                "--stage-id", prepared["stage_id"],
+                "--contract-sha256", "f" * 64,
+                "--stage-envelope-sha256", prepared["stage_envelope_sha256"],
+                "--continuation-stage-id", prepared["continuation_stage_id"],
+                "--continuation-stage-limit", "1",
+                "--authorization-proposal",
+                prepared["authorization_proposal_path"],
+                "--prepared-operation-id", prepared["prepared_operation_id"],
+                ok=False,
+            )
+            self.assertIn(
+                "flags do not match the canonical authorization proposal",
+                mismatched.stderr,
+            )
+            created = json.loads(self.invoke(
+                "create-human-action", "--plan-dir", str(plan),
+                "--plan-id", "plan_prepared", "--action", "authorize_contract",
+                "--key-file", str(key), "--expires-in", "3600",
+                "--record-id", prepared["record_id"], "--actor", "owner",
+                "--contract-version", prepared["contract_version"],
+                "--stage-id", prepared["stage_id"],
+                "--contract-sha256", prepared["contract_sha256"],
+                "--stage-envelope-sha256", prepared["stage_envelope_sha256"],
+                "--continuation-stage-id", prepared["continuation_stage_id"],
+                "--continuation-stage-limit", "1",
+                "--authorization-proposal",
+                prepared["authorization_proposal_path"],
+                "--prepared-operation-id", prepared["prepared_operation_id"],
+            ).stdout)
+            applied = json.loads(self.invoke(
+                "apply-human-action", "--plan-dir", str(plan),
+                "--record", created["record_path"], "--key-file", str(key),
+                "--expected-action", "authorize_contract",
+            ).stdout)
+            evaluation_bytes = evaluation.read_bytes()
+            evaluation.write_bytes(evaluation_bytes + b"\n")
+            drifted = self.invoke(
+                "init-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_prepared", "--contract", str(contract),
+                "--stage-envelope", str(envelope),
+                "--evaluation-profile", str(evaluation),
+                "--checkpoint-capacity", str(capacity),
+                "--authorization-receipt", applied["receipt"]["receipt_path"],
+                "--incumbent-sha256", incumbent,
+                ok=False,
+            )
+            self.assertIn(
+                "authorization proposal does not bind bootstrap closure",
+                drifted.stderr,
+            )
+            evaluation.write_bytes(evaluation_bytes)
+            initialized = json.loads(self.invoke(
+                "init-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_prepared", "--contract", str(contract),
+                "--stage-envelope", str(envelope),
+                "--evaluation-profile", str(evaluation),
+                "--checkpoint-capacity", str(capacity),
+                "--authorization-receipt", applied["receipt"]["receipt_path"],
+                "--incumbent-sha256", incumbent,
+            ).stdout)
+            self.assertEqual(initialized["state"], "CONTRACTED")
+
+    def test_prepare_staged_research_rejects_before_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            plan.mkdir(parents=True)
+            self.init_policy(plan)
+            self.write(plan / "resource_manifest.json", {
+                "schema_version": 1, "plan_id": "plan_invalid_prepare",
+                "resources": [],
+            })
+            contract = self.write(
+                plan / "inputs" / "contract.json", self.contract(),
+            )
+            envelope = self.write(
+                plan / "inputs" / "stage.json", self.envelope(),
+            )
+            invalid_profile = {
+                **self.evaluation_profile(), "applicability": "observation-only",
+            }
+            evaluation = self.write(
+                plan / "inputs" / "evaluation.json", invalid_profile,
+            )
+            capacity = self.write(
+                plan / "inputs" / "capacity.json", self.capacity(),
+            )
+            rejected = self.invoke(
+                "prepare-staged-research", "--plan-dir", str(plan),
+                "--plan-id", "plan_invalid_prepare", "--contract", str(contract),
+                "--stage-envelope", str(envelope),
+                "--evaluation-profile", str(evaluation),
+                "--checkpoint-capacity", str(capacity),
+                "--incumbent-sha256", digest("incumbent"),
+                "--record-id", "har_owner_auth_1",
+                "--prepared-operation-id", "prepare_invalid_profile_v1",
+                ok=False,
+            )
+            self.assertIn("evaluation profile has forbidden fields", rejected.stderr)
+            self.assertFalse(
+                (plan / "control" / "human_authorization_required.json").exists(),
+            )
+            self.assertFalse(
+                (plan / "control" / "human_actions" / "pending").exists(),
+            )
+
     def test_owner_can_revise_first_stage_before_preflight_without_spending_slot(
         self,
     ) -> None:

@@ -415,7 +415,9 @@ Quick highlights:
   inventory and stage-report conformance suites now contain twelve and ten
   cases respectively; the former proves the actual CLI receipt path. Plan021
   and Plan022 remain immutable negative evidence; the field
-  gate requires a fresh plan and fresh real review.
+  gate requires a fresh plan and fresh real review. A pre-authorization
+  `prepare-staged-research` pass now closes the Plan024 hash/receipt loop before
+  any owner signature is created.
 - **v0.17.1** — explicitly inactive observation-only evaluation profiles and
   a CP-01-frozen, conformance-tested terminal-report validator close the
   execution-contract gaps found by real GPT-5.6 CP-01 field review. The

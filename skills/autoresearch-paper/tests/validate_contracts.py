@@ -82,6 +82,7 @@ def main() -> int:
     require(
         contains(
             "references/claude-code-runtime.md", "init-policy", "create-human-action",
+            "prepare-staged-research",
             "freeze-evaluator", "record-failure", "dispatch-worker", "inspect-worker",
             "schedule-patrol", "remove-resource", "create-frontier-request",
             "assert-transition", "reconcile-frontier-request", "promote-worker-artifacts",
