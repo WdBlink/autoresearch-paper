@@ -196,6 +196,44 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         self.assertEqual(visible[0]["additional_fields"], "forbidden at every object level")
 
+    def test_declared_output_preserves_source_citation_bindings(self) -> None:
+        runtime = load_module("harness_runtime_manifest_test", SCRIPTS / "harness-runtime.py")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            source = root / "source.py"
+            source.write_text("class Alpha:\n    pass\n")
+            source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            declaration = {
+                "artifact_id": "source_inventory",
+                "path": str(root / "candidate.json"),
+                "content_field": "content",
+                "max_bytes": 1000,
+                "capability": {"class": "research-intermediate"},
+                "content_validator": {
+                    "kind": "source_inventory_v1",
+                    "source_manifest": [{
+                        "path": str(source),
+                        "sha256": source_sha,
+                        "symbol": "Alpha",
+                        "line_start": 1,
+                    }],
+                },
+            }
+            normalized = runtime.normalize_declared_output(root, declaration)
+            self.assertEqual(
+                normalized["content_validator"]["source_manifest"],
+                declaration["content_validator"]["source_manifest"],
+            )
+
+            broken = json.loads(json.dumps(declaration))
+            broken["content_validator"]["source_manifest"] = [{
+                "path": str(source), "sha256": source_sha, "purpose": "source",
+            }]
+            with self.assertRaisesRegex(
+                runtime.ContractError, "must bind exactly path, sha256, symbol",
+            ):
+                runtime.normalize_declared_output(root, broken)
+
     def test_controller_enforces_byte_cap_for_normal_and_legacy_paths(self) -> None:
         runtime = load_module(
             "harness_runtime_byte_cap_test", SCRIPTS / "harness-runtime.py",

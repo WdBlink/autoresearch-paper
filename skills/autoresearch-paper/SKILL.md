@@ -540,8 +540,13 @@ this file.
   Source validator conformance also runs the actual CLI artifact/receipt path.
   Canonical preflight now records and revalidates the equivalent Runtime
   identity and ten-case result for `stage-report-validator/2`, closing the sole
-  Plan025 CP-01 critical finding. Plan021, Plan022, and Plan025 remain immutable
-  negative evidence and a fresh plan/review is mandatory.
+  Plan025 CP-01 critical finding. Source-inventory Worker contracts now retain
+  and revalidate the exact `symbol` and `line_start` citation bindings instead
+  of passing the generic path/hash/purpose input shape to the content
+  validator. This prevents a valid MiniMax inventory from being rejected by a
+  Controller-side manifest-shape mismatch. Plan021, Plan022, Plan025, and
+  Plan026 remain immutable negative evidence and a fresh plan/review is
+  mandatory.
 - **v0.17.1 (2026-07-27)** — Observation-only stages now use an
   explicitly inactive evaluation profile instead of an active-looking Gate
   placeholder. MiniMax terminal reports are validated by a CP-01-frozen,

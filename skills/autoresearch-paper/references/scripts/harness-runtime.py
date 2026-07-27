@@ -477,6 +477,92 @@ def verify_manifest_items(items: Any, *, base_dir: Path) -> list[dict[str, str]]
     return checked
 
 
+def verify_source_inventory_manifest_items(
+    items: Any, *, base_dir: Path,
+) -> list[dict[str, Any]]:
+    """Freeze the richer manifest required by source-inventory-validator/6.
+
+    A task input manifest intentionally exposes only path/hash/purpose.  The
+    source-inventory content validator additionally needs the exact symbol and
+    one-based source line.  Keeping these two shapes separate prevents the
+    generic input normalizer from silently discarding scientific citation
+    bindings before Worker output validation.
+    """
+    if not isinstance(items, list) or not items:
+        raise ContractError("source-inventory manifest must be a non-empty array")
+    checked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    required = {"path", "sha256", "symbol", "line_start"}
+    optional = {"size_bytes", "line_count"}
+    for index, item in enumerate(items):
+        if (
+            not isinstance(item, dict)
+            or not required <= set(item)
+            or set(item) - required - optional
+        ):
+            raise ContractError(
+                f"source-inventory manifest entry {index} must bind exactly "
+                "path, sha256, symbol, line_start, and optional size metadata"
+            )
+        raw_path = item.get("path")
+        expected = item.get("sha256")
+        symbol = item.get("symbol")
+        line_start = item.get("line_start")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ContractError("source-inventory manifest path must be non-empty")
+        declared_path = Path(raw_path)
+        if not declared_path.is_absolute():
+            declared_path = base_dir / declared_path
+        if declared_path.is_symlink():
+            raise ContractError(
+                f"source-inventory manifest source must not be a symlink: {declared_path}"
+            )
+        path = declared_path.resolve()
+        canonical = str(path)
+        if canonical in seen or not path.is_file():
+            raise ContractError(
+                f"source-inventory manifest source is unavailable or repeated: {path}"
+            )
+        if not isinstance(expected, str) or SHA256_RE.fullmatch(expected) is None:
+            raise ContractError("source-inventory manifest sha256 is invalid")
+        source_bytes = path.read_bytes()
+        if hashlib.sha256(source_bytes).hexdigest() != expected:
+            raise ContractError(f"source-inventory manifest hash mismatch: {path}")
+        try:
+            lines = source_bytes.decode("utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise ContractError(
+                f"source-inventory manifest must reference UTF-8 text: {path}"
+            ) from exc
+        if (
+            not isinstance(symbol, str)
+            or SYMBOL_RE.fullmatch(symbol) is None
+            or isinstance(line_start, bool)
+            or not isinstance(line_start, int)
+            or not 1 <= line_start <= len(lines)
+            or not symbol_occurs_on_line(symbol, lines[line_start - 1])
+        ):
+            raise ContractError(
+                f"source-inventory manifest entry {index} symbol/line_start is not exact"
+            )
+        size_bytes = item.get("size_bytes", len(source_bytes))
+        line_count = item.get("line_count", len(lines))
+        if size_bytes != len(source_bytes) or line_count != len(lines):
+            raise ContractError(
+                f"source-inventory manifest entry {index} size metadata changed"
+            )
+        checked.append({
+            "path": canonical,
+            "sha256": expected,
+            "symbol": symbol,
+            "line_start": line_start,
+            **({"size_bytes": size_bytes} if "size_bytes" in item else {}),
+            **({"line_count": line_count} if "line_count" in item else {}),
+        })
+        seen.add(canonical)
+    return checked
+
+
 def validate_schema(instance: Any, schema: dict[str, Any], path: str = "$") -> None:
     """Validate the JSON-Schema subset used by bundled contracts."""
     if "const" in schema and instance != schema["const"]:
@@ -3403,7 +3489,7 @@ def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
             or validator.get("kind") != "source_inventory_v1"
         ):
             raise ContractError("artifact content_validator is invalid")
-        checked_sources = verify_manifest_items(
+        checked_sources = verify_source_inventory_manifest_items(
             validator.get("source_manifest"), base_dir=plan_dir,
         )
         if len(checked_sources) != len(validator["source_manifest"]):
