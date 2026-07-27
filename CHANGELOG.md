@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.16.2 — 2026-07-26
+
+- Expand every content-addressed first-stage review material into the bounded
+  CP-01 Codex context instead of exposing wrapper hashes alone.
+- Require readable execution-plan, evaluator, risk/stop, and figure-strategy
+  materials for new initial staged envelopes.
+- Reject plan-wide ChatGPT budgets that cannot fund the declared number of
+  minimum-sized frontier calls; distinguish the 150k/5k admission floor from
+  the 350k/15k field default after plan013 charged 294,915/11,457 tokens.
+- Make a real Claude Code CP-01 pass plus first research work-unit creation the
+  field acceptance gate.
+- Disable the complete Codex agent surface for frontier reviews with
+  `agents.enabled=false`, reject collaboration events, and validate that
+  isolated configuration before reserving budget.
+- Revalidate immutable staged inputs before Worker budget mutation, start the
+  scientific clock at authorization, and add narrow audited recovery for a
+  provably unstarted reservation or a transport denied before source access.
+- Reject unavailable Claude executables and non-UTF-8 observation sources
+  before any Worker run or scientific-budget mutation; precheck dispatch
+  capacity and scientific capacity under one lock so a second work unit cannot
+  strand either ledger.
+- Grant read-only Claude workers visibility to hash-verified external input
+  directories with `--add-dir`, disclose the exact closed content-validator
+  schema in the Worker prompt, and freeze a six-case source-grounding evaluator
+  conformance suite. Normal and legacy-normalized artifacts share the same
+  declared byte-cap enforcement.
+- Field acceptance on `fwvg-conf-2026-013` reached `DEVELOPING`, ran real
+  MiniMax-M3 source research, and produced a validator-v2-accepted seven-record
+  source inventory; no 24h, 7x24, or full-cutover claim is implied.
+
 All notable changes to **autoresearch-paper** are documented here.
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 within the Harness contract:

@@ -33,6 +33,8 @@ class ClaudeCutoverE2E(unittest.TestCase):
             "import hashlib,json,pathlib,sys\n"
             "if sys.argv[1:] == ['login', 'status']:\n"
             " print('Logged in using ChatGPT');raise SystemExit(0)\n"
+            "if sys.argv[-2:] == ['features', 'list']:\n"
+            " print('multi_agent stable false');raise SystemExit(0)\n"
             f"counter=pathlib.Path({str(counter)!r});counter.write_text(str(int(counter.read_text())+1) if counter.exists() else '1')\n"
             "a=sys.argv[1:];out=pathlib.Path(a[a.index('--output-last-message')+1]);p=sys.stdin.read();r=json.loads(p[p.index('{'):]);rp=pathlib.Path.cwd()/'state'/'frontier'/'requests'/r['request_id']/'request.json';c=json.dumps(r['context_manifest'],sort_keys=True,separators=(',',':'),ensure_ascii=False).encode();k={'CP-01':'plan_audit','CP-02':'evaluator_audit','CP-03':'pivot_advice','CP-04':'evidence_audit'};x={'schema_version':1,'request_id':r['request_id'],'plan_id':r['plan_id'],'checkpoint':r['checkpoint'],'checkpoint_subtype':r['checkpoint_subtype'],'request_sha256':hashlib.sha256(rp.read_bytes()).hexdigest(),'context_manifest_sha256':hashlib.sha256(c).hexdigest(),'status':'completed','response_kind':k[r['checkpoint']],'recommendation':'pivot' if r['checkpoint']=='CP-03' else 'accept','findings':[],'proposed_actions':[],'assumptions':[],'blockers':[],'model_id':'ignored','usage':{'input_tokens':0,'output_tokens':0},'completed_at':'2026-07-18T00:00:00Z'};out.write_text(json.dumps(x));print(json.dumps({'usage':{'input_tokens':100,'output_tokens':50}}))\n"
         )

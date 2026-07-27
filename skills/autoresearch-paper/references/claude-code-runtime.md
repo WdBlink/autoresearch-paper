@@ -33,7 +33,7 @@ python3 references/scripts/harness-runtime.py init-policy \
   --plan-audit-model gpt-5.6-sol \
   --plan-audit-reasoning-effort ultra \
   --max-frontier-calls 4 \
-  --max-frontier-input-tokens 600000 --max-frontier-output-tokens 20000 \
+  --max-frontier-input-tokens 1400000 --max-frontier-output-tokens 60000 \
   --scientific-pivot-threshold 2
 ```
 
@@ -52,8 +52,13 @@ The input budget is observed transport usage, not only the request and artifact
 bytes. Codex may inject its base instructions, available skill descriptions,
 and tool context, then count the prefix again across tool turns. On the local
 v0.14.1 acceptance environment a small CP-01 audit used 79k–130k input tokens.
-Reserve at least 150k input tokens per ChatGPT frontier request and 600k for
-the default four-call plan unless a fresh measured profile justifies less.
+Reserve at least 150k input tokens per ChatGPT frontier request. The runtime
+rejects a plan-wide budget smaller than the per-request floor multiplied by
+the declared call count. The final plan013 CP-01 acceptance was charged
+294,915 input and 11,457 output tokens after transport-overrun reconciliation.
+The operational field default is therefore 350k/15k per request and 1.4m/60k
+for the default four-call plan; the 150k/5k values remain admission floors,
+not recommended reservations.
 New v0.16.1 policies freeze this measured envelope as
 `chatgpt-frontier-v1`: each ChatGPT request must reserve at least 150k input
 and 5k output tokens. The 150k floor covers the measured 79k–130k range with
@@ -130,8 +135,8 @@ python3 references/scripts/harness-runtime.py apply-human-action \
 python3 references/scripts/harness-runtime.py create-human-action \
   --plan-dir PLAN --plan-id PLAN_ID --action authorize_frontier_capacity \
   --key-file KEY --expires-in 300 \
-  --add-frontier-calls 1 --add-frontier-input-tokens 150000 \
-  --add-frontier-output-tokens 5000
+  --add-frontier-calls 1 --add-frontier-input-tokens 350000 \
+  --add-frontier-output-tokens 15000
 python3 references/scripts/harness-runtime.py apply-human-action \
   --plan-dir PLAN --record RECORD --key-file KEY \
   --expected-action authorize_frontier_capacity --operation-id op_64_HEX
@@ -155,6 +160,36 @@ ledger hashes. A PREPARED/COMMITTED journal rolls all three projections
 forward exactly once. The grant only raises future capacity: it cannot name,
 refund, validate, or rewrite a launched request, cannot move CP-01/CP-02/CP-04
 slots, and cannot violate `remaining_calls >= mandatory_future_calls`.
+
+## Worker input and recovery boundary
+
+`dispatch-worker` verifies every input path and SHA-256 before any staged
+Worker budget mutation. Claude Code receives only the declared read-only tools;
+for verified inputs outside the plan cwd, the controller appends their distinct
+parent directories through `--add-dir`. The content evaluator is not a hidden
+test: `artifact_content_contracts` discloses the exact JSON fields, record
+order, cardinality, line-grounding rule, and size bounds in the Worker prompt.
+`--add-dir` is directory-granular read authority, not exact-file isolation.
+Do not place undeclared secrets beside an authorized source; use an isolated
+source directory when siblings are outside Worker authority. Only frozen
+manifest paths and hashes may contribute accepted observations. Exact-copy
+input sandboxes remain a separate hardening profile, not a v0.16.2 claim.
+
+The scientific stage clock is reset when CP-01 authorizes Development, rather
+than charging time spent waiting for frontier review. Recovery is deliberately
+narrow. `reconcile-orphan-worker-budget` applies only when no run directory,
+dispatch marker, or dispatch journal exists. A denied-input recovery requires
+every frozen `Read` to be present in Claude's permission-denial evidence and
+zero scientific records. Actual model usage remains in the immutable recovery
+journal. Content errors after the complete contract is visible are genuine
+Worker failures and are not refundable.
+
+The shipped `source_inventory_v1` evaluator is versioned independently and
+runs one positive plus five adversarial conformance cases. CP-01 binds the
+exact evaluator implementation and conformance result. A one-time deterministic
+alias normalizer is available only for a failed pre-disclosure proposal whose
+controller-fault reconciliation is already committed; the original Worker run
+remains `FAILED`, and the normalization receipt states the mixed provenance.
 
 ## Gated Learning
 
@@ -361,7 +396,7 @@ python3 references/scripts/harness-runtime.py create-durable-frontier-request \
   --checkpoint-subtype acceptance_dispute --attempt 1 \
   --objective "resolve bounded evidence dispute" \
   --decision-required resolve_acceptance_dispute \
-  --max-input-tokens 150000 --max-output-tokens 5000
+  --max-input-tokens 350000 --max-output-tokens 15000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
 python3 references/scripts/harness-runtime.py validate-frontier-response \
@@ -401,7 +436,7 @@ python3 references/scripts/harness-runtime.py create-frontier-request \
   --artifact state/staged_research/v1/stages/STAGE/envelope.json::first_stage_envelope \
   --artifact state/staged_research/v1/stages/STAGE/preflight.json::current_stage_preflight \
   --artifact state/staged_research/v1/checkpoint-capacity.json::checkpoint_capacity \
-  --max-input-tokens 150000 --max-output-tokens 5000
+  --max-input-tokens 350000 --max-output-tokens 15000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
 python3 references/scripts/harness-runtime.py reconcile-frontier-request \
@@ -426,6 +461,11 @@ criteria, stage budget, required report schema, and stop policy (plus figure
 requirements for a figure-production stage). Legacy v0.16 envelopes without
 the manifest remain readable and idempotently replayable, but cannot be used
 to create a new stage.
+For the initial stage, the manifest additionally requires readable
+`execution_plan`, `acceptance_evaluator`, `risk_and_stop_rules`, and
+`figure_strategy` materials. CP-01 expands every bound material into its own
+frozen `context_manifest` entry. Hash commitments alone are not substantive
+review evidence.
 `raw-preflight-evidence.json` contains only the truth table, statistical
 design, train/evaluation matrix, conditional state machine, and current-stage
 critical path. It cannot contain caller-authored pass/fail/not-applicable
