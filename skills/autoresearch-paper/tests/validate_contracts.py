@@ -89,6 +89,7 @@ def main() -> int:
             "run-evaluator", "register-durable-trigger", "init-durable-plan",
             "activate-runtime-assurance", "run-runtime-assurance-tick",
             "unregister-runtime-assurance", "record-worker-heartbeat",
+            "inspect-plan-runtime", "shutdown-plan",
             "apply-work-unit-result", "apply-guardian-proposal",
             "guardian-validate-lifecycle", "admit-evaluator",
             "check-autonomy-eligibility", "create-durable-frontier-request",
@@ -173,8 +174,8 @@ def main() -> int:
         errors,
     )
     require(
-        contains("references/scripts/stop-plan.sh", "apply-human-action", "--record", "--key-file", "cleanup-plan-resources.sh"),
-        "stop script must require authenticated authority and pass a receipt to cleanup",
+        contains("references/scripts/stop-plan.sh", "apply-human-action", "--record", "--key-file", "shutdown-plan", "cleanup-plan-resources.sh"),
+        "stop script must apply authority, shut down runtime, and pass a receipt to cleanup",
         errors,
     )
     require(
@@ -387,6 +388,7 @@ def main() -> int:
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
             "pivot-eligibility", "wait-worker", "cancel-worker", "run-patrol",
+            "inspect-plan-runtime", "shutdown-plan", "process_identity",
             "promote-worker-artifacts", "reconcile-frontier-request",
             "apply-frontier-response", "dependent-transition", "assert-transition",
             "top_level_plan_audit", "PLAN_AUDIT_MODEL",

@@ -141,6 +141,8 @@ python3 references/scripts/harness-runtime.py commit-durable-worker-result \
   --plan-dir PLAN --worker-run-id RUN
 python3 references/scripts/harness-runtime.py inspect-worker \
   --plan-dir PLAN --worker-run-id RUN
+python3 references/scripts/harness-runtime.py inspect-plan-runtime \
+  --plan-dir PLAN
 python3 references/scripts/harness-runtime.py wait-worker \
   --plan-dir PLAN --worker-run-id RUN --deadline-seconds 60
 python3 references/scripts/harness-runtime.py send-worker-message \
@@ -152,6 +154,11 @@ CP-01 `approve_execution`. Messages are durable, advisory, and queued for the
 next controller observation; they are not a live channel to an executing
 process. `wait-worker` polls every 100ms and
 returns non-zero for `FAILED`, `PAUSED`, `CANCELLED`, or deadline expiry.
+Before wait, Worker status records its PID, dedicated process group, OS start
+and command identity, exact command hash, and plan-local live stdout/stderr
+paths. Authenticated cancellation sends TERM and then bounded KILL only when
+all stored process-identity fields still match; PID reuse or drift is preserved
+as an explicit residual and the observed process is not signalled.
 
 On the production durable path, `--context-capsule` is required by the
 controller procedure. The runtime revalidates that the capsule is the current
@@ -278,7 +285,9 @@ never mutate source files. Evaluator proposals additionally consume an applied
 `authorize_evaluator_change` human receipt bound to the exact proposal hash.
 
 `cancel-worker` is an authenticated alias requiring the same run ID in the
-record and command. Waiver and cleanup actions produce immutable receipts.
+record and command. It makes the result ineligible and terminates only a
+still-matching bound Worker process identity; mismatch remains an explicit
+residual. Waiver and cleanup actions produce immutable receipts.
 Compatibility wrappers `pause-plan.sh`, `resume-plan.sh`, and `stop-plan.sh`
 require `--record` and `--key-file`.
 
@@ -413,6 +422,10 @@ python3 references/scripts/harness-runtime.py apply-work-unit-result \
   --plan-dir PLAN --capsule CAPSULE --result CONTROLLER_RESULT
 python3 references/scripts/harness-runtime.py rebuild-durable-projection \
   --plan-dir PLAN
+python3 references/scripts/harness-runtime.py inspect-plan-runtime \
+  --plan-dir PLAN
+python3 references/scripts/harness-runtime.py shutdown-plan \
+  --plan-dir PLAN --authorization APPLIED_STOP_RECEIPT
 ```
 
 `durable-plan.json` freezes plan identity, target tier, attended/unattended
@@ -426,6 +439,7 @@ The scheduler adapter writes a hash-bound launchd plist and registration
 receipt under `state/durable_loop/schedules/`. A schedule file alone is not a
 registration. Registration succeeds only after the external scheduler accepts
 the service; removal requires an applied authenticated `stop` receipt.
+Every target plist and receipt binds plan-local stdout/stderr paths.
 Concurrent deliveries of one tick produce one current claim. An expired claim
 advances to one new generation; an active claim remains pending.
 
@@ -441,6 +455,18 @@ an unloaded L1 without calling a model; they never spend Worker or frontier
 capacity. Missing, unloaded, stale, mismatched, or legacy-only activation
 blocks the first unattended Worker before budget mutation. Removal requires an
 applied `stop` receipt through `unregister-runtime-assurance`.
+
+`inspect-plan-runtime` is an observation-only correlated view: it reads the
+controller and staged/durable canonical pointers, every L0/L1/retry receipt and
+live scheduler state, Worker status/process identity, heartbeats, logs, and
+declared resources. It writes no plan or scheduler state and reports receipt /
+live-state disagreement rather than normalizing it. `shutdown-plan` owns a
+PREPARED/COMMITTED recovery journal under `state/runtime_shutdown/v1/`. After
+the stop receipt has already blocked controller work, shutdown disables L0
+before L1 so L0 cannot restore it, disables the frontier-retry trigger, then
+terminates only matching Worker process groups. Duplicate or crash-interrupted
+delivery converges to one shutdown receipt. It deletes no artifact and grants
+no `cleanup_resource` authority.
 
 Each capsule binds one task and canonical state revision to the live objective,
 constraints, evaluator, task contract, inputs, prior directions, and evidence.
@@ -822,7 +848,9 @@ authorization time. Directories, shared files, path escapes, token mismatch,
 recreation, replay, and absent authorization fail closed. The token is SHA-256
 of `plan_id + NUL + normalized_path + NUL + ownership_generation`.
 
-Plan-level stop never grants manifest-wide deletion. It reports residuals.
+Plan-level stop deactivates the plan-owned scheduler/Worker runtime through the
+exact-once shutdown journal, but never grants manifest-wide deletion. It
+reports identity, scheduler, and declared-resource residuals.
 Every removal needs its own applied `cleanup_resource` receipt bound to the
 current resource generation and consumed once; aggregate destruction is
 legacy-only.

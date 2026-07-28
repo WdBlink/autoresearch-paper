@@ -8,6 +8,7 @@ import hmac
 import importlib.util
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -1868,6 +1869,17 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             )
             self.assertFalse(trigger["worker_dispatch_authority"])
             self.assertFalse(trigger["research_transition_authority"])
+            trigger_plist = plistlib.loads(
+                Path(trigger["scheduler_plist_path"]).read_bytes()
+            )
+            self.assertEqual(
+                trigger_plist["StandardOutPath"],
+                trigger["scheduler_stdout_path"],
+            )
+            self.assertEqual(
+                trigger_plist["StandardErrorPath"],
+                trigger["scheduler_stderr_path"],
+            )
 
             env = dict(os.environ)
             env["CODEX_BIN"] = str(success_codex)

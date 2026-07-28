@@ -21,6 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAN_DIR="$(python3 "${SCRIPT_DIR}/resolve-plan-dir.py" "${TARGET}")"
 python3 "${SCRIPT_DIR}/harness-runtime.py" apply-human-action \
   --plan-dir "${PLAN_DIR}" --record "${RECORD}" --key-file "${KEY_FILE}" --expected-action stop
+python3 "${SCRIPT_DIR}/harness-runtime.py" shutdown-plan \
+  --plan-dir "${PLAN_DIR}" --authorization "${PLAN_DIR}/control/stop_requested.json"
 ARGS=("${SCRIPT_DIR}/cleanup-plan-resources.sh" "${PLAN_DIR}" --authorization "${PLAN_DIR}/control/stop_requested.json" --reason "${REASON}" --mode stop)
 if [[ "${LEGACY_MAVIS}" == "1" ]]; then ARGS+=(--legacy-mavis); fi
 "${ARGS[@]}"

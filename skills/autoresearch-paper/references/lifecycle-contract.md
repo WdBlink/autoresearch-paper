@@ -77,6 +77,14 @@ all eligible manifest resources. An empty set is valid only when the manifest
 contains no eligible removable resource; a missing declared resource without a
 cleanup journal fails closed.
 
+The ordinary `stop-plan.sh` path applies the signed stop and then runs
+`shutdown-plan` before cleanup reporting. Shutdown has a separate
+PREPARED/COMMITTED journal and may deactivate only the plan-bound L0, L1,
+frontier-retry, and identity-matching Worker process groups. It disables L0
+before L1, never deletes artifacts, and records every scheduler, process
+identity, and separately authorized resource residual. Duplicate or
+crash-interrupted execution resumes the same journal and receipt.
+
 ## State
 
 - `state/controller.json`: current deterministic lifecycle state.
@@ -89,5 +97,7 @@ cleanup journal fails closed.
 - `state/terminal_snapshots/<sha256>`: controller-owned, read-only terminal
   bytes. Manifests cite these snapshots; producer paths are provenance only.
 
-Authenticated stop changes controller state only. Cleanup truth comes from
-individual removal receipts; residual items are named in `cleanup_report.md`.
+Authenticated stop changes controller state and authorizes bounded runtime
+deactivation through `shutdown-plan`; it does not authorize artifact deletion.
+Cleanup truth comes from individual removal receipts; residual items are named
+in the shutdown receipt and `cleanup_report.md`.

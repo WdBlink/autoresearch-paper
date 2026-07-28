@@ -132,8 +132,8 @@ heartbeat watchdogs, and manifest-driven cleanup.
 
 ```text
 /autoresearch-paper — turn a research brief into a gated paper pipeline.
-/autoresearch-paper status — inspect a running plan and its watchdog state.
-/autoresearch-paper stop — stop the controller and report exact residual resources.
+/autoresearch-paper status — inspect canonical, scheduler, Worker, process, log, and watchdog state without mutation.
+/autoresearch-paper stop — exact-once runtime shutdown, then report exact residual resources.
 ```
 
 ## Architecture
@@ -293,7 +293,7 @@ During a run:
 | `/autoresearch-paper status` | show plan progress, research gate, stale count, and resource health |
 | `/autoresearch-paper pause` | soft-pause through `control/pause_requested.json` |
 | `/autoresearch-paper resume` | resume and verify/repair watchdog resources |
-| `/autoresearch-paper stop` | stop the controller and report residual resources |
+| `/autoresearch-paper stop` | apply signed stop; disable L0, L1, retry, and identity-matching Workers exactly once; report residuals |
 | `/autoresearch-paper cleanup` | apply one approved receipt per owned resource |
 | `/autoresearch-paper rescue-status` | show L0/watchdog health and rescue history |
 
@@ -376,9 +376,11 @@ submit to venues, does not promise a camera-ready PDF, and does not
 replace human authorship of novel claims. See [Boundaries](#boundaries).
 
 **Q: How is cleanup different from stop?**
-A: `stop` changes controller status and reports residuals; it does not grant
-aggregate deletion authority. `cleanup` removes only individually approved,
-owned resource generations. Neither deletes paper outputs.
+A: `stop` changes controller status and runs a crash-safe shutdown that disables
+the plan's L0, L1, frontier retry, and identity-matching Worker processes. It
+does not grant aggregate deletion authority. `cleanup` removes only
+individually approved, owned resource generations. Neither deletes paper
+outputs.
 
 ## Boundaries
 
