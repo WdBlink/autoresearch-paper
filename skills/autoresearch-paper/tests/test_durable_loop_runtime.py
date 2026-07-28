@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import plistlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -140,6 +143,37 @@ class DurableLoopRuntimeTests(unittest.TestCase):
             "--launchctl-bin", str(launchctl),
         ).stdout)
 
+    @staticmethod
+    def process_identity(pid: int) -> dict[str, object]:
+        started = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        command = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        body: dict[str, object] = {
+            "pid": pid,
+            "process_group_id": os.getpgid(pid),
+            "os_started_at": started,
+            "os_command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+        }
+        encoded = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()
+        return {**body, "identity_sha256": hashlib.sha256(encoded).hexdigest()}
+
+    def applied_stop(self, plan: Path, root: Path, record_id: str) -> Path:
+        key = self.base.human_key(root)
+        stop = self.base.create_action(plan, key, "stop", record_id=record_id)
+        applied = json.loads(self.call(
+            "apply-human-action", "--plan-dir", str(plan),
+            "--record", str(stop), "--key-file", str(key),
+            "--expected-action", "stop",
+        ).stdout)
+        return Path(applied["receipt"]["receipt_path"])
+
     def test_runtime_assurance_activates_independent_l0_l1_l2(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -167,6 +201,18 @@ class DurableLoopRuntimeTests(unittest.TestCase):
             ).stdout)
             self.assertNotEqual(
                 activated["l0_scheduler_label"], l1["scheduler_label"],
+            )
+            l1_plist = plistlib.loads(Path(l1["scheduler_plist_path"]).read_bytes())
+            self.assertEqual(l1_plist["StandardOutPath"], l1["scheduler_stdout_path"])
+            self.assertEqual(l1_plist["StandardErrorPath"], l1["scheduler_stderr_path"])
+            l0_plist = plistlib.loads(
+                Path(activated["l0_scheduler_plist_path"]).read_bytes()
+            )
+            self.assertEqual(
+                l0_plist["StandardOutPath"], activated["l0_scheduler_stdout_path"],
+            )
+            self.assertEqual(
+                l0_plist["StandardErrorPath"], activated["l0_scheduler_stderr_path"],
             )
             self.assertEqual(
                 json.loads(Path(activated["test_health_tick_path"]).read_text())[
@@ -220,6 +266,246 @@ class DurableLoopRuntimeTests(unittest.TestCase):
                 check=False,
             )
             self.assertIn("no more than half", invalid.stderr)
+
+    def test_read_only_inspection_and_exact_once_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            launchctl, _ = self.multi_service_launchctl(root)
+            self.call(
+                "init-durable-plan", "--plan-dir", str(plan),
+                "--graph", str(self.graph(plan)),
+            )
+            l1 = self.register(plan, launchctl)
+            l0 = json.loads(self.call(
+                "activate-runtime-assurance", "--plan-dir", str(plan),
+                "--schedule-id", "research_loop",
+                "--health-interval-seconds", "300",
+                "--worker-stale-seconds", "1200",
+                "--frontier-stale-seconds", "1200",
+                "--heartbeat-stale-seconds", "600",
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+
+            retry_root = plan / "state" / "frontier" / "retry-trigger"
+            retry_generation = retry_root / "generations" / "1"
+            retry_generation.mkdir(parents=True)
+            retry_label = "com.autoresearch-paper.frontier-retry.test"
+            retry_plist = retry_generation / f"{retry_label}.plist"
+            retry_plist.write_bytes(plistlib.dumps({
+                "Label": retry_label,
+                "ProgramArguments": ["/usr/bin/true"],
+            }))
+            subprocess.run(
+                [str(launchctl), "bootstrap", f"gui/{os.getuid()}", str(retry_plist)],
+                check=True,
+            )
+            retry_receipt = retry_generation / "registration-receipt.json"
+            retry_receipt.write_text(json.dumps({
+                "schema_version": 1,
+                "plan_id": "plan_abc",
+                "generation": 1,
+                "launchctl_bin": str(launchctl),
+                "scheduler_label": retry_label,
+                "scheduler_plist_path": str(retry_plist),
+            }))
+            (retry_root / "current.json").write_text(json.dumps({
+                "schema_version": 1,
+                "plan_id": "plan_abc",
+                "generation": 1,
+                "active": True,
+                "registration_receipt_path": str(retry_receipt),
+            }))
+
+            sleeper = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            try:
+                time.sleep(0.05)
+                run_id = "cwr_" + "b" * 32
+                run_dir = plan / "state" / "worker_runs" / run_id
+                run_dir.mkdir(parents=True)
+                stdout_path = run_dir / "transport.stdout"
+                stderr_path = run_dir / "transport.stderr"
+                stdout_path.write_text("")
+                stderr_path.write_text("")
+                identity = self.process_identity(sleeper.pid)
+                (run_dir / "status.json").write_text(json.dumps({
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "status": "RUNNING",
+                    "started_at": "2026-07-28T00:00:00Z",
+                    "updated_at": "2026-07-28T00:00:00Z",
+                    "pid": sleeper.pid,
+                    "process_group_id": os.getpgid(sleeper.pid),
+                    "process_identity": identity,
+                    "worker_command_sha256": "a" * 64,
+                    "transport_stdout_path": str(stdout_path),
+                    "transport_stderr_path": str(stderr_path),
+                }))
+                before = {
+                    str(path.relative_to(plan)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in plan.rglob("*") if path.is_file()
+                }
+                inspection = json.loads(self.call(
+                    "inspect-plan-runtime", "--plan-dir", str(plan),
+                    "--launchctl-bin", str(launchctl),
+                ).stdout)
+                after = {
+                    str(path.relative_to(plan)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in plan.rglob("*") if path.is_file()
+                }
+                self.assertEqual(before, after)
+                self.assertTrue(inspection["observation_only"])
+                self.assertEqual(
+                    {item["kind"] for item in inspection["schedulers"] if item["loaded"]},
+                    {"l0_runtime_assurance", "l1_durable_trigger", "frontier_retry_trigger"},
+                )
+                self.assertTrue(inspection["workers"][0]["process"]["identity_match"])
+
+                stop_receipt = self.applied_stop(plan, root, "har_shutdown")
+                crashed = self.call(
+                    "shutdown-plan", "--plan-dir", str(plan),
+                    "--authorization", str(stop_receipt),
+                    "--launchctl-bin", str(launchctl),
+                    "--term-grace-seconds", "0.2",
+                    "--simulate-crash-after", "l0",
+                    check=False,
+                )
+                self.assertEqual(crashed.returncode, 2)
+                self.assertFalse(
+                    (root / "launchd-services" / l0["l0_scheduler_label"]).exists()
+                )
+                self.assertTrue(
+                    (root / "launchd-services" / l1["scheduler_label"]).exists()
+                )
+                shutdown = json.loads(self.call(
+                    "shutdown-plan", "--plan-dir", str(plan),
+                    "--authorization", str(stop_receipt),
+                    "--launchctl-bin", str(launchctl),
+                    "--term-grace-seconds", "0.2",
+                ).stdout)
+                self.assertEqual(shutdown["status"], "SHUTDOWN")
+                self.assertFalse(shutdown["artifacts_deleted"])
+                self.assertFalse(shutdown["cleanup_resource_authority"])
+                self.assertFalse((root / "launchd-services" / l1["scheduler_label"]).exists())
+                self.assertFalse((root / "launchd-services" / retry_label).exists())
+                sleeper.wait(timeout=3)
+                worker_status = json.loads((run_dir / "status.json").read_text())
+                self.assertEqual(worker_status["status"], "CANCELLED")
+                duplicate = json.loads(self.call(
+                    "shutdown-plan", "--plan-dir", str(plan),
+                    "--authorization", str(stop_receipt),
+                    "--launchctl-bin", str(launchctl),
+                ).stdout)
+                self.assertTrue(duplicate["idempotent"])
+                blocked = self.call(
+                    "advance-durable-plan", "--plan-dir", str(plan), check=False,
+                )
+                self.assertIn("plan is stopped", blocked.stderr)
+            finally:
+                if sleeper.poll() is None:
+                    os.killpg(os.getpgid(sleeper.pid), 9)
+                    sleeper.wait(timeout=3)
+
+    def test_shutdown_refuses_reused_or_drifted_worker_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            launchctl, _ = self.multi_service_launchctl(root)
+            sleeper = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            try:
+                time.sleep(0.05)
+                run_id = "cwr_" + "c" * 32
+                run_dir = plan / "state" / "worker_runs" / run_id
+                run_dir.mkdir(parents=True)
+                identity = self.process_identity(sleeper.pid)
+                identity["os_command_sha256"] = "0" * 64
+                body = {key: value for key, value in identity.items() if key != "identity_sha256"}
+                identity["identity_sha256"] = hashlib.sha256(json.dumps(
+                    body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                ).encode()).hexdigest()
+                (run_dir / "status.json").write_text(json.dumps({
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "status": "RUNNING",
+                    "started_at": "2026-07-28T00:00:00Z",
+                    "pid": sleeper.pid,
+                    "process_group_id": os.getpgid(sleeper.pid),
+                    "process_identity": identity,
+                }))
+                stop_receipt = self.applied_stop(plan, root, "har_shutdown_drift")
+                shutdown = json.loads(self.call(
+                    "shutdown-plan", "--plan-dir", str(plan),
+                    "--authorization", str(stop_receipt),
+                    "--launchctl-bin", str(launchctl),
+                    "--term-grace-seconds", "0.1",
+                ).stdout)
+                self.assertEqual(shutdown["status"], "SHUTDOWN_WITH_RESIDUALS")
+                self.assertEqual(
+                    shutdown["steps"]["workers"][run_id]["outcome"],
+                    "identity_mismatch",
+                )
+                self.assertIsNone(sleeper.poll())
+                self.assertEqual(
+                    json.loads((run_dir / "status.json").read_text())["status"],
+                    "CANCELLED",
+                )
+            finally:
+                if sleeper.poll() is None:
+                    os.killpg(os.getpgid(sleeper.pid), 9)
+                    sleeper.wait(timeout=3)
+
+    def test_authenticated_worker_cancel_terminates_bound_process(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            sleeper = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            try:
+                time.sleep(0.05)
+                run_id = "cwr_" + "d" * 32
+                run_dir = plan / "state" / "worker_runs" / run_id
+                run_dir.mkdir(parents=True)
+                identity = self.process_identity(sleeper.pid)
+                (run_dir / "status.json").write_text(json.dumps({
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "status": "RUNNING",
+                    "started_at": "2026-07-28T00:00:00Z",
+                    "pid": sleeper.pid,
+                    "process_group_id": os.getpgid(sleeper.pid),
+                    "process_identity": identity,
+                }))
+                key = self.base.human_key(root)
+                cancel = self.base.create_action(
+                    plan, key, "cancel_worker", record_id="har_cancel_bound",
+                    extra=("--worker-run-id", run_id),
+                )
+                applied = json.loads(self.call(
+                    "cancel-worker", "--plan-dir", str(plan),
+                    "--record", str(cancel), "--key-file", str(key),
+                    "--worker-run-id", run_id,
+                ).stdout)
+                sleeper.wait(timeout=3)
+                self.assertEqual(
+                    applied["receipt"]["process_termination"]["outcome"],
+                    "terminated",
+                )
+                self.assertEqual(
+                    json.loads((run_dir / "status.json").read_text())["status"],
+                    "CANCELLED",
+                )
+            finally:
+                if sleeper.poll() is None:
+                    os.killpg(os.getpgid(sleeper.pid), 9)
+                    sleeper.wait(timeout=3)
 
     def test_state_capsule_rebuild_and_integrity_drift(self) -> None:
         with tempfile.TemporaryDirectory() as td:

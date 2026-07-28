@@ -19,6 +19,15 @@
   L1 trigger without dispatching a model. Durable Workers now emit
   controller-owned start/periodic heartbeat receipts and fail closed before
   budget mutation when activation is missing, unloaded, stale, or mismatched.
+- Add read-only `inspect-plan-runtime` correlation across canonical state,
+  L0/L1/retry scheduler truth, Workers, process identities, heartbeats, logs,
+  and declared resources. Target launchd and Worker transports bind plan-local
+  stdout/stderr paths.
+- Persist Worker PID, dedicated process group, OS start/command identity, and
+  command hash before wait. Authenticated Worker cancellation and exact-once
+  plan shutdown signal only matching identities; PID reuse and drift remain
+  explicit residuals. Plan shutdown journals L0-before-L1, retry, and Worker
+  deactivation without receiving artifact-deletion authority.
 
 ## v0.17.2 — 2026-07-27
 

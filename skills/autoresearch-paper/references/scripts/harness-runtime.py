@@ -1055,6 +1055,111 @@ def worker_status_path(plan_dir: Path, run_id: str, *, must_exist: bool = True) 
     return worker_run_dir(plan_dir, run_id, must_exist=must_exist) / "status.json"
 
 
+def require_controller_not_stopped(plan_dir: Path) -> None:
+    controller_path = plan_dir / "state" / "controller.json"
+    if (
+        controller_path.is_file()
+        and read_json(controller_path).get("status") == "stopped"
+    ):
+        raise ContractError("plan is stopped by canonical human lifecycle state")
+
+
+def observe_process_identity(pid: int) -> dict[str, Any] | None:
+    """Return an OS-verifiable process identity without trusting a stored PID."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+        process_group_id = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+    values: dict[str, str] = {}
+    for field, column in (("os_started_at", "lstart="), ("os_command", "command=")):
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", column],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        values[field] = proc.stdout.strip()
+    identity = {
+        "pid": pid,
+        "process_group_id": process_group_id,
+        "os_started_at": values["os_started_at"],
+        "os_command_sha256": hashlib.sha256(
+            values["os_command"].encode("utf-8")
+        ).hexdigest(),
+    }
+    return {**identity, "identity_sha256": sha256_json(identity)}
+
+
+def worker_process_observation(status: dict[str, Any]) -> dict[str, Any]:
+    stored = status.get("process_identity")
+    pid = status.get("pid")
+    current = observe_process_identity(pid) if isinstance(pid, int) else None
+    if not isinstance(stored, dict):
+        match: bool | None = None
+        reason = "legacy_worker_without_process_identity"
+    elif current is None:
+        match = False
+        reason = "process_absent"
+    else:
+        match = current == stored
+        reason = "matched" if match else "process_identity_mismatch"
+    return {
+        "declared_status": status.get("status"),
+        "alive": current is not None,
+        "identity_match": match,
+        "reason": reason,
+        "stored_identity": stored,
+        "observed_identity": current,
+    }
+
+
+def signal_bound_worker_process(
+    status: dict[str, Any], *, term_grace_seconds: float,
+) -> dict[str, Any]:
+    """Terminate only the exact process group frozen in Worker status."""
+    observation = worker_process_observation(status)
+    if observation["reason"] == "legacy_worker_without_process_identity":
+        return {"outcome": "identity_unavailable", "observation": observation}
+    if not observation["alive"]:
+        return {"outcome": "already_absent", "observation": observation}
+    if observation["identity_match"] is not True:
+        return {"outcome": "identity_mismatch", "observation": observation}
+    stored = observation["stored_identity"]
+    assert isinstance(stored, dict)
+    process_group_id = stored["process_group_id"]
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return {"outcome": "already_absent", "observation": observation}
+    deadline = time.monotonic() + term_grace_seconds
+    while time.monotonic() < deadline:
+        if observe_process_identity(stored["pid"]) is None:
+            return {"outcome": "terminated", "signal": "SIGTERM"}
+        time.sleep(0.05)
+    current = observe_process_identity(stored["pid"])
+    if current != stored:
+        return {
+            "outcome": "identity_changed_after_sigterm",
+            "observation": worker_process_observation(status),
+        }
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return {"outcome": "terminated", "signal": "SIGTERM"}
+    kill_deadline = time.monotonic() + max(1.0, term_grace_seconds)
+    while time.monotonic() < kill_deadline:
+        if observe_process_identity(stored["pid"]) is None:
+            return {"outcome": "terminated", "signal": "SIGKILL"}
+        time.sleep(0.05)
+    return {
+        "outcome": "still_running",
+        "observation": worker_process_observation(status),
+    }
+
+
 def update_worker_status(
     plan_dir: Path, run_id: str, desired: str, updates: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1442,8 +1547,15 @@ def command_apply_human_action(args: argparse.Namespace) -> dict[str, Any]:
             })
             atomic_write_json(controller_path, controller)
         elif action == "cancel_worker":
+            worker_status = read_json(worker_status_path(plan_dir, run_id))
+            termination = signal_bound_worker_process(
+                worker_status, term_grace_seconds=5.0,
+            )
+            receipt["process_termination"] = termination
             update_worker_status(plan_dir, run_id, "CANCELLED", {
-                "completed_at": receipt["applied_at"], "authority_record_id": record["record_id"],
+                "completed_at": receipt["applied_at"],
+                "authority_record_id": record["record_id"],
+                "process_termination": termination,
             })
         elif action == "authorize_frontier_capacity":
             receipt["capacity_topup"] = apply_frontier_capacity_authorization(
@@ -3751,39 +3863,66 @@ def command_record_worker_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_worker_with_heartbeats(
     cmd: list[str], prompt: str, plan_dir: Path, run_id: str,
-    timeout: int, heartbeat_interval: int,
+    timeout: int, heartbeat_interval: int | None,
 ) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.Popen(
-        cmd, cwd=plan_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
-    )
-    deadline = time.monotonic() + timeout
-    first = True
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            raise subprocess.TimeoutExpired(
-                cmd, timeout, output=stdout, stderr=stderr,
-            )
+    run_dir = worker_run_dir(plan_dir, run_id)
+    stdout_path = run_dir / "transport.stdout"
+    stderr_path = run_dir / "transport.stderr"
+    with stdout_path.open("w") as stdout_handle, stderr_path.open("w") as stderr_handle:
+        proc = subprocess.Popen(
+            cmd, cwd=plan_dir, stdin=subprocess.PIPE, stdout=stdout_handle,
+            stderr=stderr_handle, text=True, start_new_session=os.name == "posix",
+        )
         try:
-            stdout, stderr = proc.communicate(
-                input=prompt if first else None,
-                timeout=min(float(heartbeat_interval), remaining),
-            )
-            return subprocess.CompletedProcess(
-                cmd, proc.returncode, stdout, stderr,
-            )
-        except subprocess.TimeoutExpired:
-            first = False
-            record_worker_heartbeat(
-                plan_dir, run_id, source="controller_worker_monitor",
-            )
+            process_group_id = os.getpgid(proc.pid)
+        except OSError:
+            process_group_id = proc.pid
+        identity = observe_process_identity(proc.pid)
+        update_worker_status(plan_dir, run_id, "RUNNING", {
+            "pid": proc.pid,
+            "process_group_id": process_group_id,
+            "process_identity": identity,
+            "worker_command_sha256": sha256_json(cmd),
+            "transport_stdout_path": str(stdout_path),
+            "transport_stderr_path": str(stderr_path),
+            "process_started_at": utc_now(),
+        })
+        if proc.stdin is None:
+            raise ContractError("Worker stdin pipe was not created")
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                current_status = read_json(worker_status_path(plan_dir, run_id))
+                signal_bound_worker_process(
+                    current_status, term_grace_seconds=1.0,
+                )
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            wait_window = remaining
+            if heartbeat_interval is not None:
+                wait_window = min(float(heartbeat_interval), remaining)
+            try:
+                return_code = proc.wait(timeout=wait_window)
+                break
+            except subprocess.TimeoutExpired:
+                if heartbeat_interval is None:
+                    continue
+                current_status = read_json(worker_status_path(plan_dir, run_id))
+                if current_status.get("status") == "CANCELLED":
+                    continue
+                record_worker_heartbeat(
+                    plan_dir, run_id, source="controller_worker_monitor",
+                )
+    stdout = stdout_path.read_text()
+    stderr = stderr_path.read_text()
+    return subprocess.CompletedProcess(cmd, return_code, stdout, stderr)
 
 
 def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    require_controller_not_stopped(plan_dir)
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
     policy = load_policy(plan_dir)
     contract_path = Path(args.task_contract).resolve()
@@ -3969,9 +4108,8 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
                 max(1, min(60, assurance["heartbeat_stale_seconds"] // 3)),
             )
         else:
-            proc = subprocess.run(
-                cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True,
-                timeout=args.timeout,
+            proc = run_worker_with_heartbeats(
+                cmd, prompt, plan_dir, run_id, args.timeout, None,
             )
     except FileNotFoundError as exc:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "claude_not_found", "completed_at": utc_now()})
@@ -3979,10 +4117,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     except subprocess.TimeoutExpired as exc:
         update_worker_status(plan_dir, run_id, "PAUSED", {"failure": "worker_timeout", "completed_at": utc_now()})
         raise ContractError(f"Claude worker timed out after {args.timeout}s") from exc
-    (run_dir / "transport.stdout").write_text(proc.stdout)
-    (run_dir / "transport.stderr").write_text(proc.stderr)
     if proc.returncode != 0:
-        update_worker_status(plan_dir, run_id, "FAILED", {"exit_code": proc.returncode, "completed_at": utc_now()})
+        terminal = update_worker_status(
+            plan_dir, run_id, "FAILED",
+            {"exit_code": proc.returncode, "completed_at": utc_now()},
+        )
+        if terminal.get("status") == "CANCELLED":
+            return terminal
         raise ContractError(f"Claude worker failed with exit {proc.returncode}: {proc.stderr[:300]}")
     try:
         result = extract_structured_claude_output(proc.stdout)
@@ -5691,6 +5832,7 @@ def make_context_capsule(
 
 def command_advance_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    require_controller_not_stopped(plan_dir)
     try:
         require_durable_autonomy_eligibility(plan_dir)
     except ContractError:
@@ -5982,6 +6124,8 @@ def command_register_durable_trigger(args: argparse.Namespace) -> dict[str, Any]
             atomic_write_json(contract_path, contract, immutable=True)
         label = f"com.autoresearch-paper.{hashlib.sha256((contract['plan_id'] + ':' + args.schedule_id).encode()).hexdigest()[:24]}"
         plist_path = generation_root / f"{label}.plist"
+        scheduler_stdout_path = generation_root / "scheduler.stdout.log"
+        scheduler_stderr_path = generation_root / "scheduler.stderr.log"
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist = {
             "Label": label,
@@ -5989,6 +6133,8 @@ def command_register_durable_trigger(args: argparse.Namespace) -> dict[str, Any]
             "RunAtLoad": True,
             "StartInterval": args.interval_seconds,
             "ProcessType": "Background",
+            "StandardOutPath": str(scheduler_stdout_path),
+            "StandardErrorPath": str(scheduler_stderr_path),
         }
         plist_bytes = plistlib.dumps(plist, fmt=plistlib.FMT_XML)
         if plist_path.exists():
@@ -6046,6 +6192,8 @@ def command_register_durable_trigger(args: argparse.Namespace) -> dict[str, Any]
             "scheduler_label": label,
             "scheduler_plist_path": str(plist_path),
             "scheduler_plist_sha256": sha256_file(plist_path),
+            "scheduler_stdout_path": str(scheduler_stdout_path),
+            "scheduler_stderr_path": str(scheduler_stderr_path),
             "registered_at": utc_now(),
         }
         receipt_path = generation_root / "registration-receipt.json"
@@ -6177,12 +6325,16 @@ def command_register_frontier_retry_trigger(
         if current_path.is_file() else 1
     generation_root = root / "generations" / str(generation)
     plist_path = generation_root / f"{label}.plist"
+    scheduler_stdout_path = generation_root / "scheduler.stdout.log"
+    scheduler_stderr_path = generation_root / "scheduler.stderr.log"
     plist_bytes = plistlib.dumps({
         "Label": label,
         "ProgramArguments": program,
         "RunAtLoad": True,
         "StartInterval": args.interval_seconds,
         "ProcessType": "Background",
+        "StandardOutPath": str(scheduler_stdout_path),
+        "StandardErrorPath": str(scheduler_stderr_path),
     }, fmt=plistlib.FMT_XML)
     if plist_path.is_file() and plist_path.read_bytes() != plist_bytes:
         raise ContractError("frontier retry trigger plist recovery mismatch")
@@ -6210,6 +6362,8 @@ def command_register_frontier_retry_trigger(
         "scheduler_label": label,
         "scheduler_plist_path": str(plist_path),
         "scheduler_plist_sha256": sha256_file(plist_path),
+        "scheduler_stdout_path": str(scheduler_stdout_path),
+        "scheduler_stderr_path": str(scheduler_stderr_path),
         "controller_command_sha256": sha256_json(program),
         "registered_at": registered_at,
     }
@@ -6456,12 +6610,16 @@ def command_activate_runtime_assurance(args: argparse.Namespace) -> dict[str, An
     if l0_label == l1_receipt["scheduler_label"]:
         raise ContractError("runtime assurance L0 and L1 scheduler identities collided")
     plist_path = generation_root / f"{l0_label}.plist"
+    l0_stdout_path = generation_root / "scheduler.stdout.log"
+    l0_stderr_path = generation_root / "scheduler.stderr.log"
     atomic_write_bytes(plist_path, plistlib.dumps({
         "Label": l0_label,
         "ProgramArguments": program,
         "RunAtLoad": True,
         "StartInterval": args.health_interval_seconds,
         "ProcessType": "Background",
+        "StandardOutPath": str(l0_stdout_path),
+        "StandardErrorPath": str(l0_stderr_path),
     }, fmt=plistlib.FMT_XML), immutable=True)
     if not scheduler_is_loaded(resolved_launchctl, l0_label):
         proc = subprocess.run(
@@ -6505,6 +6663,8 @@ def command_activate_runtime_assurance(args: argparse.Namespace) -> dict[str, An
         "l0_scheduler_label": l0_label,
         "l0_scheduler_plist_path": str(plist_path),
         "l0_scheduler_plist_sha256": sha256_file(plist_path),
+        "l0_scheduler_stdout_path": str(l0_stdout_path),
+        "l0_scheduler_stderr_path": str(l0_stderr_path),
         "l0_controller_command_sha256": sha256_json(program),
         "l1_scheduler_label": l1_receipt["scheduler_label"],
         "l1_registration_receipt_path": str(l1_receipt_path),
@@ -6627,6 +6787,394 @@ def command_unregister_runtime_assurance(args: argparse.Namespace) -> dict[str, 
     })
     atomic_write_json(current_path, current)
     return {"ok": True, "unregistration_receipt": str(removal_path), **removal}
+
+
+def optional_json(path: Path) -> dict[str, Any] | None:
+    return read_json(path) if path.is_file() else None
+
+
+def observable_file(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return {
+        "path": str(path),
+        "exists": path.is_file(),
+        "size_bytes": path.stat().st_size if path.is_file() else None,
+        "sha256": sha256_file(path) if path.is_file() else None,
+    }
+
+
+def inspect_scheduler_binding(
+    *, kind: str, current_path: Path, default_launchctl: str,
+    label_field: str = "scheduler_label",
+) -> dict[str, Any]:
+    current = optional_json(current_path)
+    result: dict[str, Any] = {
+        "kind": kind,
+        "current_path": str(current_path),
+        "present": current is not None,
+        "active": bool(current and current.get("active") is True),
+    }
+    if current is None:
+        return result
+    receipt_path_value = current.get("registration_receipt_path")
+    if kind == "l0_runtime_assurance":
+        receipt_path_value = current.get("activation_receipt_path")
+    receipt_path = (
+        Path(receipt_path_value) if isinstance(receipt_path_value, str) else None
+    )
+    receipt = optional_json(receipt_path) if receipt_path is not None else None
+    label = current.get(label_field)
+    if not isinstance(label, str) and receipt is not None:
+        label = receipt.get(label_field)
+    launchctl_bin = default_launchctl
+    if receipt is not None and isinstance(receipt.get("launchctl_bin"), str):
+        launchctl_bin = receipt["launchctl_bin"]
+    loaded = None
+    if isinstance(label, str):
+        try:
+            loaded = scheduler_is_loaded(launchctl_bin, label)
+        except OSError:
+            loaded = False
+    stdout_path = None
+    stderr_path = None
+    if receipt is not None:
+        if isinstance(receipt.get("scheduler_stdout_path"), str):
+            stdout_path = Path(receipt["scheduler_stdout_path"])
+        if isinstance(receipt.get("scheduler_stderr_path"), str):
+            stderr_path = Path(receipt["scheduler_stderr_path"])
+        if kind == "l0_runtime_assurance":
+            if isinstance(receipt.get("l0_scheduler_stdout_path"), str):
+                stdout_path = Path(receipt["l0_scheduler_stdout_path"])
+            if isinstance(receipt.get("l0_scheduler_stderr_path"), str):
+                stderr_path = Path(receipt["l0_scheduler_stderr_path"])
+    result.update({
+        "label": label,
+        "loaded": loaded,
+        "state_matches_scheduler": (
+            loaded == result["active"] if loaded is not None else None
+        ),
+        "receipt": observable_file(receipt_path),
+        "stdout": observable_file(stdout_path),
+        "stderr": observable_file(stderr_path),
+        "current": current,
+    })
+    return result
+
+
+def declared_runtime_resources(plan_dir: Path) -> list[dict[str, Any]]:
+    manifest_path = plan_dir / "resource_manifest.json"
+    if not manifest_path.is_file():
+        return []
+    manifest = read_json(manifest_path)
+    declared: list[dict[str, Any]] = []
+    if isinstance(manifest.get("resources"), list):
+        for item in manifest["resources"]:
+            if isinstance(item, dict):
+                declared.append({"kind": item.get("kind", "resource"), **item})
+    for kind in (
+        "local_processes", "remote_processes", "launchd", "crons", "hooks",
+        "sessions", "agents", "locks",
+    ):
+        values = manifest.get(kind, [])
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            item = {"name": value} if isinstance(value, str) else value
+            if isinstance(item, dict):
+                record = {"kind": kind, **item}
+                if kind == "local_processes" and isinstance(item.get("pid"), int):
+                    record["process_observation"] = observe_process_identity(item["pid"])
+                declared.append(record)
+    return declared
+
+
+def command_inspect_plan_runtime(args: argparse.Namespace) -> dict[str, Any]:
+    """Correlate runtime truth without writing state or scheduler resources."""
+    plan_dir = Path(args.plan_dir).resolve()
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    controller_path = plan_dir / "state" / "controller.json"
+    staged_path = staged_state_path(plan_dir)
+    durable_head_path = durable_root(plan_dir) / "canonical" / "head.json"
+    durable_projection_path = durable_root(plan_dir) / "projection.json"
+    schedulers: list[dict[str, Any]] = []
+    schedulers.append(inspect_scheduler_binding(
+        kind="l0_runtime_assurance",
+        current_path=runtime_assurance_root(plan_dir) / "current.json",
+        default_launchctl=resolved_launchctl,
+        label_field="l0_scheduler_label",
+    ))
+    schedules_root = durable_root(plan_dir) / "schedules"
+    for current_path in sorted(schedules_root.glob("*/current.json")) \
+            if schedules_root.is_dir() else []:
+        schedulers.append(inspect_scheduler_binding(
+            kind="l1_durable_trigger", current_path=current_path,
+            default_launchctl=resolved_launchctl,
+        ))
+    schedulers.append(inspect_scheduler_binding(
+        kind="frontier_retry_trigger",
+        current_path=frontier_retry_trigger_root(plan_dir) / "current.json",
+        default_launchctl=resolved_launchctl,
+    ))
+    workers: list[dict[str, Any]] = []
+    workers_root = plan_dir / "state" / "worker_runs"
+    for status_path_value in sorted(workers_root.glob("*/status.json")) \
+            if workers_root.is_dir() else []:
+        status = read_json(status_path_value)
+        workers.append({
+            "run_id": status.get("run_id", status_path_value.parent.name),
+            "status_path": str(status_path_value),
+            "status_sha256": sha256_file(status_path_value),
+            "status": status,
+            "process": worker_process_observation(status),
+            "stdout": observable_file(
+                Path(status["transport_stdout_path"])
+                if isinstance(status.get("transport_stdout_path"), str)
+                else status_path_value.parent / "transport.stdout"
+            ),
+            "stderr": observable_file(
+                Path(status["transport_stderr_path"])
+                if isinstance(status.get("transport_stderr_path"), str)
+                else status_path_value.parent / "transport.stderr"
+            ),
+        })
+    mismatches = [
+        {"kind": item["kind"], "label": item.get("label")}
+        for item in schedulers
+        if item.get("state_matches_scheduler") is False
+    ]
+    mismatches.extend(
+        {"kind": "worker", "run_id": item["run_id"], "reason": item["process"]["reason"]}
+        for item in workers
+        if item["status"].get("status") == "RUNNING"
+        and item["process"].get("identity_match") is not True
+    )
+    return {
+        "ok": True,
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "observed_at": utc_now(),
+        "observation_only": True,
+        "canonical": {
+            "controller": observable_file(controller_path),
+            "controller_status": (
+                read_json(controller_path).get("status")
+                if controller_path.is_file() else None
+            ),
+            "staged_state": observable_file(staged_path),
+            "staged_status": (
+                read_json(staged_path).get("state") if staged_path.is_file() else None
+            ),
+            "durable_head": observable_file(durable_head_path),
+            "durable_projection": observable_file(durable_projection_path),
+        },
+        "schedulers": schedulers,
+        "workers": workers,
+        "declared_resources": declared_runtime_resources(plan_dir),
+        "mismatches": mismatches,
+        "shutdown": optional_json(
+            plan_dir / "state" / "runtime_shutdown" / "v1" / "current.json"
+        ),
+    }
+
+
+def runtime_shutdown_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "runtime_shutdown" / "v1"
+
+
+def write_shutdown_journal(path: Path, journal: dict[str, Any]) -> None:
+    journal["updated_at"] = utc_now()
+    atomic_write_json(path, journal)
+
+
+def shutdown_worker(
+    plan_dir: Path, run_id: str, stop_receipt: dict[str, Any],
+    *, term_grace_seconds: float,
+) -> dict[str, Any]:
+    status = read_json(worker_status_path(plan_dir, run_id))
+    if status.get("status") in {"COMPLETED", "FAILED", "CANCELLED"}:
+        return {"run_id": run_id, "outcome": "already_terminal", "status": status["status"]}
+    signal_result = signal_bound_worker_process(
+        status, term_grace_seconds=term_grace_seconds,
+    )
+    terminal = update_worker_status(plan_dir, run_id, "CANCELLED", {
+        "completed_at": utc_now(),
+        "authority_record_id": stop_receipt["record_id"],
+        "cancelled_by": "plan_shutdown",
+        "process_termination": signal_result,
+    })
+    return {
+        "run_id": run_id,
+        "outcome": signal_result["outcome"],
+        "status": terminal["status"],
+        "process_termination": signal_result,
+    }
+
+
+def command_shutdown_plan(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    authorization_path = Path(args.authorization).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, authorization_path, "stop",
+    )
+    if not 0.1 <= args.term_grace_seconds <= 60:
+        raise ContractError("term_grace_seconds must be between 0.1 and 60")
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    root = runtime_shutdown_root(plan_dir)
+    journal_path = root / "shutdown-journal.json"
+    current_path = root / "current.json"
+    receipt_path = root / "shutdown-receipt.json"
+    lock_path = root / ".shutdown.lock"
+    root.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if receipt_path.is_file():
+            receipt = read_json(receipt_path)
+            if receipt.get("stop_record_id") != authorization["record_id"]:
+                raise ContractError("shutdown receipt belongs to another stop authority")
+            return {"ok": True, "idempotent": True, **receipt}
+        journal = optional_json(journal_path)
+        if journal is None:
+            journal = {
+                "schema_version": SCHEMA_VERSION,
+                "phase": "PREPARED",
+                "plan_id": plan_identity(plan_dir),
+                "stop_record_id": authorization["record_id"],
+                "stop_receipt_path": str(authorization_path),
+                "stop_receipt_sha256": sha256_file(authorization_path),
+                "steps": {},
+                "worker_targets": [],
+                "prepared_at": utc_now(),
+            }
+            write_shutdown_journal(journal_path, journal)
+        elif (
+            journal.get("stop_record_id") != authorization["record_id"]
+            or journal.get("stop_receipt_sha256") != sha256_file(authorization_path)
+        ):
+            raise ContractError("prepared shutdown authority changed")
+
+        steps = journal.setdefault("steps", {})
+        l0_current = runtime_assurance_root(plan_dir) / "current.json"
+        if "l0" not in steps:
+            steps["l0"] = (
+                command_unregister_runtime_assurance(argparse.Namespace(
+                    plan_dir=str(plan_dir), authorization=str(authorization_path),
+                )) if l0_current.is_file() else {"ok": True, "absent": True}
+            )
+            write_shutdown_journal(journal_path, journal)
+            if args.simulate_crash_after == "l0":
+                raise ContractError("simulated crash after shutdown l0")
+
+        if "l1" not in steps:
+            l1_results: list[dict[str, Any]] = []
+            schedules_root = durable_root(plan_dir) / "schedules"
+            for current in sorted(schedules_root.glob("*/current.json")) \
+                    if schedules_root.is_dir() else []:
+                schedule_id = current.parent.name
+                l1_results.append(command_unregister_durable_trigger(argparse.Namespace(
+                    plan_dir=str(plan_dir), schedule_id=schedule_id,
+                    authorization=str(authorization_path),
+                    launchctl_bin=resolved_launchctl,
+                )))
+            steps["l1"] = {"ok": True, "schedules": l1_results}
+            write_shutdown_journal(journal_path, journal)
+            if args.simulate_crash_after == "l1":
+                raise ContractError("simulated crash after shutdown l1")
+
+        retry_current = frontier_retry_trigger_root(plan_dir) / "current.json"
+        if "frontier_retry" not in steps:
+            steps["frontier_retry"] = (
+                command_unregister_frontier_retry_trigger(argparse.Namespace(
+                    plan_dir=str(plan_dir), authorization=str(authorization_path),
+                )) if retry_current.is_file() else {"ok": True, "absent": True}
+            )
+            write_shutdown_journal(journal_path, journal)
+            if args.simulate_crash_after == "frontier_retry":
+                raise ContractError("simulated crash after shutdown frontier retry")
+
+        workers_root = plan_dir / "state" / "worker_runs"
+        targets = {
+            status_path.parent.name
+            for status_path in workers_root.glob("*/status.json")
+        } if workers_root.is_dir() else set()
+        journal["worker_targets"] = sorted(
+            set(journal.get("worker_targets", [])) | targets
+        )
+        worker_results = steps.setdefault("workers", {})
+        for run_id in journal["worker_targets"]:
+            if run_id in worker_results:
+                continue
+            worker_results[run_id] = shutdown_worker(
+                plan_dir, run_id, authorization,
+                term_grace_seconds=args.term_grace_seconds,
+            )
+            write_shutdown_journal(journal_path, journal)
+            if args.simulate_crash_after == "worker":
+                raise ContractError("simulated crash after shutdown worker")
+
+        snapshot = command_inspect_plan_runtime(argparse.Namespace(
+            plan_dir=str(plan_dir), launchctl_bin=resolved_launchctl,
+        ))
+        residuals: list[dict[str, Any]] = []
+        for scheduler in snapshot["schedulers"]:
+            if scheduler.get("loaded") is True:
+                residuals.append({
+                    "kind": "scheduler_loaded", "label": scheduler.get("label"),
+                })
+        residual_outcomes = {
+            "identity_mismatch", "identity_changed_after_sigterm",
+            "identity_unavailable", "still_running",
+        }
+        for run_id, result in worker_results.items():
+            if result.get("outcome") in residual_outcomes:
+                residuals.append({
+                    "kind": "worker_process", "run_id": run_id,
+                    "reason": result["outcome"],
+                })
+        for resource in snapshot["declared_resources"]:
+            observation = resource.get("process_observation")
+            if isinstance(observation, dict):
+                residuals.append({
+                    "kind": "declared_local_process",
+                    "pid": resource.get("pid"),
+                    "reason": "cleanup_resource_authority_required",
+                })
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_identity(plan_dir),
+            "shutdown_id": "shutdown_" + hashlib.sha256(
+                authorization["record_id"].encode()
+            ).hexdigest(),
+            "stop_record_id": authorization["record_id"],
+            "stop_receipt_path": str(authorization_path),
+            "stop_receipt_sha256": sha256_file(authorization_path),
+            "journal_path": str(journal_path),
+            "journal_sha256_before_commit": sha256_file(journal_path),
+            "steps": steps,
+            "residuals": residuals,
+            "artifacts_deleted": False,
+            "cleanup_resource_authority": False,
+            "status": "SHUTDOWN" if not residuals else "SHUTDOWN_WITH_RESIDUALS",
+            "completed_at": utc_now(),
+        }
+        atomic_write_json(receipt_path, receipt, immutable=True)
+        journal.update({
+            "phase": "COMMITTED",
+            "shutdown_receipt_path": str(receipt_path),
+            "shutdown_receipt_sha256": sha256_file(receipt_path),
+            "committed_at": receipt["completed_at"],
+        })
+        write_shutdown_journal(journal_path, journal)
+        atomic_write_json(current_path, {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": receipt["plan_id"],
+            "status": receipt["status"],
+            "shutdown_id": receipt["shutdown_id"],
+            "shutdown_receipt_path": str(receipt_path),
+            "shutdown_receipt_sha256": sha256_file(receipt_path),
+            "updated_at": receipt["completed_at"],
+        })
+    return {"ok": True, "shutdown_receipt": str(receipt_path), **receipt}
 
 
 def durable_tick_root(plan_dir: Path, schedule_id: str, tick_id: str) -> Path:
@@ -6775,6 +7323,7 @@ def mark_tick_applied(
 
 def command_run_durable_tick(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    require_controller_not_stopped(plan_dir)
     require_durable_autonomy_eligibility(plan_dir)
     observed_at = parse_utc(args.observed_at) if args.observed_at else datetime.now(timezone.utc)
     schedule_root = durable_schedule_root(plan_dir, args.schedule_id)
@@ -16693,6 +17242,16 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--worker-run-id", required=True)
     inspect.set_defaults(handler=command_inspect_worker)
 
+    inspect_plan = sub.add_parser(
+        "inspect-plan-runtime",
+        help="correlate canonical, scheduler, Worker, process, and log status without mutation",
+    )
+    inspect_plan.add_argument("--plan-dir", required=True)
+    inspect_plan.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    inspect_plan.set_defaults(handler=command_inspect_plan_runtime)
+
     wait = sub.add_parser("wait-worker")
     wait.add_argument("--plan-dir", required=True)
     wait.add_argument("--worker-run-id", required=True)
@@ -16999,6 +17558,22 @@ def build_parser() -> argparse.ArgumentParser:
     assurance_unregister.add_argument("--authorization", required=True)
     assurance_unregister.set_defaults(handler=command_unregister_runtime_assurance)
 
+    shutdown = sub.add_parser(
+        "shutdown-plan",
+        help="deactivate target schedulers and bound Workers under an applied stop receipt",
+    )
+    shutdown.add_argument("--plan-dir", required=True)
+    shutdown.add_argument("--authorization", required=True)
+    shutdown.add_argument("--term-grace-seconds", type=float, default=5.0)
+    shutdown.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    shutdown.add_argument(
+        "--simulate-crash-after",
+        choices=["l0", "l1", "frontier_retry", "worker"],
+    )
+    shutdown.set_defaults(handler=command_shutdown_plan)
+
     worker_heartbeat = sub.add_parser("record-worker-heartbeat")
     worker_heartbeat.add_argument("--plan-dir", required=True)
     worker_heartbeat.add_argument("--worker-run-id", required=True)
@@ -17303,6 +17878,10 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         operation_id = getattr(args, "operation_id", None)
+        if args.command == "inspect-plan-runtime" and operation_id:
+            raise ContractError(
+                "inspect-plan-runtime is observation-only and rejects operation journaling"
+            )
         if operation_id:
             if not OPERATION_ID_RE.fullmatch(operation_id):
                 raise ContractError("operation_id must be op_ followed by 64 lowercase hex characters")

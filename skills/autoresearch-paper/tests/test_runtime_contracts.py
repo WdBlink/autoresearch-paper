@@ -305,6 +305,14 @@ class RuntimeContracts(unittest.TestCase):
             ], env={"CLAUDE_TEST_LOG": str(log)})
             result = json.loads(proc.stdout)
             self.assertEqual(result["status"], "COMPLETED")
+            self.assertIsInstance(result["pid"], int)
+            self.assertIsInstance(result["process_group_id"], int)
+            self.assertEqual(
+                result["process_identity"]["pid"], result["pid"],
+            )
+            self.assertEqual(len(result["worker_command_sha256"]), 64)
+            self.assertTrue(Path(result["transport_stdout_path"]).is_file())
+            self.assertTrue(Path(result["transport_stderr_path"]).is_file())
             argv = json.loads(log.read_text())
             self.assertEqual(argv[argv.index("--model") + 1], "MiniMax-M3-test")
             self.assertIn("--json-schema", argv)

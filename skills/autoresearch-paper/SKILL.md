@@ -132,10 +132,12 @@ at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
+    run inspect-plan-runtime for one read-only canonical/scheduler/Worker/process/log snapshot
     observe canonical staged state + last_seen.jsonl + generated projections + l0/watchdog health
     honor status, pause, resume, stop, cleanup, rescue-status commands
     surface watchdog/L0 findings without destructive action
 on finish or user stop:
+    apply signed stop and run shutdown-plan for L0 -> L1 -> retry -> bound Workers
     run cleanup-plan-resources.sh
     deliver paper paths, reviewer-readiness, watchdog summary, cleanup report
 ```
@@ -174,7 +176,9 @@ adapter provides:
 - seven-scenario fault evidence, real multi-session soak accounting, and
   measured-duration claim gates that reject unsupported 24h/7×24/full-cutover
   language;
-- complete worker inspect/wait/message/cancel, file-backed patrol, and owned cleanup;
+- complete Worker inspect/wait/message/process-bound cancel, correlated
+  plan-runtime inspection, exact-once authenticated shutdown, file-backed
+  patrol, and owned cleanup;
 - launchd-backed external registration, generation-bound tick leases,
   canonical state/event/evidence revisions, rebuildable projections, and fresh
   task context capsules;
@@ -379,6 +383,7 @@ python3 references/scripts/harness-runtime.py activate-runtime-assurance \
   --frontier-stale-seconds 7200 --heartbeat-stale-seconds 3600
 python3 references/scripts/harness-runtime.py run-durable-tick --plan-dir PLAN
 python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale-seconds 7200
+python3 references/scripts/harness-runtime.py inspect-plan-runtime --plan-dir PLAN
 ```
 
 The production wake-up is externally registered and survives the initiating
@@ -393,6 +398,12 @@ activation blocks before Worker budget mutation. Patrol records only typed
 runtime failures. `bootstrap-watchdog.sh` remains an explicit legacy fixture.
 `plan-l0-guard.py` is retained only for legacy replay and migration; it is not
 Claude-native activation evidence.
+
+Worker status freezes the PID, process group, OS start/command identity, and
+plan-local stdout/stderr paths before the controller waits. `cancel-worker`
+and plan shutdown signal only a still-matching identity; drift or PID reuse is
+reported as a residual and left untouched. Target launchd registrations bind
+plan-local stdout/stderr paths in their immutable receipts.
 
 Heartbeat layers:
 
@@ -413,10 +424,10 @@ Expose these commands by resolving `<plan-id>` to `<plan-dir>` with
 
 | Command | Action |
 |---|---|
-| `/autoresearch-paper status` | inspect controller, workers, typed failures, gates, and patrol state |
+| `/autoresearch-paper status` | run read-only `inspect-plan-runtime` and render controller, scheduler, Worker, process, log, gate, and patrol state |
 | `/autoresearch-paper pause` | create and apply a signed `pause` record |
 | `/autoresearch-paper resume` | create and apply a signed `resume` record |
-| `/autoresearch-paper stop` | create/apply signed `stop`, then pass its receipt to cleanup |
+| `/autoresearch-paper stop` | create/apply signed `stop`, replay-safe shutdown L0 → L1 → retry → bound Workers, then report cleanup residuals |
 | `/autoresearch-paper cleanup` | create/apply scoped `cleanup_resource` records and remove owned files |
 | `/autoresearch-paper rescue-status` | show `state/l0_status.json`, `state/watchdog_health.json`, and rescue history |
 
@@ -483,7 +494,7 @@ do not count as evidence.
 | FM-19 | wrapper paper overclaims B5 beats B0 when equal | separate "preserves SOTA" from stress-path gains | add honest scope clarification |
 | FM-20 | verdict/evidence/candidate hash drifts | rerun evaluation against the frozen contract | require authenticated waiver |
 | FM-21 | scientific threshold repeats the same direction | deduplicate controller-normalized, FAIL-bound directions and force T6.3 structural pivot | request CP-03 advice |
-| FM-22 | stop/abort leaves runtime resources behind | run `cleanup-plan-resources.sh <plan-id>` | report exact residual manual commands |
+| FM-22 | stop/abort leaves runtime resources behind | replay `shutdown-plan` with the applied stop receipt, then run `cleanup-plan-resources.sh <plan-id>` | report exact scheduler, Worker, identity-mismatch, and per-resource residual commands |
 | FM-23 | team members grow unbounded | keep stable roles and mark temporary members `ephemeral=true` | cleanup archives/deletes temporary members |
 | FM-24 | `scientific-visualization` capability is unavailable | install the pinned focused skill and retain the figure specification | block only the affected figure build; do not weaken the gate |
 | FM-25 | optional AI schematic capability or credential is unavailable | keep the textual/vector specification and deterministic renderer path | skip AI generation without blocking unrelated result figures |
@@ -551,7 +562,13 @@ this file.
   can resume a due initial CP-01 retry without Worker authority. Unattended
   Workers additionally require a plan-bound L0/L1/L2 runtime-assurance
   activation receipt, with
-  zero-model-call health ticks and controller Worker heartbeats.
+  zero-model-call health ticks and controller Worker heartbeats. A read-only
+  correlated runtime snapshot now exposes canonical, scheduler, Worker,
+  process, heartbeat, and log truth. Worker PID/process-group/start/command
+  identities and live transport logs are persisted before wait; authenticated
+  cancel and exact-once plan shutdown terminate only matching identities,
+  disable L0 before L1 and retry, and retain explicit residuals without
+  acquiring artifact-deletion authority.
 - **v0.17.2 (2026-07-27)** — Real Plan021 CP-01 findings are closed without
   mutating the blocked field record. Source inventories and stage reports now
   require a true JSON integer schema version; their frozen conformance suites
