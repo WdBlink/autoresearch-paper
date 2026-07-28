@@ -3710,6 +3710,78 @@ def worker_visible_content_contracts(
     return contracts
 
 
+def record_worker_heartbeat(
+    plan_dir: Path, run_id: str, *, source: str,
+) -> dict[str, Any]:
+    status = read_json(worker_status_path(plan_dir, run_id))
+    if status.get("status") != "RUNNING":
+        raise ContractError("worker heartbeat requires a RUNNING worker")
+    observed_at = utc_now()
+    sequence = require_non_negative_int(
+        status.get("heartbeat_sequence", 0), "heartbeat_sequence",
+    ) + 1
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "worker_run_id": run_id,
+        "sequence": sequence,
+        "source": source,
+        "model_dispatches": 0,
+        "observed_at": observed_at,
+    }
+    path = worker_run_dir(plan_dir, run_id) / "heartbeats" / f"{sequence}.json"
+    atomic_write_json(path, receipt, immutable=True)
+    update_worker_status(plan_dir, run_id, "RUNNING", {
+        "heartbeat_sequence": sequence,
+        "last_heartbeat_at": observed_at,
+        "last_heartbeat_path": str(path),
+        "last_heartbeat_sha256": sha256_file(path),
+    })
+    return receipt
+
+
+def command_record_worker_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    validate_runtime_assurance_activation(plan_dir)
+    receipt = record_worker_heartbeat(
+        plan_dir, args.worker_run_id, source=args.source,
+    )
+    return {"ok": True, "receipt": receipt}
+
+
+def run_worker_with_heartbeats(
+    cmd: list[str], prompt: str, plan_dir: Path, run_id: str,
+    timeout: int, heartbeat_interval: int,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.Popen(
+        cmd, cwd=plan_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + timeout
+    first = True
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(
+                cmd, timeout, output=stdout, stderr=stderr,
+            )
+        try:
+            stdout, stderr = proc.communicate(
+                input=prompt if first else None,
+                timeout=min(float(heartbeat_interval), remaining),
+            )
+            return subprocess.CompletedProcess(
+                cmd, proc.returncode, stdout, stderr,
+            )
+        except subprocess.TimeoutExpired:
+            first = False
+            record_worker_heartbeat(
+                plan_dir, run_id, source="controller_worker_monitor",
+            )
+
+
 def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
@@ -3767,6 +3839,7 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if inputs != capsule_inputs:
             raise ContractError("worker inputs are not the exact frozen context capsule manifest")
+        validate_runtime_assurance_activation(plan_dir)
     if writing_gate is not None:
         require_writer_candidate_input(inputs, writing_gate)
     allowed_tools = contract.get("allowed_tools", [])
@@ -3885,10 +3958,21 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         })
     atomic_write_json(run_dir / "status.json", started)
     try:
-        proc = subprocess.run(
-            cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True,
-            timeout=args.timeout,
-        )
+        if context_capsule is not None and unattended_durable_plan(plan_dir):
+            assurance = validate_runtime_assurance_activation(plan_dir)
+            assert assurance is not None
+            record_worker_heartbeat(
+                plan_dir, run_id, source="controller_worker_start",
+            )
+            proc = run_worker_with_heartbeats(
+                cmd, prompt, plan_dir, run_id, args.timeout,
+                max(1, min(60, assurance["heartbeat_stale_seconds"] // 3)),
+            )
+        else:
+            proc = subprocess.run(
+                cmd, input=prompt, cwd=plan_dir, capture_output=True, text=True,
+                timeout=args.timeout,
+            )
     except FileNotFoundError as exc:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "claude_not_found", "completed_at": utc_now()})
         raise ContractError(f"Claude Code executable not found: {args.claude_bin}") from exc
@@ -6039,6 +6123,512 @@ def command_unregister_durable_trigger(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "unregistration_receipt": str(removal_path), **removal}
 
 
+def frontier_retry_trigger_root(plan_dir: Path) -> Path:
+    return frontier_root(plan_dir) / "retry-trigger"
+
+
+def command_register_frontier_retry_trigger(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    if not staged_is_active(plan_dir):
+        raise ContractError("frontier retry trigger requires staged research")
+    if not 60 <= args.interval_seconds <= 3600:
+        raise ContractError("frontier retry interval must be between 60 and 3600")
+    if not 1 <= args.timeout <= 86400:
+        raise ContractError("frontier retry timeout must be between 1 and 86400")
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    resolved_codex = resolve_executable(args.codex_bin, label="Codex")
+    root = frontier_retry_trigger_root(plan_dir)
+    current_path = root / "current.json"
+    program = [
+        sys.executable, str(Path(__file__).resolve()),
+        "recover-due-frontier-retry", "--plan-dir", str(plan_dir),
+        "--codex-bin", resolved_codex, "--timeout", str(args.timeout),
+    ]
+    label = "com.autoresearch-paper.frontier-retry." + hashlib.sha256(
+        plan_identity(plan_dir).encode()
+    ).hexdigest()[:24]
+    if current_path.is_file() and read_json(current_path).get("active") is True:
+        current = read_json(current_path)
+        receipt = read_json(Path(current["registration_receipt_path"]))
+        if (
+            receipt.get("interval_seconds") != args.interval_seconds
+            or receipt.get("controller_command_sha256") != sha256_json(program)
+            or receipt.get("scheduler_label") != label
+        ):
+            raise ContractError(
+                "active frontier retry trigger must be unregistered before replacement"
+            )
+        recovered = False
+        if not scheduler_is_loaded(resolved_launchctl, label):
+            proc = subprocess.run([
+                resolved_launchctl, "bootstrap", f"gui/{os.getuid()}",
+                receipt["scheduler_plist_path"],
+            ], capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise ContractError("frontier retry trigger recovery failed")
+            recovered = True
+        return {
+            "ok": True, "idempotent": True,
+            "external_registration_recovered": recovered, **receipt,
+        }
+    generation = int(read_json(current_path).get("generation", 0)) + 1 \
+        if current_path.is_file() else 1
+    generation_root = root / "generations" / str(generation)
+    plist_path = generation_root / f"{label}.plist"
+    plist_bytes = plistlib.dumps({
+        "Label": label,
+        "ProgramArguments": program,
+        "RunAtLoad": True,
+        "StartInterval": args.interval_seconds,
+        "ProcessType": "Background",
+    }, fmt=plistlib.FMT_XML)
+    if plist_path.is_file() and plist_path.read_bytes() != plist_bytes:
+        raise ContractError("frontier retry trigger plist recovery mismatch")
+    if not plist_path.is_file():
+        atomic_write_bytes(plist_path, plist_bytes, immutable=True)
+    if not scheduler_is_loaded(resolved_launchctl, label):
+        proc = subprocess.run([
+            resolved_launchctl, "bootstrap", f"gui/{os.getuid()}", str(plist_path),
+        ], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ContractError(
+                f"frontier retry trigger registration failed: {proc.stderr.strip()}"
+            )
+    registered_at = utc_now()
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "generation": generation,
+        "scope": "due_provider_quota_frontier_retry_only",
+        "worker_dispatch_authority": False,
+        "research_transition_authority": False,
+        "interval_seconds": args.interval_seconds,
+        "launchctl_bin": resolved_launchctl,
+        "codex_bin": resolved_codex,
+        "scheduler_label": label,
+        "scheduler_plist_path": str(plist_path),
+        "scheduler_plist_sha256": sha256_file(plist_path),
+        "controller_command_sha256": sha256_json(program),
+        "registered_at": registered_at,
+    }
+    receipt_path = generation_root / "registration-receipt.json"
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    atomic_write_json(current_path, {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": receipt["plan_id"],
+        "generation": generation,
+        "active": True,
+        "registration_receipt_path": str(receipt_path),
+        "registration_receipt_sha256": sha256_file(receipt_path),
+        "updated_at": registered_at,
+    })
+    return {"ok": True, "registration_receipt": str(receipt_path), **receipt}
+
+
+def command_unregister_frontier_retry_trigger(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, Path(args.authorization).resolve(), "stop",
+    )
+    root = frontier_retry_trigger_root(plan_dir)
+    current_path = root / "current.json"
+    current = read_json(current_path)
+    if current.get("active") is not True:
+        return {"ok": True, "idempotent": True, **current}
+    receipt = read_json(Path(current["registration_receipt_path"]))
+    if scheduler_is_loaded(
+        receipt["launchctl_bin"], receipt["scheduler_label"],
+    ):
+        proc = subprocess.run([
+            receipt["launchctl_bin"], "bootout",
+            scheduler_service_target(receipt["scheduler_label"]),
+        ], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ContractError("frontier retry trigger removal failed")
+    removal = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": current["plan_id"],
+        "generation": current["generation"],
+        "scheduler_label": receipt["scheduler_label"],
+        "stop_record_id": authorization["record_id"],
+        "unregistered_at": utc_now(),
+    }
+    removal_path = (
+        root / "generations" / str(current["generation"])
+        / "unregistration-receipt.json"
+    )
+    atomic_write_json(removal_path, removal, immutable=True)
+    current.update({
+        "active": False,
+        "unregistration_receipt_path": str(removal_path),
+        "unregistration_receipt_sha256": sha256_file(removal_path),
+        "updated_at": removal["unregistered_at"],
+    })
+    atomic_write_json(current_path, current)
+    return {"ok": True, "unregistration_receipt": str(removal_path), **removal}
+
+
+def runtime_assurance_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "runtime_assurance" / "v1"
+
+
+def unattended_durable_plan(plan_dir: Path) -> bool:
+    graph_path = durable_graph_path(plan_dir)
+    return graph_path.is_file() and read_json(graph_path).get(
+        "execution_mode"
+    ) == "unattended"
+
+
+def validate_runtime_assurance_activation(
+    plan_dir: Path, *, require_fresh: bool = True,
+    require_l0_loaded: bool = True, require_l1_loaded: bool = True,
+) -> dict[str, Any] | None:
+    if not unattended_durable_plan(plan_dir):
+        return None
+    root = runtime_assurance_root(plan_dir)
+    current_path = root / "current.json"
+    if not current_path.is_file():
+        raise ContractError(
+            "unattended Worker requires runtime-assurance activation"
+        )
+    current = read_json(current_path)
+    if current.get("active") is not True:
+        raise ContractError("runtime-assurance activation is inactive")
+    receipt_path = Path(current.get("activation_receipt_path", ""))
+    if (
+        not receipt_path.is_file()
+        or receipt_path.stat().st_mode & 0o777 != 0o444
+        or sha256_file(receipt_path) != current.get("activation_receipt_sha256")
+    ):
+        raise ContractError("runtime-assurance activation receipt changed")
+    receipt = read_json(receipt_path)
+    expected = {
+        "plan_id": plan_identity(plan_dir),
+        "schedule_id": current.get("schedule_id"),
+        "l0_scheduler_label": current.get("l0_scheduler_label"),
+        "l1_scheduler_label": current.get("l1_scheduler_label"),
+        "health_interval_seconds": current.get("health_interval_seconds"),
+        "worker_stale_seconds": current.get("worker_stale_seconds"),
+        "frontier_stale_seconds": current.get("frontier_stale_seconds"),
+        "heartbeat_stale_seconds": current.get("heartbeat_stale_seconds"),
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ContractError("runtime-assurance activation binding changed")
+    immutable_bindings = (
+        ("l0_scheduler_plist_path", "l0_scheduler_plist_sha256"),
+        ("l1_registration_receipt_path", "l1_registration_receipt_sha256"),
+        ("l2_heartbeat_contract_path", "l2_heartbeat_contract_sha256"),
+        ("test_health_tick_path", "test_health_tick_sha256"),
+        ("test_heartbeat_path", "test_heartbeat_sha256"),
+    )
+    for path_field, hash_field in immutable_bindings:
+        bound_path = Path(receipt.get(path_field, ""))
+        if (
+            not bound_path.is_file()
+            or bound_path.stat().st_mode & 0o777 != 0o444
+            or sha256_file(bound_path) != receipt.get(hash_field)
+        ):
+            raise ContractError(
+                f"runtime-assurance immutable binding changed: {path_field}"
+            )
+    l1_receipt = read_json(Path(receipt["l1_registration_receipt_path"]))
+    if l1_receipt.get("scheduler_label") != receipt["l1_scheduler_label"]:
+        raise ContractError("runtime-assurance L1 receipt identity changed")
+    heartbeat_contract = read_json(Path(receipt["l2_heartbeat_contract_path"]))
+    if (
+        heartbeat_contract.get("plan_id") != receipt["plan_id"]
+        or heartbeat_contract.get("heartbeat_stale_seconds")
+        != receipt["heartbeat_stale_seconds"]
+        or heartbeat_contract.get("model_dispatch_authority") is not False
+    ):
+        raise ContractError("runtime-assurance L2 heartbeat contract changed")
+    for probe_field in ("test_health_tick_path", "test_heartbeat_path"):
+        if read_json(Path(receipt[probe_field])).get("model_dispatches") != 0:
+            raise ContractError("runtime-assurance test probe dispatched a model")
+    launchctl_bin = receipt.get("launchctl_bin")
+    if not isinstance(launchctl_bin, str):
+        raise ContractError("runtime-assurance launchctl binding is missing")
+    if require_l0_loaded and not scheduler_is_loaded(
+        launchctl_bin, receipt["l0_scheduler_label"],
+    ):
+        raise ContractError("runtime-assurance L0 supervisor is not loaded")
+    if require_l1_loaded and not scheduler_is_loaded(
+        launchctl_bin, receipt["l1_scheduler_label"],
+    ):
+        raise ContractError("runtime-assurance L1 durable trigger is not loaded")
+    if require_fresh:
+        last_health = parse_utc(current["last_health_at"])
+        if (
+            datetime.now(timezone.utc) - last_health
+        ).total_seconds() > 2 * receipt["health_interval_seconds"]:
+            raise ContractError("runtime-assurance health receipt is stale")
+    return receipt
+
+
+def command_activate_runtime_assurance(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    if not unattended_durable_plan(plan_dir):
+        raise ContractError("runtime assurance requires an unattended durable plan")
+    values = {
+        "health_interval_seconds": args.health_interval_seconds,
+        "worker_stale_seconds": args.worker_stale_seconds,
+        "frontier_stale_seconds": args.frontier_stale_seconds,
+        "heartbeat_stale_seconds": args.heartbeat_stale_seconds,
+    }
+    for name, value in values.items():
+        if not 60 <= value <= 86400:
+            raise ContractError(f"{name} must be between 60 and 86400")
+    shortest_stale = min(
+        values["worker_stale_seconds"],
+        values["frontier_stale_seconds"],
+        values["heartbeat_stale_seconds"],
+    )
+    if (
+        values["health_interval_seconds"] > 3600
+        or 2 * values["health_interval_seconds"] > shortest_stale
+    ):
+        raise ContractError(
+            "health interval must be at most one hour and no more than half "
+            "the shortest stale threshold"
+        )
+    schedule_current = read_json(
+        durable_schedule_root(plan_dir, args.schedule_id) / "current.json"
+    )
+    if schedule_current.get("active") is not True:
+        raise ContractError("runtime assurance requires an active L1 durable trigger")
+    l1_receipt_path = Path(schedule_current["registration_receipt_path"])
+    l1_receipt = read_json(l1_receipt_path)
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    if not scheduler_is_loaded(resolved_launchctl, l1_receipt["scheduler_label"]):
+        raise ContractError("runtime assurance requires the L1 scheduler to be loaded")
+    root = runtime_assurance_root(plan_dir)
+    current_path = root / "current.json"
+    if current_path.is_file() and read_json(current_path).get("active") is True:
+        receipt = validate_runtime_assurance_activation(
+            plan_dir, require_fresh=False, require_l0_loaded=False,
+        )
+        assert receipt is not None
+        if (
+            receipt["schedule_id"] != args.schedule_id
+            or receipt["launchctl_bin"] != resolved_launchctl
+            or any(receipt[name] != value for name, value in values.items())
+        ):
+            raise ContractError(
+                "active runtime assurance must be unregistered before replacement"
+            )
+        if not scheduler_is_loaded(
+            resolved_launchctl, receipt["l0_scheduler_label"],
+        ):
+            proc = subprocess.run([
+                resolved_launchctl, "bootstrap", f"gui/{os.getuid()}",
+                receipt["l0_scheduler_plist_path"],
+            ], capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise ContractError("runtime assurance L0 recovery failed")
+            return {
+                "ok": True, "idempotent": True,
+                "external_registration_recovered": True, **receipt,
+            }
+        return {"ok": True, "idempotent": True, **receipt}
+    generation = int(read_json(current_path).get("generation", 0)) + 1 \
+        if current_path.is_file() else 1
+    generation_root = root / "generations" / str(generation)
+    heartbeat_contract = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "source": "controller-worker-heartbeat-v1",
+        "heartbeat_stale_seconds": args.heartbeat_stale_seconds,
+        "model_dispatch_authority": False,
+    }
+    heartbeat_contract_path = generation_root / "heartbeat-contract.json"
+    atomic_write_json(heartbeat_contract_path, heartbeat_contract, immutable=True)
+    program = [
+        sys.executable, str(Path(__file__).resolve()),
+        "run-runtime-assurance-tick", "--plan-dir", str(plan_dir),
+    ]
+    l0_label = "com.autoresearch-paper.assurance." + hashlib.sha256(
+        f"{plan_identity(plan_dir)}:{args.schedule_id}".encode()
+    ).hexdigest()[:24]
+    if l0_label == l1_receipt["scheduler_label"]:
+        raise ContractError("runtime assurance L0 and L1 scheduler identities collided")
+    plist_path = generation_root / f"{l0_label}.plist"
+    atomic_write_bytes(plist_path, plistlib.dumps({
+        "Label": l0_label,
+        "ProgramArguments": program,
+        "RunAtLoad": True,
+        "StartInterval": args.health_interval_seconds,
+        "ProcessType": "Background",
+    }, fmt=plistlib.FMT_XML), immutable=True)
+    if not scheduler_is_loaded(resolved_launchctl, l0_label):
+        proc = subprocess.run(
+            [resolved_launchctl, "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise ContractError(
+                f"runtime assurance L0 registration failed: {proc.stderr.strip()}"
+            )
+    activated_at = utc_now()
+    test_tick = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "kind": "activation_health_probe",
+        "l0_loaded": scheduler_is_loaded(resolved_launchctl, l0_label),
+        "l1_loaded": scheduler_is_loaded(
+            resolved_launchctl, l1_receipt["scheduler_label"],
+        ),
+        "model_dispatches": 0,
+        "observed_at": activated_at,
+    }
+    test_tick_path = generation_root / "test-health-tick.json"
+    atomic_write_json(test_tick_path, test_tick, immutable=True)
+    heartbeat_probe = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "kind": "activation_heartbeat_probe",
+        "heartbeat_contract_sha256": sha256_file(heartbeat_contract_path),
+        "model_dispatches": 0,
+        "observed_at": activated_at,
+    }
+    heartbeat_probe_path = generation_root / "test-heartbeat.json"
+    atomic_write_json(heartbeat_probe_path, heartbeat_probe, immutable=True)
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "schedule_id": args.schedule_id,
+        "generation": generation,
+        "launchctl_bin": resolved_launchctl,
+        "l0_scheduler_label": l0_label,
+        "l0_scheduler_plist_path": str(plist_path),
+        "l0_scheduler_plist_sha256": sha256_file(plist_path),
+        "l0_controller_command_sha256": sha256_json(program),
+        "l1_scheduler_label": l1_receipt["scheduler_label"],
+        "l1_registration_receipt_path": str(l1_receipt_path),
+        "l1_registration_receipt_sha256": sha256_file(l1_receipt_path),
+        "l1_controller_command_sha256": read_json(
+            Path(l1_receipt["schedule_contract_path"])
+        )["controller_command_sha256"],
+        "l2_heartbeat_contract_path": str(heartbeat_contract_path),
+        "l2_heartbeat_contract_sha256": sha256_file(heartbeat_contract_path),
+        **values,
+        "test_health_tick_path": str(test_tick_path),
+        "test_health_tick_sha256": sha256_file(test_tick_path),
+        "test_heartbeat_path": str(heartbeat_probe_path),
+        "test_heartbeat_sha256": sha256_file(heartbeat_probe_path),
+        "activated_at": activated_at,
+    }
+    receipt_path = generation_root / "activation-receipt.json"
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    atomic_write_json(current_path, {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": receipt["plan_id"],
+        "schedule_id": args.schedule_id,
+        "generation": generation,
+        "active": True,
+        "activation_receipt_path": str(receipt_path),
+        "activation_receipt_sha256": sha256_file(receipt_path),
+        "l0_scheduler_label": l0_label,
+        "l1_scheduler_label": l1_receipt["scheduler_label"],
+        **values,
+        "last_health_at": activated_at,
+        "updated_at": activated_at,
+    })
+    return {"ok": True, "activation_receipt": str(receipt_path), **receipt}
+
+
+def command_run_runtime_assurance_tick(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    receipt = validate_runtime_assurance_activation(
+        plan_dir, require_fresh=False, require_l1_loaded=False,
+    )
+    assert receipt is not None
+    recovered_l1 = False
+    if not scheduler_is_loaded(
+        receipt["launchctl_bin"], receipt["l1_scheduler_label"],
+    ):
+        l1_receipt = read_json(Path(receipt["l1_registration_receipt_path"]))
+        proc = subprocess.run([
+            receipt["launchctl_bin"], "bootstrap", f"gui/{os.getuid()}",
+            l1_receipt["scheduler_plist_path"],
+        ], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ContractError("runtime assurance could not recover L1 trigger")
+        recovered_l1 = True
+    patrol = command_run_patrol(argparse.Namespace(
+        plan_dir=str(plan_dir), stale_seconds=receipt["worker_stale_seconds"],
+    ))
+    observed_at = utc_now()
+    tick = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": receipt["plan_id"],
+        "kind": "health_only",
+        "recovered_l1": recovered_l1,
+        "stale_workers": patrol["stale_workers"],
+        "model_dispatches": 0,
+        "observed_at": observed_at,
+    }
+    tick_path = runtime_assurance_root(plan_dir) / "ticks" / (
+        f"tick_{sha256_json(tick)}.json"
+    )
+    atomic_write_json(tick_path, tick, immutable=True)
+    current_path = runtime_assurance_root(plan_dir) / "current.json"
+    current = read_json(current_path)
+    current.update({
+        "last_health_at": observed_at,
+        "last_health_tick_path": str(tick_path),
+        "last_health_tick_sha256": sha256_file(tick_path),
+        "updated_at": observed_at,
+    })
+    atomic_write_json(current_path, current)
+    return {"ok": True, "health_tick": str(tick_path), **tick}
+
+
+def command_unregister_runtime_assurance(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    authorization = validate_applied_action_receipt(
+        plan_dir, Path(args.authorization).resolve(), "stop",
+    )
+    current_path = runtime_assurance_root(plan_dir) / "current.json"
+    current = read_json(current_path)
+    if current.get("active") is not True:
+        return {"ok": True, "idempotent": True, **current}
+    receipt = read_json(Path(current["activation_receipt_path"]))
+    if scheduler_is_loaded(
+        receipt["launchctl_bin"], receipt["l0_scheduler_label"],
+    ):
+        proc = subprocess.run([
+            receipt["launchctl_bin"], "bootout",
+            scheduler_service_target(receipt["l0_scheduler_label"]),
+        ], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ContractError("runtime assurance L0 removal failed")
+    removal = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": current["plan_id"],
+        "generation": current["generation"],
+        "l0_scheduler_label": current["l0_scheduler_label"],
+        "stop_record_id": authorization["record_id"],
+        "unregistered_at": utc_now(),
+    }
+    removal_path = (
+        runtime_assurance_root(plan_dir) / "generations"
+        / str(current["generation"]) / "unregistration-receipt.json"
+    )
+    atomic_write_json(removal_path, removal, immutable=True)
+    current.update({
+        "active": False,
+        "unregistration_receipt_path": str(removal_path),
+        "unregistration_receipt_sha256": sha256_file(removal_path),
+        "updated_at": removal["unregistered_at"],
+    })
+    atomic_write_json(current_path, current)
+    return {"ok": True, "unregistration_receipt": str(removal_path), **removal}
+
+
 def durable_tick_root(plan_dir: Path, schedule_id: str, tick_id: str) -> Path:
     if not DURABLE_TICK_ID_RE.fullmatch(tick_id):
         raise ContractError("invalid durable tick_id")
@@ -6225,7 +6815,9 @@ def command_run_durable_tick(args: argparse.Namespace) -> dict[str, Any]:
                 **claim_result,
             }
         claim = claim_result["claim"]
+    frontier_recovery = recover_one_due_frontier_retry(plan_dir)
     advanced = command_advance_durable_plan(argparse.Namespace(plan_dir=str(plan_dir)))
+    advanced["frontier_quota_recovery"] = frontier_recovery
     with durable_loop_lock(plan_dir):
         mark_tick_applied(
             plan_dir, args.schedule_id, tick_id, claim["claim_id"], advanced, observed_at,
@@ -6713,6 +7305,8 @@ def reserve_frontier_and_staged_budget(
         }
         else None
     )
+    retry_lineage = request.get("retry_lineage")
+    is_checkpoint_retry = retry_lineage is not None
     dispatch_id = request["request_id"]
     staged_reservation = (
         staged_root(plan_dir) / "dispatch-reservations" / f"{dispatch_id}.json"
@@ -6827,9 +7421,19 @@ def reserve_frontier_and_staged_budget(
                     and checkpoint in {"CP-03", "STAGE-REVIEW"}
                     else checkpoint
                 )
-                capacity_after = staged_capacity_reserve_image(
-                    capacity, legacy_checkpoint,
-                )
+                if is_checkpoint_retry:
+                    retry = capacity["retry_budget"]
+                    if retry["remaining_attempts"] < 1:
+                        raise ContractError("frontier retry budget exhausted")
+                    if retry["per_attempt_call_limit"] < requested["call"]:
+                        raise ContractError("frontier retry call limit exceeded")
+                    capacity_after = json.loads(json.dumps(capacity))
+                    capacity_after["retry_budget"]["remaining_attempts"] -= 1
+                    staged_validate_capacity(capacity_after)
+                else:
+                    capacity_after = staged_capacity_reserve_image(
+                        capacity, legacy_checkpoint,
+                    )
                 usage = read_json(usage_path)
                 usage_after = json.loads(json.dumps(usage))
                 usage_id = f"frontier:{dispatch_id}"
@@ -6877,12 +7481,28 @@ def reserve_frontier_and_staged_budget(
                     "schema_version": 1,
                     "dispatch_id": dispatch_id,
                     "checkpoint": checkpoint,
+                    "logical_request_id": (
+                        retry_lineage["logical_request_id"]
+                        if is_checkpoint_retry else dispatch_id
+                    ),
+                    "retry_attempt": (
+                        retry_lineage["retry_attempt"]
+                        if is_checkpoint_retry else 0
+                    ),
                     **staged_capacity_projection(capacity_after),
                     "reserved_at": utc_now(),
                 }
                 journal = {
                     "schema_version": 1, "phase": "PREPARED",
                     "dispatch_id": dispatch_id, "checkpoint": checkpoint,
+                    "logical_request_id": (
+                        retry_lineage["logical_request_id"]
+                        if is_checkpoint_retry else dispatch_id
+                    ),
+                    "retry_attempt": (
+                        retry_lineage["retry_attempt"]
+                        if is_checkpoint_retry else 0
+                    ),
                     "reservation_generation": (
                         previous_release.get("reservation_generation", 1) + 1
                         if previous_release is not None else 1
@@ -7110,9 +7730,20 @@ def release_unstarted_frontier_budget(
                         and checkpoint in {"CP-03", "STAGE-REVIEW"}
                         else checkpoint
                     )
-                    capacity_released = staged_capacity_release_image(
-                        capacity_reserved, legacy_checkpoint,
-                    )
+                    if require_non_negative_int(
+                        combined.get("retry_attempt", 0), "retry_attempt",
+                    ) > 0:
+                        capacity_released = json.loads(
+                            json.dumps(capacity_reserved)
+                        )
+                        capacity_released["retry_budget"][
+                            "remaining_attempts"
+                        ] += 1
+                        staged_validate_capacity(capacity_released)
+                    else:
+                        capacity_released = staged_capacity_release_image(
+                            capacity_reserved, legacy_checkpoint,
+                        )
                     usage_released = json.loads(json.dumps(usage_reserved))
                     usage_released["used"]["review_tokens"] -= requested[
                         "max_output_tokens"
@@ -7472,6 +8103,48 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             + timedelta(seconds=args.deadline_seconds)
         ).isoformat().replace("+00:00", "Z"),
     }
+    retry_of_request = getattr(args, "retry_of_request", None)
+    if retry_of_request is not None:
+        source_path, source = load_request(plan_dir, retry_of_request)
+        source_status = read_json(status_path(plan_dir, retry_of_request))
+        logical_request_id = source.get("retry_lineage", {}).get(
+            "logical_request_id", retry_of_request,
+        )
+        expected_attempt = source.get("retry_lineage", {}).get(
+            "retry_attempt", source["attempt"] - 1,
+        ) + 1
+        if (
+            source_status.get("state") != "PAUSED"
+            or source_status.get("failure") not in {
+                "transport_failed", "frontier_surface_violation",
+                "response_invalid", "provider_quota",
+            }
+        ):
+            raise ContractError(
+                "frontier retry requires a recoverable PAUSED source request"
+            )
+        if args.attempt != source["attempt"] + 1 or args.attempt != expected_attempt + 1:
+            raise ContractError("frontier retry attempt sequence changed")
+        if any(
+            request.get(field) != source.get(field)
+            for field in (
+                "plan_id", "checkpoint", "checkpoint_subtype", "objective",
+                "decision_required", "context_manifest", "constraints",
+            )
+        ):
+            raise ContractError("frontier retry changed the logical checkpoint")
+        request["retry_lineage"] = {
+            "logical_request_id": logical_request_id,
+            "parent_request_id": retry_of_request,
+            "parent_request_sha256": sha256_file(source_path),
+            "retry_attempt": source.get("retry_lineage", {}).get(
+                "retry_attempt", 0,
+            ) + 1,
+            "failure_class": source_status["failure"],
+            "retry_token_limit": read_json(
+                staged_root(plan_dir) / "capacity-ledger.json"
+            )["retry_budget"]["per_attempt_token_limit"],
+        }
     if (
         args.checkpoint == "CP-01"
         and isinstance(policy.get("top_level_plan_audit"), dict)
@@ -7637,6 +8310,208 @@ def command_create_durable_request(args: argparse.Namespace) -> dict[str, Any]:
     return command_create_request(forwarded)
 
 
+def frontier_logical_request_id(request: dict[str, Any]) -> str:
+    lineage = request.get("retry_lineage")
+    if lineage is None:
+        return request["request_id"]
+    if (
+        not isinstance(lineage, dict)
+        or set(lineage) != {
+            "logical_request_id", "parent_request_id",
+            "parent_request_sha256", "retry_attempt", "failure_class",
+            "retry_token_limit",
+        }
+        or not REQUEST_ID_RE.fullmatch(lineage.get("logical_request_id", ""))
+        or not REQUEST_ID_RE.fullmatch(lineage.get("parent_request_id", ""))
+        or not SHA256_RE.fullmatch(lineage.get("parent_request_sha256", ""))
+        or not isinstance(lineage.get("retry_attempt"), int)
+        or lineage["retry_attempt"] < 1
+        or not isinstance(lineage.get("retry_token_limit"), int)
+        or lineage["retry_token_limit"] < 0
+    ):
+        raise ContractError("frontier retry lineage has an invalid closed shape")
+    return lineage["logical_request_id"]
+
+
+def command_retry_frontier_request(args: argparse.Namespace) -> dict[str, Any]:
+    """Create a new, bounded attempt without reopening a named checkpoint slot."""
+    plan_dir = Path(args.plan_dir).resolve()
+    source_path, source = load_request(plan_dir, args.source_request_id)
+    source_status = read_json(status_path(plan_dir, args.source_request_id))
+    logical_request_id = frontier_logical_request_id(source)
+    requests_root = frontier_root(plan_dir) / "requests"
+    descendants: list[dict[str, Any]] = []
+    for candidate in requests_root.glob("far_*/request.json"):
+        value = read_json(candidate)
+        if frontier_logical_request_id(value) == logical_request_id:
+            descendants.append(value)
+    if any(
+        read_json(status_path(plan_dir, item["request_id"])).get("state") == "APPLIED"
+        for item in descendants
+    ):
+        raise ContractError("logical frontier checkpoint is already applied")
+    target_path = request_dir(plan_dir, args.request_id) / "request.json"
+    if target_path.is_file():
+        existing = read_json(target_path)
+        lineage = existing.get("retry_lineage", {})
+        if (
+            lineage.get("parent_request_id") != args.source_request_id
+            or lineage.get("logical_request_id") != logical_request_id
+        ):
+            raise ContractError("frontier retry request_id collision")
+        return {
+            "ok": True, "idempotent": True,
+            "request_id": existing["request_id"],
+            "request_path": str(target_path),
+            "request_sha256": sha256_file(target_path),
+            "logical_request_id": logical_request_id,
+            "parent_request_id": args.source_request_id,
+            "retry_attempt": lineage["retry_attempt"],
+            "source_request_sha256": sha256_file(source_path),
+        }
+    if source_status.get("state") != "PAUSED" or source_status.get("failure") not in {
+        "transport_failed", "frontier_surface_violation", "response_invalid",
+        "provider_quota",
+    }:
+        raise ContractError(
+            "frontier retry requires a recoverable PAUSED transport/response failure"
+        )
+    retry_not_before = source_status.get("retry_not_before")
+    if (
+        source_status.get("failure") == "provider_quota"
+        and retry_not_before is not None
+        and datetime.now(timezone.utc) < parse_utc(retry_not_before)
+    ):
+        raise ContractError(
+            f"provider quota retry is not due before {retry_not_before}"
+        )
+    latest = max(descendants, key=lambda item: item["attempt"])
+    if latest["request_id"] != args.source_request_id:
+        raise ContractError("frontier retry must extend the latest logical attempt")
+    capacity = read_json(staged_root(plan_dir) / "capacity-ledger.json")
+    staged_validate_capacity(capacity)
+    retry_budget = capacity["retry_budget"]
+    if retry_budget["remaining_attempts"] < 1:
+        raise ContractError("frontier retry budget exhausted")
+    forwarded = argparse.Namespace(
+        plan_dir=str(plan_dir),
+        plan_id=source["plan_id"],
+        checkpoint=source["checkpoint"],
+        checkpoint_subtype=source.get("checkpoint_subtype"),
+        attempt=source["attempt"] + 1,
+        objective=source["objective"],
+        decision_required=source["decision_required"],
+        artifact=[
+            f"{item['path']}::{item['purpose']}"
+            for item in source["context_manifest"]
+            if not item["purpose"].startswith(STAGED_CP01_REVIEW_ROLE_PREFIX)
+        ],
+        constraint=list(source["constraints"]),
+        max_input_tokens=source["budget_reservation"]["max_input_tokens"],
+        max_output_tokens=source["budget_reservation"]["max_output_tokens"],
+        request_id=args.request_id,
+        deadline_seconds=args.deadline_seconds,
+        context_capsule=(source.get("durable_context") or {}).get("capsule_path"),
+        retry_of_request=args.source_request_id,
+    )
+    created = command_create_request(forwarded)
+    return {
+        **created,
+        "logical_request_id": logical_request_id,
+        "parent_request_id": args.source_request_id,
+        "retry_attempt": source.get("retry_lineage", {}).get("retry_attempt", 0) + 1,
+        "source_request_sha256": sha256_file(source_path),
+    }
+
+
+def recover_one_due_frontier_retry(
+    plan_dir: Path, *, codex_bin: str | None = None, timeout: int = 1800,
+) -> dict[str, Any]:
+    """Let the authorized L1 work tick resume at most one due quota attempt."""
+    requests_root = frontier_root(plan_dir) / "requests"
+    now = datetime.now(timezone.utc)
+    requests = [
+        read_json(path) for path in requests_root.glob("far_*/request.json")
+    ]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for request in requests:
+        groups.setdefault(frontier_logical_request_id(request), []).append(request)
+    candidates: list[tuple[datetime, dict[str, Any], bool]] = []
+    for siblings in groups.values():
+        latest = max(siblings, key=lambda item: item["attempt"])
+        status = read_json(status_path(plan_dir, latest["request_id"]))
+        retry_at = status.get("retry_not_before")
+        if (
+            status.get("state") == "PAUSED"
+            and status.get("failure") == "provider_quota"
+            and isinstance(retry_at, str)
+            and parse_utc(retry_at) <= now
+        ):
+            candidates.append((parse_utc(retry_at), latest, True))
+            continue
+        lineage = latest.get("retry_lineage")
+        if status.get("state") == "CREATED" and isinstance(lineage, dict):
+            parent_status = read_json(status_path(
+                plan_dir, lineage["parent_request_id"],
+            ))
+            parent_due = parent_status.get("retry_not_before")
+            if (
+                parent_status.get("failure") == "provider_quota"
+                and isinstance(parent_due, str)
+                and parse_utc(parent_due) <= now
+            ):
+                candidates.append((parse_utc(parent_due), latest, False))
+    if not candidates:
+        return {"attempted": False}
+    _, source, create_child = min(candidates, key=lambda item: item[0])
+    if create_child:
+        retry_id = "far_retry_" + hashlib.sha256(
+            f"{source['request_id']}:{source['attempt'] + 1}".encode()
+        ).hexdigest()[:24]
+        command_retry_frontier_request(argparse.Namespace(
+            plan_dir=str(plan_dir), source_request_id=source["request_id"],
+            request_id=retry_id, deadline_seconds=1800,
+        ))
+    else:
+        retry_id = source["request_id"]
+    command_send_request(argparse.Namespace(
+        plan_dir=str(plan_dir), request_id=retry_id,
+        codex_bin=codex_bin or os.environ.get("CODEX_BIN", "codex"),
+        timeout=timeout,
+    ))
+    command_validate_response(argparse.Namespace(
+        plan_dir=str(plan_dir), request_id=retry_id,
+    ))
+    request = load_request(plan_dir, retry_id)[1]
+    current = read_json(status_path(plan_dir, retry_id))
+    response = read_json(Path(current["validated_response_path"]))
+    expected = DEPENDENT_TRANSITIONS[
+        (request["checkpoint"], request.get("checkpoint_subtype"))
+    ]
+    if response["recommendation"] not in expected[1]:
+        return {
+            "attempted": True, "request_id": retry_id,
+            "state": "VALIDATED", "advisory_blocked": True,
+        }
+    applied = command_apply_response(argparse.Namespace(
+        plan_dir=str(plan_dir), request_id=retry_id,
+        controller_note="automatic due provider-quota retry",
+        dependent_transition=expected[0],
+    ))
+    return {
+        "attempted": True, "request_id": retry_id,
+        "state": applied["state"], "advisory_blocked": False,
+    }
+
+
+def command_recover_due_frontier_retry(args: argparse.Namespace) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    result = recover_one_due_frontier_retry(
+        plan_dir, codex_bin=args.codex_bin, timeout=args.timeout,
+    )
+    return {"ok": True, **result}
+
+
 def load_request(
     plan_dir: Path, request_id: str, *, verify_live_manifest: bool = True,
 ) -> tuple[Path, dict[str, Any]]:
@@ -7739,6 +8614,13 @@ def validate_frontier_response_integrity(
         if not finding["evidence"] or any(item not in evidence_authority for item in finding["evidence"]):
             raise ContractError("frontier findings must cite frozen evidence paths or hashes")
     reservation = request["budget_reservation"]
+    retry_lineage = request.get("retry_lineage")
+    if (
+        retry_lineage is not None
+        and response["usage"]["output_tokens"]
+        > retry_lineage["retry_token_limit"]
+    ):
+        raise ContractError("frontier retry actual output token limit exceeded")
     if (
         response["usage"]["input_tokens"] > reservation["max_input_tokens"]
         or response["usage"]["output_tokens"] > reservation["max_output_tokens"]
@@ -8287,6 +9169,82 @@ def build_frontier_command(
     ]
 
 
+def classify_frontier_transport_failure(
+    stderr_text: str, events_text: str,
+) -> dict[str, Any]:
+    """Turn provider-limit prose into typed, scheduler-actionable state."""
+    text = f"{stderr_text}\n{events_text}".lower()
+    quota_markers = (
+        "usage limit", "quota", "rate limit", "rate_limit",
+        "too many requests", "hour limit", "capacity exhausted",
+        "resource_exhausted",
+    )
+    if not any(marker in text for marker in quota_markers):
+        return {"failure": "transport_failed"}
+    duration = re.search(
+        r"(?:retry|reset|available|try again)[^\n]{0,80}?"
+        r"(\d+)\s*(seconds?|minutes?|hours?)",
+        text,
+    )
+    result: dict[str, Any] = {
+        "failure": "provider_quota",
+        "provider_failure_class": "quota_or_usage_window",
+    }
+    if duration:
+        value = int(duration.group(1))
+        unit = duration.group(2)
+        multiplier = 3600 if unit.startswith("hour") else (
+            60 if unit.startswith("minute") else 1
+        )
+        result["retry_not_before"] = (
+            datetime.now(timezone.utc).replace(microsecond=0)
+            + timedelta(seconds=value * multiplier)
+        ).isoformat().replace("+00:00", "Z")
+    else:
+        absolute = re.search(
+            r"try again at ([a-z]{3} \d{1,2}(?:st|nd|rd|th), "
+            r"\d{4} \d{1,2}:\d{2} [ap]m)",
+            text,
+        )
+        if absolute:
+            normalized = re.sub(
+                r"(\d{1,2})(?:st|nd|rd|th)", r"\1", absolute.group(1),
+            )
+            local_zone = datetime.now().astimezone().tzinfo
+            parsed = datetime.strptime(
+                normalized.title(), "%b %d, %Y %I:%M %p",
+            ).replace(tzinfo=local_zone)
+            result["retry_not_before"] = parsed.astimezone(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+    return result
+
+
+def command_classify_paused_frontier_failure(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    plan_dir = Path(args.plan_dir).resolve()
+    current = read_json(status_path(plan_dir, args.request_id))
+    if current.get("state") != "PAUSED":
+        raise ContractError("frontier failure classification requires PAUSED state")
+    if current.get("failure") == "provider_quota":
+        return {"ok": True, "idempotent": True, **current}
+    if current.get("failure") != "transport_failed":
+        raise ContractError("paused frontier failure is not transport_failed")
+    run_dir = request_dir(plan_dir, args.request_id)
+    classified = classify_frontier_transport_failure(
+        (run_dir / "transport.stderr").read_text(errors="replace"),
+        (run_dir / "transport.events.jsonl").read_text(errors="replace"),
+    )
+    if classified["failure"] == "transport_failed":
+        return {"ok": True, "classified": False, **current}
+    updated = transition(
+        plan_dir, args.request_id, "PAUSED",
+        previous_failure=current["failure"], **classified,
+    )
+    return {"ok": True, "classified": True, **updated}
+
+
 def update_transport_launch(
     plan_dir: Path,
     request_id: str,
@@ -8740,14 +9698,22 @@ def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
             transition(plan_dir, args.request_id, "PAUSED", failure="transport_outcome_uncertain")
             raise ContractError(f"Codex transport outcome is uncertain: {exc}") from exc
         if proc.returncode != 0:
+            failure = classify_frontier_transport_failure(
+                stderr_path.read_text(errors="replace"),
+                events_path.read_text(errors="replace"),
+            )
             update_transport_launch(
                 plan_dir,
                 args.request_id,
                 claim,
                 "FAILED",
                 exit_code=proc.returncode,
+                **failure,
             )
-            transition(plan_dir, args.request_id, "PAUSED", failure="transport_failed", exit_code=proc.returncode)
+            transition(
+                plan_dir, args.request_id, "PAUSED",
+                exit_code=proc.returncode, **failure,
+            )
             raise ContractError(f"Codex transport failed with exit {proc.returncode}")
         try:
             validate_frontier_transport_events(events_path)
@@ -8949,6 +9915,21 @@ def command_apply_response(args: argparse.Namespace) -> dict[str, Any]:
             )
         if current.get("validated_response_sha256") != sha256_file(response_path):
             raise ContractError("validated response hash changed while applying")
+        logical_request_id = frontier_logical_request_id(request)
+        for sibling_path in (
+            frontier_root(plan_dir) / "requests"
+        ).glob("far_*/request.json"):
+            sibling = read_json(sibling_path)
+            if (
+                sibling["request_id"] != args.request_id
+                and frontier_logical_request_id(sibling) == logical_request_id
+                and read_json(status_path(
+                    plan_dir, sibling["request_id"],
+                )).get("state") == "APPLIED"
+            ):
+                raise ContractError(
+                    "logical frontier checkpoint was already applied by another attempt"
+                )
         if target.exists():
             prior = read_json(target)
             transition(plan_dir, args.request_id, "APPLIED", applied_event=prior)
@@ -15968,6 +16949,64 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trigger_unregister.set_defaults(handler=command_unregister_durable_trigger)
 
+    frontier_trigger = sub.add_parser("register-frontier-retry-trigger")
+    frontier_trigger.add_argument("--plan-dir", required=True)
+    frontier_trigger.add_argument("--interval-seconds", type=int, default=1800)
+    frontier_trigger.add_argument("--timeout", type=int, default=1800)
+    frontier_trigger.add_argument(
+        "--codex-bin", default=os.environ.get("CODEX_BIN", "codex"),
+    )
+    frontier_trigger.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    frontier_trigger.set_defaults(handler=command_register_frontier_retry_trigger)
+
+    frontier_trigger_remove = sub.add_parser(
+        "unregister-frontier-retry-trigger",
+    )
+    frontier_trigger_remove.add_argument("--plan-dir", required=True)
+    frontier_trigger_remove.add_argument("--authorization", required=True)
+    frontier_trigger_remove.set_defaults(
+        handler=command_unregister_frontier_retry_trigger,
+    )
+
+    assurance_activate = sub.add_parser("activate-runtime-assurance")
+    assurance_activate.add_argument("--plan-dir", required=True)
+    assurance_activate.add_argument("--schedule-id", default="research_loop")
+    assurance_activate.add_argument(
+        "--health-interval-seconds", type=int, default=1800,
+    )
+    assurance_activate.add_argument(
+        "--worker-stale-seconds", type=int, default=7200,
+    )
+    assurance_activate.add_argument(
+        "--frontier-stale-seconds", type=int, default=7200,
+    )
+    assurance_activate.add_argument(
+        "--heartbeat-stale-seconds", type=int, default=3600,
+    )
+    assurance_activate.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    assurance_activate.set_defaults(handler=command_activate_runtime_assurance)
+
+    assurance_tick = sub.add_parser("run-runtime-assurance-tick")
+    assurance_tick.add_argument("--plan-dir", required=True)
+    assurance_tick.set_defaults(handler=command_run_runtime_assurance_tick)
+
+    assurance_unregister = sub.add_parser("unregister-runtime-assurance")
+    assurance_unregister.add_argument("--plan-dir", required=True)
+    assurance_unregister.add_argument("--authorization", required=True)
+    assurance_unregister.set_defaults(handler=command_unregister_runtime_assurance)
+
+    worker_heartbeat = sub.add_parser("record-worker-heartbeat")
+    worker_heartbeat.add_argument("--plan-dir", required=True)
+    worker_heartbeat.add_argument("--worker-run-id", required=True)
+    worker_heartbeat.add_argument(
+        "--source", default="claude_post_tool_hook",
+    )
+    worker_heartbeat.set_defaults(handler=command_record_worker_heartbeat)
+
     tick_claim = sub.add_parser("claim-durable-tick")
     tick_claim.add_argument("--plan-dir", required=True)
     tick_claim.add_argument("--schedule-id", default="research_loop")
@@ -16032,6 +17071,35 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--deadline-seconds", type=int, default=1800)
     create.add_argument("--context-capsule")
     create.set_defaults(handler=command_create_request)
+
+    retry_frontier = sub.add_parser(
+        "retry-frontier-request",
+        help="create a new bounded attempt for a failed logical checkpoint",
+    )
+    retry_frontier.add_argument("--plan-dir", required=True)
+    retry_frontier.add_argument("--source-request-id", required=True)
+    retry_frontier.add_argument("--request-id", required=True)
+    retry_frontier.add_argument("--deadline-seconds", type=int, default=1800)
+    retry_frontier.set_defaults(handler=command_retry_frontier_request)
+
+    recover_frontier = sub.add_parser(
+        "recover-due-frontier-retry",
+        help="run at most one due provider-quota retry under work-loop authority",
+    )
+    recover_frontier.add_argument("--plan-dir", required=True)
+    recover_frontier.add_argument(
+        "--codex-bin", default=os.environ.get("CODEX_BIN", "codex"),
+    )
+    recover_frontier.add_argument("--timeout", type=int, default=1800)
+    recover_frontier.set_defaults(handler=command_recover_due_frontier_retry)
+
+    classify_frontier = sub.add_parser(
+        "classify-paused-frontier-failure",
+        help="type a legacy PAUSED transport failure from its frozen logs",
+    )
+    classify_frontier.add_argument("--plan-dir", required=True)
+    classify_frontier.add_argument("--request-id", required=True)
+    classify_frontier.set_defaults(handler=command_classify_paused_frontier_failure)
 
     create_durable = sub.add_parser(
         "create-durable-frontier-request",

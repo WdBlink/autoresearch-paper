@@ -89,7 +89,7 @@ if [[ "${MODE}" != "test" ]]; then
     warn "scientific-schematics not found; optional AI method-diagram proposals are unavailable, deterministic figure paths remain valid"
   fi
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    need_cmd launchctl "loads the optional launchd L0 rescue daemon" "launchctl is normally present on macOS"
+    need_cmd launchctl "loads the independent Claude-native L0/L1 runtime-assurance services" "launchctl is normally present on macOS"
   else
     warn "launchctl is macOS-only; legacy --rescue launchd mode is unavailable"
   fi

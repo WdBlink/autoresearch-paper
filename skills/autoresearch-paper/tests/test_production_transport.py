@@ -119,6 +119,40 @@ class ProductionTransportTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
+    def activate_assurance(self, root: Path, plan: Path) -> None:
+        launchctl = root / "fake-launchctl-assurance"
+        services = root / "launchd-services"
+        launchctl.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib,plistlib,sys\n"
+            f"services=pathlib.Path({str(services)!r});services.mkdir(exist_ok=True)\n"
+            "args=sys.argv[1:]\n"
+            "if args[0]=='print':\n"
+            " label=args[-1].rsplit('/',1)[-1];raise SystemExit(0 if (services/label).exists() else 3)\n"
+            "if args[0]=='bootstrap':\n"
+            " label=plistlib.loads(pathlib.Path(args[-1]).read_bytes())['Label'];(services/label).write_text(args[-1]);raise SystemExit(0)\n"
+            "if args[0]=='bootout':\n"
+            " label=args[-1].rsplit('/',1)[-1];(services/label).unlink(missing_ok=True);raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+        launchctl.chmod(0o755)
+        self.call(
+            "register-durable-trigger", "--plan-dir", str(plan),
+            "--schedule-id", "research_loop", "--interval-seconds", "60",
+            "--jitter-seconds", "0", "--session-budget-seconds", "600",
+            "--human-escalation-after-seconds", "300",
+            "--lease-seconds", "30", "--launchctl-bin", str(launchctl),
+        )
+        self.call(
+            "activate-runtime-assurance", "--plan-dir", str(plan),
+            "--schedule-id", "research_loop",
+            "--health-interval-seconds", "300",
+            "--worker-stale-seconds", "1200",
+            "--frontier-stale-seconds", "1200",
+            "--heartbeat-stale-seconds", "600",
+            "--launchctl-bin", str(launchctl),
+        )
+
     def test_minimax_worker_is_capsule_bound_and_commits_exactly_once(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -175,6 +209,7 @@ class ProductionTransportTests(unittest.TestCase):
                 inputs=[self.artifact(source, "task_input")],
             )
             self.call("init-durable-plan", "--plan-dir", str(plan), "--graph", str(graph))
+            self.activate_assurance(root, plan)
             advanced = json.loads(self.call(
                 "advance-durable-plan", "--plan-dir", str(plan),
             ).stdout)

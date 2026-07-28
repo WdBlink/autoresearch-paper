@@ -105,6 +105,27 @@ class DurableLoopRuntimeTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable, log
 
+    def multi_service_launchctl(self, root: Path) -> tuple[Path, Path]:
+        executable = root / "multi-launchctl"
+        services = root / "launchd-services"
+        log = root / "multi-launchctl.log"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib,plistlib,sys\n"
+            f"services=pathlib.Path({str(services)!r});log=pathlib.Path({str(log)!r})\n"
+            "services.mkdir(exist_ok=True);args=sys.argv[1:]\n"
+            "log.open('a').write(' '.join(args)+'\\n')\n"
+            "if args[0]=='print':\n"
+            " label=args[-1].rsplit('/',1)[-1];raise SystemExit(0 if (services/label).exists() else 3)\n"
+            "if args[0]=='bootstrap':\n"
+            " label=plistlib.loads(pathlib.Path(args[-1]).read_bytes())['Label'];(services/label).write_text(args[-1]);raise SystemExit(0)\n"
+            "if args[0]=='bootout':\n"
+            " label=args[-1].rsplit('/',1)[-1];(services/label).unlink(missing_ok=True);raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+        executable.chmod(0o755)
+        return executable, log
+
     def register(self, plan: Path, launchctl: Path) -> dict[str, object]:
         return json.loads(self.call(
             "register-durable-trigger",
@@ -118,6 +139,87 @@ class DurableLoopRuntimeTests(unittest.TestCase):
             "--first-due-at", "2026-07-23T00:00:00Z",
             "--launchctl-bin", str(launchctl),
         ).stdout)
+
+    def test_runtime_assurance_activates_independent_l0_l1_l2(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            launchctl, log = self.multi_service_launchctl(root)
+            self.call(
+                "init-durable-plan", "--plan-dir", str(plan),
+                "--graph", str(self.graph(plan)),
+            )
+            l1 = self.register(plan, launchctl)
+            missing = self.call(
+                "record-worker-heartbeat", "--plan-dir", str(plan),
+                "--worker-run-id", "cwr_" + "a" * 32,
+                check=False,
+            )
+            self.assertIn("requires runtime-assurance activation", missing.stderr)
+            activated = json.loads(self.call(
+                "activate-runtime-assurance", "--plan-dir", str(plan),
+                "--schedule-id", "research_loop",
+                "--health-interval-seconds", "300",
+                "--worker-stale-seconds", "1200",
+                "--frontier-stale-seconds", "1200",
+                "--heartbeat-stale-seconds", "600",
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+            self.assertNotEqual(
+                activated["l0_scheduler_label"], l1["scheduler_label"],
+            )
+            self.assertEqual(
+                json.loads(Path(activated["test_health_tick_path"]).read_text())[
+                    "model_dispatches"
+                ],
+                0,
+            )
+            self.assertEqual(
+                json.loads(Path(activated["test_heartbeat_path"]).read_text())[
+                    "model_dispatches"
+                ],
+                0,
+            )
+            tick = json.loads(self.call(
+                "run-runtime-assurance-tick", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertEqual(tick["kind"], "health_only")
+            self.assertEqual(tick["model_dispatches"], 0)
+            (root / "launchd-services" / l1["scheduler_label"]).unlink()
+            recovered = json.loads(self.call(
+                "run-runtime-assurance-tick", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertTrue(recovered["recovered_l1"])
+            current_path = (
+                plan / "state" / "runtime_assurance" / "v1" / "current.json"
+            )
+            current = json.loads(current_path.read_text())
+            live_health = current["last_health_at"]
+            current["last_health_at"] = "2026-01-01T00:00:00Z"
+            current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+            stale = self.call(
+                "record-worker-heartbeat", "--plan-dir", str(plan),
+                "--worker-run-id", "cwr_" + "a" * 32,
+                check=False,
+            )
+            self.assertIn("health receipt is stale", stale.stderr)
+            current["last_health_at"] = live_health
+            current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+            bootstrap_lines = [
+                line for line in log.read_text().splitlines()
+                if line.startswith("bootstrap ")
+            ]
+            self.assertEqual(len(bootstrap_lines), 3)
+            invalid = self.call(
+                "activate-runtime-assurance", "--plan-dir", str(plan),
+                "--health-interval-seconds", "601",
+                "--worker-stale-seconds", "1200",
+                "--frontier-stale-seconds", "1200",
+                "--heartbeat-stale-seconds", "1200",
+                "--launchctl-bin", str(launchctl),
+                check=False,
+            )
+            self.assertIn("no more than half", invalid.stderr)
 
     def test_state_capsule_rebuild_and_integrity_drift(self) -> None:
         with tempfile.TemporaryDirectory() as td:

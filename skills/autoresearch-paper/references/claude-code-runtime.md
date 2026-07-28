@@ -396,6 +396,15 @@ python3 references/scripts/harness-runtime.py register-durable-trigger \
   --plan-dir PLAN --schedule-id research_loop --interval-seconds 300 \
   --jitter-seconds 30 --session-budget-seconds 1800 \
   --human-escalation-after-seconds 900 --lease-seconds 300
+python3 references/scripts/harness-runtime.py activate-runtime-assurance \
+  --plan-dir PLAN --schedule-id research_loop \
+  --health-interval-seconds 1800 --worker-stale-seconds 7200 \
+  --frontier-stale-seconds 7200 --heartbeat-stale-seconds 3600
+python3 references/scripts/harness-runtime.py run-runtime-assurance-tick \
+  --plan-dir PLAN
+python3 references/scripts/harness-runtime.py record-worker-heartbeat \
+  --plan-dir PLAN --worker-run-id WORKER_RUN_ID \
+  --source claude_post_tool_hook
 python3 references/scripts/harness-runtime.py run-durable-tick \
   --plan-dir PLAN --schedule-id research_loop
 python3 references/scripts/harness-runtime.py advance-durable-plan \
@@ -419,6 +428,19 @@ registration. Registration succeeds only after the external scheduler accepts
 the service; removal requires an applied authenticated `stop` receipt.
 Concurrent deliveries of one tick produce one current claim. An expired claim
 advances to one new generation; an active claim remains pending.
+
+An unattended Worker is not dispatchable merely because L1 exists. The
+`activate-runtime-assurance` closure must prove and bind three independently
+identified layers: an external launchd L0 health supervisor, the already
+loaded L1 durable work trigger, and the controller-owned L2 Worker heartbeat
+contract. Its immutable, plan-bound receipt includes both scheduler command
+hashes, all stale/health intervals, and zero-model-call health/heartbeat test
+receipts. The health interval is at most one hour and at most half the shortest
+stale threshold. L0 health ticks run deterministic patrol and can re-bootstrap
+an unloaded L1 without calling a model; they never spend Worker or frontier
+capacity. Missing, unloaded, stale, mismatched, or legacy-only activation
+blocks the first unattended Worker before budget mutation. Removal requires an
+applied `stop` receipt through `unregister-runtime-assurance`.
 
 Each capsule binds one task and canonical state revision to the live objective,
 constraints, evaluator, task contract, inputs, prior directions, and evidence.
@@ -475,6 +497,16 @@ python3 references/scripts/harness-runtime.py create-durable-frontier-request \
   --max-input-tokens 350000 --max-output-tokens 15000
 python3 references/scripts/harness-runtime.py send-frontier-request \
   --plan-dir PLAN --request-id FAR_ID
+# If this launched attempt pauses with a typed transport/response failure:
+python3 references/scripts/harness-runtime.py retry-frontier-request \
+  --plan-dir PLAN --source-request-id FAR_ID \
+  --request-id FAR_NEW_ATTEMPT_ID
+python3 references/scripts/harness-runtime.py recover-due-frontier-retry \
+  --plan-dir PLAN
+python3 references/scripts/harness-runtime.py classify-paused-frontier-failure \
+  --plan-dir PLAN --request-id LEGACY_PAUSED_REQUEST
+python3 references/scripts/harness-runtime.py register-frontier-retry-trigger \
+  --plan-dir PLAN --interval-seconds 1800 --timeout 1800
 python3 references/scripts/harness-runtime.py validate-frontier-response \
   --plan-dir PLAN --request-id FAR_ID
 python3 references/scripts/harness-runtime.py apply-frontier-response \
@@ -591,6 +623,24 @@ context, and every current artifact hash after restart. The generic
 `create-frontier-request` form remains available for non-durable gates such as
 the initial CP-01 approval. Its evidence profile is selected by versioned
 staged state, so legacy v0.15 receipts remain readable.
+
+A launched named-checkpoint failure is not refunded and does not reopen its
+CP-01/CP-02/CP-04/STAGE-REVIEW slot. `retry-frontier-request` creates a new
+immutable request ID in the same logical lineage, consumes the independent
+retry budget plus a new global frontier reservation, and caps actual retry
+output by the frozen per-attempt retry limit. Provider usage-window failures
+are stored as `provider_quota` with `retry_not_before` when the transport
+reports a duration. Exactly one attempt in a logical lineage may apply.
+The classification command upgrades a frozen pre-feature `transport_failed`
+record from its existing stderr/event evidence; it does not spend or retry.
+Before CP-01 has admitted the full durable loop, the independently registered
+frontier-retry trigger may wake this recovery command. Its immutable receipt
+grants only due provider-quota retry delivery under the already frozen retry
+and frontier budgets: it has no Worker-dispatch or general research-transition
+authority. Removal uses `unregister-frontier-retry-trigger` plus an applied
+`stop` receipt.
+The L1 work tick runs the same bounded recovery before graph advance and may
+resume at most one due quota lineage; health-only L0 ticks never do this.
 
 For an observation-only bootstrap stage (`stage_kind=research` and
 `evaluation_calls=0`), the controller does not create a logical Gate query.
