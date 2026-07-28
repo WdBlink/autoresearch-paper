@@ -20,8 +20,50 @@ compatibility flags.
   key file of at least 32 bytes and POSIX mode `0600`.
 - The controller owns state transitions, hash checks, budget reservation,
   replay protection, and append-only audit records.
+- For staged research, `state/staged_research/v1/` is the sole runtime truth.
+  `state/progress.json` and `state/research-dossier.md` are rebuildable,
+  non-authoritative projections and are never controller inputs.
 - Mutable snapshots use atomic replacement. Successful audit appends are
   flushed and fsynced.
+
+Rebuild the operator views after repair or suspected hand editing without
+changing canonical staged state:
+
+```bash
+python3 references/scripts/harness-runtime.py rebuild-staged-projections \
+  --plan-dir PLAN
+```
+
+## Controller permission mode
+
+Claude Code's interactive `auto` classifier is not an unattended execution
+contract. It can deny a safe controller command before the Runtime launches a
+Worker or frontier request, especially when an old session contains credential
+text. Such a denial is an outer-Harness event and consumes no CP, stage-review,
+retry, Gate, or Worker capacity.
+
+For an unattended run, the operator must pre-authorize the top-level Claude
+controller before starting the loop. Prefer exact Claude Code allow rules for
+the Runtime command surface. For a bounded field acceptance in an isolated
+research worktree, an explicitly authorized `--dangerously-skip-permissions`
+controller session is also valid; it does not relax optimization-contract,
+hash, budget, Gate, or signed-action enforcement inside the Runtime. Never
+switch permission mode in response to model output alone, and never interpret
+silence or a classifier denial as lifecycle authorization.
+
+The isolated Codex reviewer is reduced with explicit feature disables and a
+single-reviewer developer instruction. Do not emit `agents.enabled=false`:
+current Codex parses `agents` as a role table and rejects that boolean child as
+an invalid `AgentRoleToml`. Multi-agent and collaboration escape attempts remain
+blocked by feature flags plus transport-event validation.
+
+For evidence-grounded research stages, bind concrete provenance rather than
+describing it only in prose. CP-01 review-material manifests may include
+`acceptance_profile`, `source_manifest`, `citation_universe`,
+`evaluation_profile`, and `evaluator_loader_parameters` in addition to the
+executable evaluator and its conformance result. The controller expands these
+files into the immutable frontier context, so the reviewer can audit exact
+identities and loader handoff instead of trusting aggregate preflight claims.
 
 ## Freeze Policy
 
@@ -123,7 +165,9 @@ evidence; worker output never advances the task graph directly.
 Allowed actions are `pause`, `resume`, `stop`, `cancel_worker`,
 `waive_acceptance`, `override_acceptance`, `cleanup_resource`, and
 proposal-only `authorize_evaluator_change`. Staged plans also support
-`authorize_frontier_capacity`, a positive future-only capacity grant.
+`authorize_frontier_capacity`, a positive future-only capacity grant. The
+initial `authorize_contract` may also carry bounded continuation authority for
+exactly one explicitly named next stage.
 
 ```bash
 python3 references/scripts/harness-runtime.py create-human-action \
@@ -140,7 +184,31 @@ python3 references/scripts/harness-runtime.py create-human-action \
 python3 references/scripts/harness-runtime.py apply-human-action \
   --plan-dir PLAN --record RECORD --key-file KEY \
   --expected-action authorize_frontier_capacity --operation-id op_64_HEX
+
+python3 references/scripts/harness-runtime.py create-human-action \
+  --plan-dir PLAN --plan-id PLAN_ID --action authorize_contract \
+  --key-file KEY --expires-in 300 --record-id RECORD_ID \
+  --contract-version CONTRACT_VERSION --contract-sha256 CONTRACT_SHA256 \
+  --stage-id STAGE_1 --stage-envelope-sha256 STAGE_1_SHA256 \
+  --continuation-stage-id STAGE_2 --continuation-stage-limit 1
+python3 references/scripts/harness-runtime.py apply-human-action \
+  --plan-dir PLAN --record RECORD_PATH_FROM_CREATE_OUTPUT --key-file KEY \
+  --expected-action authorize_contract --operation-id op_64_HEX
 ```
+
+Pass the key pathname only through `--key-file`. An Agent must never read the
+key bytes, implement HMAC itself, write a synthetic authorization JSON, or feed
+the pending record directly to `init-staged-research`. The initializer accepts
+only the `receipt.receipt_path` returned by `apply-human-action`. For capacity
+v2, the first envelope must also declare
+`stage_budget_and_stop.worker_dispatches >= 1`; the plan-global
+`worker_dispatch_capacity` does not substitute for that per-stage quota.
+There is no placeholder-replacement step: choose `RECORD_ID` first, write that
+exact value into `optimization_contract.authorization_receipt_id`, freeze and
+hash the contract, and pass the same value to
+`create-human-action --record-id RECORD_ID`. Editing the contract after action
+creation invalidates the signed hash; allowing the CLI to generate a random ID
+creates an unresolvable binding unless that ID was already in the contract.
 
 The signed payload contains only schema version, record ID, plan ID, action,
 32-byte URL-safe nonce, issue/expiry times, actor, key ID, and details. The
@@ -154,12 +222,20 @@ or a fresh operation ID is rejected. The same inner-journal binding applies to
 owned cleanup. Downstream gates consume immutable applied receipts
 present in the audit, never pending signed records.
 
+The bounded continuation object is valid only on the initial signed
+`authorize_contract`. It fixes one `allowed_stage_ids` entry,
+`max_automatic_crossings=1`, and `silence_is_approval=false`; omission means
+there is no automatic continuation authority. A later chat message, lack of a
+reply, timeout, or operator silence never grants approval.
+
 Capacity grants bind the immutable model policy, current active stage and
 envelope, and the exact global budget, staged capacity, and active-stage usage
 ledger hashes. A PREPARED/COMMITTED journal rolls all three projections
 forward exactly once. The grant only raises future capacity: it cannot name,
 refund, validate, or rewrite a launched request, cannot move CP-01/CP-02/CP-04
-slots, and cannot violate `remaining_calls >= mandatory_future_calls`.
+slots, and cannot violate `remaining_calls >= mandatory_future_calls` for a
+legacy capacity-v1 plan. Under capacity v2, the same frontier top-up changes no
+per-stage or global Worker allowance, `STAGE-REVIEW` capacity, or CP slot.
 
 ## Worker input and recovery boundary
 
@@ -374,7 +450,7 @@ The registry and dependent transitions are fixed:
 | CP-04 | `acceptance_dispute` | `accept` | `resolve_acceptance_dispute` |
 | CP-04 | `prewriting_final_evidence` | `accept` | `start_writing` |
 
-CP-01 is not a self-review. New v0.16 plans bind an immutable human-owned
+CP-01 is not a self-review. New staged plans bind an immutable human-owned
 optimization contract, exactly one executable first-stage envelope, its
 deterministic preflight, and named checkpoint capacity. These artifacts are
 independently reviewed by the strongest Codex profile allowed by the frozen
@@ -415,9 +491,43 @@ correlation. Codex remains read-only and advisory: durable completion consumes
 the controller-issued dependent-transition receipt, never the response itself.
 The commit journal recovers an applied work-unit result without duplication.
 
-For a v0.16 staged plan:
+For a new v0.17 staged plan, use capacity v2 and initialize only the first
+executable stage:
+
+Before this command, write caller-authored contract, envelope, evaluation,
+capacity, and raw-preflight inputs under `PLAN/control/staged-inputs/`; place
+their immutable review materials under `PLAN/control/review-materials/STAGE/`.
+Do not create `PLAN/state/staged_research/v1/` yourself, even for an empty
+directory or a proposed contract snapshot. `init-staged-research` is the only
+publisher of that canonical namespace. If any manual write has already landed
+there, abandon that initialization attempt and restart from a clean plan
+identity rather than treating the bytes as controller authority.
+Before any signature, run `prepare-staged-research`. It reuses the initializer's
+closed validators, verifies immutable review-material hashes and modes, checks
+profile/capacity/envelope compatibility, and writes the canonical
+`control/human_authorization_required.json`. Its returned hashes are exact file
+byte hashes, not reserialized JSON hashes. If preparation fails, no pending or
+applied authorization exists; repair the unsigned draft or create a fresh plan.
+
+Create and apply the `authorize_contract` action using the exact sequence in
+Authenticated Human Actions above and the unchanged preparation output. The
+signed record binds the proposal hash; initialization rechecks the proposal's
+contract, envelope, evaluation profile, capacity, and incumbent closure before
+publishing state. Never manufacture that receipt in a helper script.
 
 ```bash
+python3 references/scripts/harness-runtime.py prepare-staged-research \
+  --plan-dir PLAN --plan-id PLAN_ID \
+  --contract optimization-contract.json \
+  --stage-envelope first-stage.json \
+  --evaluation-profile evaluation-profile.json \
+  --checkpoint-capacity checkpoint-capacity.json \
+  --incumbent-sha256 INCUMBENT_SHA256 \
+  --record-id STABLE_OWNER_RECORD_ID \
+  --prepared-operation-id STABLE_PREPARED_ID \
+  --continuation-stage-id PREAUTHORIZED_NEXT_STAGE
+# create-human-action must reuse the returned record ID, hashes, proposal path,
+# prepared operation ID, and continuation stage; then apply-human-action.
 python3 references/scripts/harness-runtime.py init-staged-research \
   --plan-dir PLAN --plan-id PLAN_ID \
   --contract optimization-contract.json \
@@ -451,7 +561,10 @@ python3 references/scripts/harness-runtime.py assert-transition \
 ```
 
 The owner receipt must be a canonical applied `authorize_contract` action
-binding the contract version/hash and first-stage ID/envelope hash.
+binding the contract version/hash and first-stage ID/envelope hash. It may also
+bind exactly one future stage ID using the continuation flags shown above; that
+does not make the future envelope executable or bypass its later evidence,
+compile, preflight, and authorization checks.
 Every newly initialized or compiled stage must also carry a closed
 `review_material_manifest`. Each entry is
 `{id,path,sha256,purpose}`; `path` is canonical and relative to the plan,
@@ -479,12 +592,122 @@ context, and every current artifact hash after restart. The generic
 the initial CP-01 approval. Its evidence profile is selected by versioned
 staged state, so legacy v0.15 receipts remain readable.
 
-After a candidate is frozen, the controller creates one logical Gate query.
+For an observation-only bootstrap stage (`stage_kind=research` and
+`evaluation_calls=0`), the controller does not create a logical Gate query.
+Its evaluation profile must declare `applicable=false` and
+`reason=observation_only_no_logical_gate`; Gate metric, operator, threshold,
+margin, and query-limit fields are forbidden in that inactive shape.
+The promoted MiniMax source inventory is frozen as the stage candidate, then
+the exact Runtime-shipped validator terminates it deterministically:
+
+```bash
+python3 references/scripts/harness-runtime.py freeze-stage-candidate \
+  --plan-dir PLAN --candidate SOURCE_INVENTORY_JSON \
+  --promotion-receipt PROMOTION_RECEIPT
+python3 references/scripts/harness-runtime.py complete-observation-stage \
+  --plan-dir PLAN
+```
+
+The second command requires the canonical observation-only preflight, the
+immutable byte-identical validator bound by the development contract, and a
+committed MiniMax promotion. It writes a typed `observation_validation`
+decision and moves the candidate to `RECORDED`; this is not whole-stage
+acceptance. It deliberately creates no
+`gate-query.json`, Gate receipt, active reusable evidence, or release claim.
+The terminal MiniMax report and fresh strongest-policy `STAGE-REVIEW` remain
+mandatory before any bounded continuation.
+
+The raw observation preflight must bind
+`{path, sha256, symbol, line_start}` for every source. Runtime verifies that
+the selected symbol occurs on that exact one-based line and persists those
+fields in `verified_source_manifest`; the Worker is not allowed to invent the
+selection rule. The frozen validator is directly executable for development
+validation:
+
+```bash
+python3 references/scripts/source_inventory_validator.py \
+  --candidate SOURCE_INVENTORY_JSON \
+  --preflight CANONICAL_PREFLIGHT_JSON \
+  --receipt DEVELOPMENT_RECEIPT_JSON
+```
+
+The envelope, contract, and immutable review-material entry jointly bind the
+plan-local validator digest to the Runtime-shipped implementation digest. The
+terminal Controller reruns that same implementation under Controller
+authority; this is a replay under different authority, not an orthogonal
+evaluator, and a Worker-authored development receipt cannot replace the
+Controller-owned observation-validation receipt.
+
+The frozen source validator's twelve-case `--conformance` run includes a real
+CLI invocation of the `validate_artifact` and hash-bound receipt path;
+function-only conformance evidence is insufficient for CP-01 readiness.
+Canonical observation preflight also records the plan-local and Runtime paths
+and hashes for `stage-report-validator/2`, an explicit byte-identity result,
+the frozen conformance receipt path/hash, and the complete ten-case result.
+`staged_require_preflight` revalidates that attestation after CP-01; a frozen
+conformance file without Runtime identity is not sufficient review evidence.
+
+The terminal report must be a promoted MiniMax artifact. Runtime first applies
+the CP-01-frozen `stage_report_validator.py`, whose implementation must be
+byte-identical to Runtime and whose frozen ten-case conformance receipt must
+match Runtime execution. It covers the closed shape, stage/candidate identity,
+Worker identity, evidence-list types, bounded scientific summary/findings,
+claim-to-candidate hashes, exact canonical terminal-validation receipt
+bindings, strict JSON-integer version typing, and rejection of Worker-authored
+Controller provenance. Its source form must omit
+`role_visible_state_sha256` because that record exists only after the Worker
+call completes; supplying it is a closed-schema failure, even if the value
+would later happen to match. The Controller then runs `record-role-visible-state` and
+`record-stage-report`; the latter injects exactly that provenance hash into the
+canonical report while preserving all MiniMax-authored scientific fields.
+Controller synthesis or rewriting of summary, evidence, uncertainty, or next
+questions remains forbidden.
+
+For an evaluative stage, after a candidate is frozen the controller creates
+one logical Gate query.
 Transport retries append attempt IDs under the same idempotency binding and
 consume the independent retry ledger. `accept` promotes, `reject` retains the
 incumbent, and `escalate` blocks. Every terminal decision appends evidence. A
 terminal MiniMax-M3 report and fresh strongest-policy non-M3 review must exist
 before `compile-next-stage` authorizes at most one next envelope.
+
+Capacity v2 keeps five concerns non-fungible:
+
+- each envelope's `stage_budget_and_stop.worker_dispatches` is the per-stage
+  Worker quota;
+- `worker_dispatch_capacity` is the plan-global Worker allowance;
+- `stage_review_capacity` is reserved only for terminal `STAGE-REVIEW` calls;
+- CP-01, CP-02, and CP-04 each have their own named slot, with CP-03 optional;
+- Gate transport retry capacity remains independent.
+
+A Worker dispatch must pass both the active stage quota and the global Worker
+allowance. Spending or topping up one class cannot mint, refund, or transfer
+another class. Legacy capacity v1 keeps existing-plan lifecycle and idempotent
+replay compatibility; it is not valid as a v0.17 capacity template or as
+automatic-crossing authority.
+
+After Stage 1 has a canonical terminal decision (logical Gate decision for an
+evaluative stage, or typed deterministic validation for an observation-only
+stage), persisted MiniMax report, and fresh strongest-policy non-M3
+`STAGE-REVIEW`, cross the single initially authorized boundary with:
+
+```bash
+python3 references/scripts/harness-runtime.py advance-staged-research \
+  --plan-dir PLAN \
+  --stage-envelope stage-2.json \
+  --preflight-inputs stage-2-preflight.json \
+  --task-contract stage-2-first-worker.json \
+  --authorized-evidence EVIDENCE_ID
+```
+
+The command derives a continuation receipt bound to the initial applied
+authorization, source decision, MiniMax report, fresh strong review, and exact
+next envelope. Its recoverable journal then performs compile → preflight →
+authorize → start exactly one Stage 2 Worker. Replay returns the same run; it
+does not start a second Worker. The bounded outcome stops at Worker start—it
+does not establish Stage 2 completion or scientific success. Without that
+initial explicit pre-authorization, use the existing signed
+`reauthorize_stage` plus `compile-next-stage` path.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
 `status=completed` and evidence citations bound to the frozen manifest.
@@ -518,8 +741,12 @@ There are two intentionally separate persistence paths. A frontier request
 created from a durable context capsule may use
 `commit-durable-frontier-result` after its registered controller transition.
 A terminal `STAGE-REVIEW` is not a durable work-unit commit: it must bind the
-canonical active contract, envelope, and immutable terminal stage report, then
-persist through `record-strong-stage-review`. Creating `STAGE-REVIEW` while a
+canonical active contract, envelope, immutable terminal stage report,
+candidate, Controller decision, and terminal validation receipt, then persist
+through `record-strong-stage-review`. Only a strongest-policy `accept` is
+continuation authority; `revise` and `block` veto compilation and dispatch.
+Pre-v0.17.1 three-role review packets fail closed and need a fresh versioned
+stage plus fresh review/capacity path. Creating `STAGE-REVIEW` while a
 stage is still `CONTRACTED` fails before reservation and directs the operator
 to CP-01 `approve_execution`. No command synthesizes or attaches a context
 capsule after request creation.
@@ -557,6 +784,11 @@ seven-scenario profile, validates fault and multi-session evidence, and issues
 only duration-bounded claim receipts through `start-acceptance-profile`,
 `complete-acceptance-profile`, and `validate-acceptance-claim`. Short bounded
 acceptance never implies 24h, 7×24, or full-cutover evidence.
+
+The v0.17 release claim is only a bounded stage-crossing capability and
+acceptance target: one first-stage terminal lineage through the start of one
+second-stage Worker. It does not claim Stage 2 completion, scientific success,
+24h or 7x24 stability, production readiness, or full cutover.
 
 ## M1 Closed Conformance Entry
 

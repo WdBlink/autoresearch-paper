@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.17.2 — 2026-07-27
+
+- Close the remaining real CP-01 findings from frozen field plan
+  `fwvg-conf-2026-021`: JSON boolean values can no longer masquerade as
+  integer schema versions in source inventories or terminal stage reports.
+- Upgrade the source-inventory conformance suite to twelve cases and the
+  terminal-report suite to ten cases, including explicit boolean-version
+  negatives. The source suite now exposes `--conformance` and exercises its
+  real CLI → `validate_artifact` → hash-bound receipt path, closing the final
+  Plan022 CP-01 audit warning.
+- Make Controller provenance structurally unforgeable at the Worker boundary:
+  a MiniMax-authored report containing `role_visible_state_sha256` is rejected,
+  and only `record-stage-report` may inject the exact post-call binding into the
+  canonical report.
+- Preserve Plan021 and Plan022 as immutable negative field evidence. A fresh plan and fresh
+  real CP-01 review are required; this patch does not reinterpret or unlock the
+  blocked plan.
+- Add `prepare-staged-research` after Plan024 reproduced a pre-authorization
+  hash/receipt loop. The command runs the initializer's complete deterministic
+  validation before any signature, emits exact file-byte hashes and the
+  canonical proposal, and forces create/apply/init to bind the same record ID,
+  profile, capacity, incumbent, and proposal. Plan024 remains negative evidence.
+- Close the sole real Plan025 CP-01 finding by recording the frozen
+  `stage-report-validator/2` path, Runtime path, both exact hashes,
+  byte-identity result, conformance receipt identity, and ten-case result in
+  canonical preflight. Runtime revalidates that attestation after CP-01.
+
+## v0.17.1 — 2026-07-27
+
+- Add an explicitly inactive evaluation-profile shape for observation-only
+  stages; Gate metric, threshold, operator, margin, and query-limit fields are
+  forbidden when `applicable=false`.
+- Add the shipped `stage_report_validator.py` and its initial eight-case conformance
+  suite. Its implementation and conformance receipt are mandatory immutable
+  CP-01 review materials. `record-stage-report` validates closed report shape,
+  canonical stage/candidate identity, MiniMax Worker identity, bounded
+  scientific summary/findings, exact claim-to-candidate bindings, and exact
+  canonical terminal-validation receipts before adding Controller provenance.
+- Expand STAGE-REVIEW to the canonical contract, envelope, report, candidate,
+  decision, and terminal validation receipt. Only an exact strongest-policy
+  `accept` permits bounded continuation; `revise` and `block` are hard vetoes.
+- Bind active/inactive evaluation profiles bidirectionally for new and revised
+  stages. Legacy active-profile observation plans remain readable, but new
+  inactive profiles can never authorize an evaluative stage.
+- Pre-v0.17.1 in-flight three-role STAGE-REVIEW packets and envelopes without
+  the frozen report validator fail closed; create a fresh versioned stage and
+  fresh review/capacity path rather than reusing them.
+- Clarify that `RECORDED` is a candidate-recording state, not whole-stage
+  acceptance. Terminal report, strongest-policy `STAGE-REVIEW`, and bounded
+  continuation authorization remain mandatory before Stage 2 starts.
+
+## v0.17.0 — 2026-07-27
+
+- Make `state/staged_research/v1/` the sole runtime authority for staged
+  research. `state/progress.json` and `state/research-dossier.md` are now
+  explicitly rebuildable, non-authoritative projections; operators can restore
+  both with `rebuild-staged-projections` without changing canonical state.
+- Introduce capacity v2 with independent accounting for each stage's Worker
+  dispatch quota, plan-global Worker dispatch capacity, non-transferable
+  `STAGE-REVIEW` capacity, and non-fungible CP-01/CP-02/CP-04 slots. CP-03 is an
+  optional named slot. Signed frontier top-ups do not mint or transfer Worker,
+  stage-review, or checkpoint capacity.
+- Allow the initial signed `authorize_contract` receipt to pre-authorize
+  exactly one named next stage. After the source stage has a terminal decision,
+  MiniMax report, and fresh strongest-policy review, `advance-staged-research`
+  derives a receipt bound to that lineage, then compile → preflight → authorize
+  → start exactly one next-stage Worker through an idempotent journal. Silence
+  is never approval; the signed contract records `max_automatic_crossings=1`.
+- Retain existing-plan lifecycle and idempotent replay compatibility for
+  legacy capacity v1, but reject `advance-staged-research` unless the plan uses
+  separated capacity v2. New v0.17 plan generation uses capacity v2.
+- The release claim is only the bounded capability and acceptance target of
+  crossing one first-stage terminal lineage into the start of one second-stage
+  Worker. It does not claim second-stage completion, scientific success, 24h
+  or 7x24 stability, production readiness, or full cutover.
+- Keep the isolated Codex reviewer compatible with the standalone custom-agent
+  schema: feature flags disable multi-agent execution, while the obsolete
+  `agents.enabled=false` TOML override is no longer emitted. The latter is
+  parsed as an invalid boolean role by current Codex releases.
+- Treat Claude Code `auto` permission classification as an outer Harness
+  boundary, not research capacity. Unattended operation requires an explicitly
+  pre-authorized controller session; classifier denial occurs before frontier
+  launch and must not consume a CP, review, retry, or Worker slot.
+- Allow staged CP-01 envelopes to bind the concrete acceptance profile, source
+  manifest, citation universe, evaluation profile, and evaluator loader
+  parameters as independently hashed review materials. These remain optional
+  at the generic schema layer, but a research contract may make them mandatory
+  through its own execution and acceptance policy.
+
 ## v0.16.2 — 2026-07-26
 
 - Expand every content-addressed first-stage review material into the bounded

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.16.2"
+  version: "0.17.2"
 ---
 
 # Autoresearch Paper
@@ -32,6 +32,15 @@ file-backed state.
   first-stage envelope, its deterministic preflight, and named checkpoint
   capacity to an independent strongest-policy Codex review. The review is
   advisory; only the deterministic controller may authorize the stage.
+- Never use `state/progress.json` or `state/research-dossier.md` to authorize a
+  staged transition. `state/staged_research/v1/` is the sole runtime truth;
+  those two files are rebuildable, non-authoritative projections.
+- Never infer continuation authority from silence. The initial signed
+  `authorize_contract` may pre-authorize exactly one explicitly named next
+  stage, with `max_automatic_crossings=1` and `silence_is_approval=false`.
+- Never transfer capacity between a stage's Worker quota, the global Worker
+  capacity, `STAGE-REVIEW`, or CP-01/CP-02/CP-04 (and optional CP-03). A signed
+  frontier top-up does not increase any Worker allowance.
 - Never create a new staged envelope without the exact plan-relative,
   content-addressed `review_material_manifest` for objective, intervention,
   entry/exit, budget, report schema, and stop policy. Legacy v0.16 envelopes
@@ -84,6 +93,18 @@ task_graph = generate_plan_yaml(
 )
 show human-readable plan preview + watchdog config -> require explicit "go"
 freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
+prepare caller-authored bootstrap inputs only under control/staged-inputs/ and
+  review materials only under control/review-materials/; never pre-create or
+  write state/staged_research/v1/ because init-staged-research is its sole publisher
+run prepare-staged-research before any signature; it validates the complete
+  contract/envelope/profile/capacity/material closure, writes the canonical
+  authorization proposal, and returns exact file-byte hashes
+create and apply authorize_contract only with harness-runtime.py
+  create-human-action then apply-human-action using the unchanged proposal,
+  record ID, prepared operation ID, and hashes returned above; never read the human-action key
+  or hand-build/HMAC-sign an authorization record
+choose one stable RECORD_ID before hashing the contract, store the same value in
+  contract.authorization_receipt_id, and pass it as create-human-action --record-id
 freeze the human-owned contract and exactly one first stage with init-staged-research
 run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
 run the strongest reviewer allowed by the frozen policy; retain controller authority
@@ -96,13 +117,22 @@ initialize the canonical durable task graph and register its external trigger
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for capsule-bound Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
+for an observation-only first stage (research + evaluation_calls=0):
+    preflight binds path + sha256 + symbol + line_start for every source;
+    the frozen validator exposes an executable candidate/preflight adapter
+    freeze-stage-candidate -> complete-observation-stage; the Controller runs
+    the exact frozen source-inventory validator and records a typed non-Gate
+    decision without creating Gate-accepted or reusable evidence
 after a recorded stage decision: persist MiniMax report; create terminal STAGE-REVIEW -> send -> validate -> apply -> record-strong-stage-review
-compile at most one next stage from the incumbent and authorized evidence
+if the initial signed contract explicitly pre-authorized the named next stage:
+    advance-staged-research -> derive bound receipt -> compile -> preflight -> authorize -> start exactly one next-stage Worker
+else: require a fresh signed reauthorize_stage receipt before compile-next-stage
+rebuild progress.json and research-dossier.md from canonical staged state with rebuild-staged-projections when needed
 at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
 use legacy adapters only when the user explicitly selects --legacy-mavis
 while plan is running:
-    observe controller state + last_seen.jsonl + state/progress.json + l0/watchdog health
+    observe canonical staged state + last_seen.jsonl + generated projections + l0/watchdog health
     honor status, pause, resume, stop, cleanup, rescue-status commands
     surface watchdog/L0 findings without destructive action
 on finish or user stop:
@@ -116,6 +146,14 @@ Read `references/claude-code-runtime.md` before dispatch. The current target
 adapter provides:
 
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
+- sole-authority `state/staged_research/v1/` state plus deterministic
+  `rebuild-staged-projections` output for legacy progress and the human dossier;
+- capacity v2 separation of per-stage Worker dispatches, global Worker
+  dispatches, `STAGE-REVIEW`, and named CP slots, with no Worker capacity from
+  frontier top-ups;
+- exactly one initial-contract-pre-authorized crossing, gated on a terminal
+  decision, MiniMax report, and fresh strongest-policy review, ending at one
+  next-stage Worker start;
 - a mandatory independent CP-01 top-level-plan audit pinned to
   `gpt-5.6-sol` at `ultra`, with reviewer identity and policy hash carried into
   the durable `approve_execution` receipt;
@@ -198,7 +236,16 @@ lives in `references/tier-decision-tree.md`.
 
 Generated plans must initialize:
 
-- `state/progress.json`
+- canonical `state/staged_research/v1/` governance for new v0.17 plans, using
+  capacity v2, prepared with `prepare-staged-research` and published exclusively
+  through `init-staged-research`; preparatory contract,
+  envelope, profile, capacity, preflight, and review-material inputs belong
+  under `control/staged-inputs/` or `control/review-materials/`, never under the
+  canonical namespace. Observation preflight must attest both frozen
+  validators: source inventory and terminal stage report, each with plan-local
+  path/hash, Runtime path/hash, byte identity, and exact conformance result
+- generated `state/progress.json` and `state/research-dossier.md` projections;
+  neither is transition authority
 - `state/directions_tried.json`
 - `state/candidate_registry.jsonl`
 - `state/scoreboard.tsv`
@@ -206,7 +253,6 @@ Generated plans must initialize:
 - a closed `metric_contract` input for CP-02; do not pre-create
   `state/evaluator_contract.json` (the controller freezes it after CP-02)
 - `state/failure_state.json`
-- versioned `state/staged_research/v1/` governance for new v0.16 plans
 - `control/`
 - `resource_manifest.json`
 - `last_seen.jsonl`
@@ -463,8 +509,10 @@ On completion, report:
 - `references/figure-requirements.schema.json` — expected figure identities;
   legacy v0.15 plans freeze them at CP-01, while v0.16 freezes them at the
   figure stage
-- `references/staged-research.schema.json` — aggregate v1 contract, stage,
-  capacity, Gate, report, review, and evidence definitions
+- `references/staged-research.schema.json` — aggregate staged-governance v1
+  contract, stage, Gate, report, review, and evidence definitions, including
+  capacity v2; legacy capacity v1 retains existing-plan lifecycle/replay
+  compatibility but cannot use automatic stage crossing
 - `references/role-visible-state.schema.json` — exact per-role rendered state
   and ordered context transformations, distinct from audit history
 - `references/frontier-response.schema.json` — Codex advisory response schema
@@ -483,6 +531,60 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.17.2 (2026-07-27)** — Real Plan021 CP-01 findings are closed without
+  mutating the blocked field record. Source inventories and stage reports now
+  require a true JSON integer schema version; their frozen conformance suites
+  include boolean-version adversarial cases. Worker-authored terminal reports
+  are also forbidden from supplying Controller-owned
+  `role_visible_state_sha256`; only Runtime may add the exact post-call binding.
+  Source validator conformance also runs the actual CLI artifact/receipt path.
+  Canonical preflight now records and revalidates the equivalent Runtime
+  identity and ten-case result for `stage-report-validator/2`, closing the sole
+  Plan025 CP-01 critical finding. Source-inventory Worker contracts now retain
+  and revalidate the exact `symbol` and `line_start` citation bindings instead
+  of passing the generic path/hash/purpose input shape to the content
+  validator. This prevents a valid MiniMax inventory from being rejected by a
+  Controller-side manifest-shape mismatch. Plan021, Plan022, Plan025, and
+  Plan026 remain immutable negative evidence and a fresh plan/review is
+  mandatory.
+- **v0.17.1 (2026-07-27)** — Observation-only stages now use an
+  explicitly inactive evaluation profile instead of an active-looking Gate
+  placeholder. MiniMax terminal reports are validated by a CP-01-frozen,
+  conformance-tested closed-schema validator that binds substantive findings
+  and exact Controller terminal receipts before the Controller injects the
+  post-call role-visible hash. STAGE-REVIEW sees the canonical candidate,
+  decision, and terminal validation receipt; only `accept` permits automatic
+  continuation. `RECORDED` means candidate validation only. Pre-v0.17.1
+  three-role review packets fail closed and require a fresh stage/review path.
+- **v0.17.0 (2026-07-27)** — Canonical staged state is the sole runtime
+  authority; progress and dossier files are rebuildable non-authoritative
+  projections. Capacity v2 isolates per-stage and global Worker limits,
+  terminal `STAGE-REVIEW`, and named CP capacity. An initial signed contract
+  may explicitly pre-authorize one next stage; only a terminal decision,
+  MiniMax report, and fresh strongest-policy review allow the controller to
+  derive the bound receipt and idempotently start one next-stage Worker.
+  Current Codex custom-agent schemas are supported by disabling multi-agent
+  features without emitting the obsolete `agents.enabled=false` override.
+  Observation-only bootstrap stages now terminate through deterministic
+  `complete-observation-stage`: the Controller validates the frozen promoted
+  source inventory, records an explicit non-Gate decision, and produces no
+  reusable Gate evidence before the mandatory terminal strong review.
+  Their preflight source manifest binds each selected symbol and one-based
+  source line in addition to path and digest; Runtime rejects an ambiguous or
+  drifting selection before model dispatch. The shipped validator also offers
+  a CLI adapter that emits a hash-bound development receipt.
+  A MiniMax terminal report contains the scientific fields but cannot know its
+  post-call role-visible hash. After the completed call is recorded, the
+  Controller may add only that provenance field to the canonical report; it
+  must not author or rewrite the report's scientific content.
+  An unattended top-level Claude controller must run under explicit operator
+  pre-authorization; `auto` classifier denial is a pre-launch Harness event,
+  not permission to consume or reassign research capacity.
+  Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
+  cannot use automatic stage crossing. This release claims a
+  bounded stage-crossing capability and acceptance target only—not second-stage
+  completion, scientific success, 24h or 7x24 stability, production readiness,
+  or full cutover.
 - **v0.16.2 (2026-07-26)** — Field-loop recovery: staged CP-01 now expands
   readable plan/evaluator/risk/figure materials into the Codex audit boundary,
   plan-wide ChatGPT budgets must fund every declared call, frontier review is

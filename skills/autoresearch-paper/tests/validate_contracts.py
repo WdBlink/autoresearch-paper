@@ -82,6 +82,7 @@ def main() -> int:
     require(
         contains(
             "references/claude-code-runtime.md", "init-policy", "create-human-action",
+            "prepare-staged-research",
             "freeze-evaluator", "record-failure", "dispatch-worker", "inspect-worker",
             "schedule-patrol", "remove-resource", "create-frontier-request",
             "assert-transition", "reconcile-frontier-request", "promote-worker-artifacts",
@@ -157,7 +158,11 @@ def main() -> int:
         errors,
     )
     require(
-        contains("references/scripts/plan-rescue-daemon.py", "call_l0_guard", "cleanup-plan-resources.sh", "control", "status != \"paused\""),
+        contains(
+            "references/scripts/plan-rescue-daemon.py", "call_l0_guard",
+            "cleanup-plan-resources.sh", "control", "read_state_with_source",
+            "is_paused_state",
+        ),
         "rescue daemon must delegate non-paused plans to L0 and cleanup stop requests",
         errors,
     )
@@ -282,13 +287,13 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.16.2"' in read("SKILL.md"), "SKILL.md version must be 0.16.2", errors)
+    require('version: "0.17.2"' in read("SKILL.md"), "SKILL.md version must be 0.17.2", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.16.2" in repository_readme_text,
-            "README version must be 0.16.2",
+            "Current version:** v0.17.2" in repository_readme_text,
+            "README version must be 0.17.2",
             errors,
         )
         require(
@@ -297,6 +302,81 @@ def main() -> int:
             "README must describe v0.16 figure freeze at the authorized figure-production stage",
             errors,
         )
+        require(
+            all(token in repository_readme_text for token in (
+                "state/staged_research/v1/", "state/progress.json",
+                "state/research-dossier.md", "rebuildable",
+                "advance-staged-research", "Silence is never approval",
+                "bounded stage-crossing capability and acceptance target",
+            )),
+            "README must state the v0.17 authority, continuation, and bounded-claim contract",
+            errors,
+        )
+    repository_changelog = ROOT.parents[1] / "CHANGELOG.md"
+    if repository_changelog.is_file():
+        changelog_text = repository_changelog.read_text()
+        require(
+            all(token in changelog_text for token in (
+                "v0.17.2 — 2026-07-27", "stage_report_validator.py",
+                "v0.17.0 — 2026-07-27", "rebuild-staged-projections",
+                "capacity v2", "max_automatic_crossings=1",
+                "does not claim second-stage completion",
+            )),
+            "CHANGELOG must record the bounded v0.17 release contract",
+            errors,
+        )
+    for release_doc in (
+        "SKILL.md", "references/claude-code-runtime.md",
+        "references/research-state-contract.md",
+        "references/task-prompt-snippets.md",
+    ):
+        require(
+            contains(
+                release_doc, "state/staged_research/v1/", "state/progress.json",
+                "state/research-dossier.md", "non-authoritative",
+                "rebuild-staged-projections",
+            ),
+            f"{release_doc} must identify canonical staged state and rebuildable projections",
+            errors,
+        )
+        require(
+            contains(
+                release_doc, "capacity v2", "STAGE-REVIEW", "CP-01", "CP-02",
+                "CP-04", "CP-03", "frontier top-up", "Worker",
+            ),
+            f"{release_doc} must document separated v0.17 capacity classes",
+            errors,
+        )
+        require(
+            contains(
+                release_doc, "advance-staged-research", "terminal decision",
+                "MiniMax report", "fresh strongest-policy", "exactly one",
+                "silence", "approval", "Legacy capacity v1",
+            ),
+            f"{release_doc} must document the bounded authorized crossing",
+            errors,
+        )
+        require(
+            contains(
+                release_doc, "control/staged-inputs/",
+                "control/review-materials/", "init-staged-research",
+                "create-human-action", "apply-human-action",
+                "authorization_receipt_id", "--record-id",
+            ),
+            f"{release_doc} must keep bootstrap inputs outside canonical staged state",
+            errors,
+        )
+    require(
+        contains(
+            "assets/task-prompt-snippets.md", "control/staged-inputs/",
+            "control/review-materials/", "init-staged-research",
+            "state/staged_research/v1/", "create-human-action",
+            "apply-human-action", "worker_dispatches",
+            "authorization_receipt_id", "--record-id",
+        ),
+        "worker prompt assets must forbid direct canonical bootstrap writes",
+        errors,
+    )
     require(
         all(token in read("references/scripts/harness-runtime.py") for token in (
             "create-human-action", "apply-human-action", "run-evaluator", "record-evaluator-verdict",
@@ -344,8 +424,11 @@ def main() -> int:
             "HARNESS_FAULT_AFTER_COMBINED_STAGED_CAPACITY",
             "compile-journals", "staged_locked_command",
             "STAGED_CP01_EVIDENCE_PROFILE", "mandatory_future_calls",
+            "rebuild-staged-projections", "advance-staged-research",
+            "worker_dispatch_capacity", "stage_review_capacity",
+            "bounded_continuation_authority", "silence_is_approval",
         )),
-        "harness runtime is missing v0.16 staged governance commands",
+        "harness runtime is missing v0.17 staged governance commands",
         errors,
     )
     staged_tests = read("tests/test_staged_research_governance.py")
@@ -363,10 +446,14 @@ def main() -> int:
         "test_stage_stop_requires_canonical_human_reauthorization",
         "test_concurrent_staged_mutators_have_unique_audit_revisions",
         "test_concurrent_and_crashed_next_stage_compile_are_exact_once",
+        "test_staged_projection_rebuild_ignores_tampering_and_is_byte_stable",
+        "test_capacity_v2_keeps_worker_review_and_named_slots_isolated",
+        "test_advance_staged_research_fault_retry_starts_one_second_stage_worker",
+        "test_v2_frontier_topup_does_not_mint_worker_or_checkpoint_capacity",
     ):
         require(
             f"def {boundary}" in staged_tests,
-            f"missing v0.16 staged governance regression {boundary}", errors,
+            f"missing v0.17 staged governance regression {boundary}", errors,
         )
     require(
         "first authorized figure-production stage"

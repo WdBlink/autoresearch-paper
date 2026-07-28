@@ -46,7 +46,10 @@
     "active_stage_authorization_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "active_stage_authorization_action": {
       "type": "string",
-      "enum": ["authorize_contract", "reauthorize_stage", "authorize_rebaseline"]
+      "enum": [
+        "authorize_contract", "reauthorize_stage", "authorize_rebaseline",
+        "derived_continuation"
+      ]
     },
     "active_stage_id": {
       "type": "string",
@@ -183,6 +186,7 @@
         "review_tokens": {"type": "integer", "minimum": 0},
         "retry_attempts": {"type": "integer", "minimum": 0},
         "evaluation_calls": {"type": "integer", "minimum": 0},
+        "worker_dispatches": {"type": "integer", "minimum": 1},
         "stop_policy_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
@@ -223,49 +227,89 @@
       }
     },
     "checkpointCapacity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version", "checkpoint_capacity", "retry_budget",
-        "remaining_calls", "mandatory_future_calls"
-      ],
-      "properties": {
-        "schema_version": {"const": 1},
-        "checkpoint_capacity": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["CP-01", "CP-02", "CP-04"],
-          "properties": {
-            "CP-01": {"$ref": "#/$defs/checkpointSlot"},
-            "CP-02": {"$ref": "#/$defs/checkpointSlot"},
-            "CP-04": {"$ref": "#/$defs/checkpointSlot"}
-          }
-        },
-        "retry_budget": {
+      "oneOf": [
+        {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "remaining_attempts", "per_attempt_call_limit",
-            "per_attempt_token_limit"
+            "schema_version", "checkpoint_capacity", "retry_budget",
+            "remaining_calls", "mandatory_future_calls"
           ],
           "properties": {
-            "remaining_attempts": {"type": "integer", "minimum": 0},
-            "per_attempt_call_limit": {"type": "integer", "minimum": 0},
-            "per_attempt_token_limit": {"type": "integer", "minimum": 0}
+            "schema_version": {"const": 1},
+            "checkpoint_capacity": {"$ref": "#/$defs/namedCheckpointCapacity"},
+            "retry_budget": {"$ref": "#/$defs/retryBudget"},
+            "remaining_calls": {"type": "integer", "minimum": 0},
+            "mandatory_future_calls": {"type": "integer", "minimum": 0},
+            "capacity_authorization_ids": {"$ref": "#/$defs/capacityAuthorizationIds"},
+            "authorized_additions": {
+              "type": "object", "additionalProperties": false,
+              "required": ["calls"],
+              "properties": {"calls": {"type": "integer", "minimum": 0}}
+            }
           }
         },
-        "remaining_calls": {"type": "integer", "minimum": 0},
-        "mandatory_future_calls": {"type": "integer", "minimum": 0},
-        "capacity_authorization_ids": {
-          "type": "array", "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^har_[A-Za-z0-9_-]+$"}
-        },
-        "authorized_additions": {
-          "type": "object", "additionalProperties": false,
-          "required": ["calls"],
-          "properties": {"calls": {"type": "integer", "minimum": 0}}
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version", "worker_dispatch_capacity",
+            "stage_review_capacity", "checkpoint_capacity", "retry_budget"
+          ],
+          "properties": {
+            "schema_version": {"const": 2},
+            "worker_dispatch_capacity": {
+              "type": "object", "additionalProperties": false,
+              "required": ["authorized_calls", "spent_calls", "remaining_calls"],
+              "properties": {
+                "authorized_calls": {"type": "integer", "minimum": 0},
+                "spent_calls": {"type": "integer", "minimum": 0},
+                "remaining_calls": {"type": "integer", "minimum": 0}
+              }
+            },
+            "stage_review_capacity": {
+              "type": "object", "additionalProperties": false,
+              "required": [
+                "authorized_calls", "spent_calls", "remaining_calls", "transferable"
+              ],
+              "properties": {
+                "authorized_calls": {"type": "integer", "minimum": 0},
+                "spent_calls": {"type": "integer", "minimum": 0},
+                "remaining_calls": {"type": "integer", "minimum": 0},
+                "transferable": {"const": false}
+              }
+            },
+            "checkpoint_capacity": {"$ref": "#/$defs/namedCheckpointCapacity"},
+            "retry_budget": {"$ref": "#/$defs/retryBudget"},
+            "capacity_authorization_ids": {"$ref": "#/$defs/capacityAuthorizationIds"}
+          }
         }
+      ]
+    },
+    "namedCheckpointCapacity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["CP-01", "CP-02", "CP-04"],
+      "properties": {
+        "CP-01": {"$ref": "#/$defs/checkpointSlot"},
+        "CP-02": {"$ref": "#/$defs/checkpointSlot"},
+        "CP-03": {"$ref": "#/$defs/checkpointSlot"},
+        "CP-04": {"$ref": "#/$defs/checkpointSlot"}
       }
+    },
+    "retryBudget": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "remaining_attempts", "per_attempt_call_limit", "per_attempt_token_limit"
+      ],
+      "properties": {
+        "remaining_attempts": {"type": "integer", "minimum": 0},
+        "per_attempt_call_limit": {"type": "integer", "minimum": 0},
+        "per_attempt_token_limit": {"type": "integer", "minimum": 0}
+      }
+    },
+    "capacityAuthorizationIds": {
+      "type": "array", "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^har_[A-Za-z0-9_-]+$"}
     },
     "checkpointSlot": {
       "type": "object",

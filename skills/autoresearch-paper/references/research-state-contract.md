@@ -9,6 +9,84 @@ Research and runtime health are separate state machines. Heartbeat or worker
 failure cannot become scientific evidence, request a structural pivot, or
 enable CP-03.
 
+## Canonical staged authority
+
+For staged research, `state/staged_research/v1/` is the sole runtime truth.
+It is controller-owned from first publication: caller-authored bootstrap files
+must remain under `control/staged-inputs/` or `control/review-materials/`, and
+must never be written directly into the canonical namespace;
+`init-staged-research` is its only initial publisher.
+Authorization has the same controller boundary: Agents may pass a protected
+key pathname to `create-human-action` and `apply-human-action`, but must never
+read the key, compute an HMAC, or construct an authorization receipt. Only the
+applied receipt returned by the controller may initialize staged state.
+The record identity is selected before contract hashing: the same stable value
+must appear in `optimization_contract.authorization_receipt_id` and in
+`create-human-action --record-id`. A placeholder or post-signature contract
+edit is invalid.
+The controller derives `state/progress.json` and
+`state/research-dossier.md` from that namespace. Both are rebuildable,
+non-authoritative projections: editing, deleting, or forging either one cannot
+authorize a transition. Run `rebuild-staged-projections --plan-dir PLAN` to
+regenerate them after canonical validation.
+
+Legacy fallback is permitted only when the canonical staged namespace is
+absent. If it exists but its state is unreadable, malformed, or unknown,
+monitoring fails closed as `staged_invalid`; it must not consult or mutate the
+legacy projection.
+
+New v0.17 plans use capacity v2. The active envelope's
+`stage_budget_and_stop.worker_dispatches` limits Workers in that stage, while
+the capacity ledger's `worker_dispatch_capacity` limits Workers across the
+plan. `stage_review_capacity` is separate and non-transferable. CP-01, CP-02,
+and CP-04 have distinct non-fungible slots; CP-03 may have its own optional
+slot. A dispatch must have capacity in its own class, and Worker dispatch must
+also satisfy both the per-stage and global Worker limits. A signed frontier top-up
+(`authorize_frontier_capacity`) does not increase, refund, or transfer
+Worker, `STAGE-REVIEW`, or checkpoint capacity. Legacy capacity v1 keeps
+existing-plan lifecycle and idempotent replay compatibility, but it cannot
+authorize `advance-staged-research`.
+
+The initial signed and applied `authorize_contract` may pre-authorize exactly
+one explicit next-stage ID and one automatic crossing. Absence of that field is
+not permission: `silence_is_approval` is always false. Once the source stage has
+a canonical terminal decision, persisted MiniMax report, and fresh strongest-policy
+non-M3 review, `advance-staged-research` derives a continuation
+receipt bound to those artifacts, the initial authorization, and the exact next
+envelope. It then journals compile → preflight → authorize → the start of
+exactly one next-stage Worker. The command is replay-safe and stops at Worker
+start; it does not assert second-stage completion or scientific success.
+
+An observation-only bootstrap stage has an explicitly inactive evaluation
+profile and records its candidate without a logical Gate. After
+the MiniMax artifact has a committed promotion and is frozen, the Controller's
+`complete-observation-stage` command replays the canonical preflight source
+manifest through the exact immutable Runtime source-inventory validator. A
+passing artifact receives a typed `observation_validation` decision and the
+candidate becomes `RECORDED`. This transition is not whole-stage acceptance
+and creates no Gate query, Gate-accepted
+maturity, reusable evidence receipt, or release authority. A terminal MiniMax
+report and fresh strongest-policy non-M3 review remain mandatory before any
+continuation.
+
+The observation source selection is itself contract data. Every raw source
+entry binds canonical `path`, `sha256`, `symbol`, and one-based `line_start`;
+preflight verifies all four before dispatch and persists them in the canonical
+manifest. The executable frozen validator consumes the canonical preflight and
+candidate, emitting a development receipt. Runtime records independent
+plan-local/installed implementation hashes and byte-identity proof, then
+revalidates the promoted candidate under Controller authority at completion.
+
+A terminal Worker report is first checked by the shipped closed-schema
+`stage_report_validator.py` and its conformance-tested invariants. JSON boolean
+values are not accepted as integer schema versions. The Worker report must not
+embed the hash of a role-visible record that is
+created only after the call completes. The promoted MiniMax report therefore
+owns every scientific field and must omit `role_visible_state_sha256`; after
+recording the completed call's canonical visible state, the Controller adds
+only that provenance binding to the immutable canonical report. Any other
+content difference is a contract failure.
+
 ## Frozen evaluator
 
 `run-evaluator` is a controller-owned execution that persists immutable

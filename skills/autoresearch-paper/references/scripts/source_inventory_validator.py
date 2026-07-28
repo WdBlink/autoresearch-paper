@@ -3,21 +3,34 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/2"
+VALIDATOR_VERSION = "source-inventory-validator/6"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
 class SourceInventoryValidationError(ValueError):
     pass
+
+
+def symbol_occurs_on_line(symbol: str, line: str) -> bool:
+    """Match one complete identifier or dotted identifier on a source line."""
+    if SYMBOL_RE.fullmatch(symbol) is None:
+        return False
+    return re.search(
+        rf"(?<![A-Za-z0-9_.]){re.escape(symbol)}(?![A-Za-z0-9_.])",
+        line,
+    ) is not None
 
 
 def _strict_json_loads(content: str) -> Any:
@@ -48,7 +61,9 @@ def validate_source_inventory(
     records = inventory.get("records")
     questions = inventory.get("uncertainties_and_next_questions")
     if (
-        inventory.get("schema_version") != 1
+        isinstance(inventory.get("schema_version"), bool)
+        or not isinstance(inventory.get("schema_version"), int)
+        or inventory.get("schema_version") != 1
         or not isinstance(records, list)
         or len(records) != len(source_manifest)
         or not isinstance(questions, list)
@@ -64,6 +79,17 @@ def validate_source_inventory(
             "source inventory cardinality or questions are invalid"
         )
     for index, (record, source) in enumerate(zip(records, source_manifest)):
+        if (
+            not isinstance(source, dict)
+            or not {"path", "sha256", "symbol", "line_start"} <= set(source)
+            or set(source) - {
+                "path", "sha256", "symbol", "line_start",
+                "size_bytes", "line_count",
+            }
+        ):
+            raise SourceInventoryValidationError(
+                f"source manifest entry {index} has an invalid closed shape"
+            )
         required = {
             "path", "source_sha256", "symbol", "line_start",
             "observation", "hypothesis",
@@ -75,6 +101,8 @@ def validate_source_inventory(
         if (
             record.get("path") != source["path"]
             or record.get("source_sha256") != source["sha256"]
+            or record.get("symbol") != source["symbol"]
+            or record.get("line_start") != source["line_start"]
         ):
             raise SourceInventoryValidationError(
                 f"source inventory record {index} identity mismatch"
@@ -115,7 +143,7 @@ def validate_source_inventory(
                 f"source inventory record {index} line citation is out of range"
             )
         cited_line = lines[line_start - 1]
-        if symbol not in cited_line:
+        if not symbol_occurs_on_line(symbol, cited_line):
             raise SourceInventoryValidationError(
                 f"source inventory record {index} symbol citation is not exact"
             )
@@ -132,7 +160,12 @@ def run_conformance_suite() -> dict[str, Any]:
         source_path = Path(temp_dir) / "source.py"
         source_path.write_text("class Alpha:\n    value = 3\n")
         source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        manifest = [{"path": str(source_path), "sha256": source_sha}]
+        manifest = [{
+            "path": str(source_path),
+            "sha256": source_sha,
+            "symbol": "Alpha",
+            "line_start": 1,
+        }]
         valid = {
             "schema_version": 1,
             "records": [{
@@ -145,12 +178,64 @@ def run_conformance_suite() -> dict[str, Any]:
             }],
             "uncertainties_and_next_questions": ["Where is Alpha instantiated?"],
         }
-        cases: list[tuple[str, dict[str, Any], bool]] = [
-            ("valid_grounded_record", valid, True),
-            ("wrong_cardinality", {**valid, "records": []}, False),
+        dotted_path = Path(temp_dir) / "dotted.py"
+        dotted_path.write_text("register(pkg.mod.ClassName)\n")
+        dotted_sha = hashlib.sha256(dotted_path.read_bytes()).hexdigest()
+        dotted_manifest = [{
+            "path": str(dotted_path), "sha256": dotted_sha,
+            "symbol": "pkg.mod.ClassName", "line_start": 1,
+        }]
+        dotted = {
+            "schema_version": 1,
+            "records": [{
+                "path": str(dotted_path), "source_sha256": dotted_sha,
+                "symbol": "pkg.mod.ClassName", "line_start": 1,
+                "observation": "register(pkg.mod.ClassName)",
+                "hypothesis": "The dotted identifier may be registered here.",
+            }],
+            "uncertainties_and_next_questions": ["Who consumes the registry?"],
+        }
+        substring_path = Path(temp_dir) / "substring.py"
+        substring_path.write_text("class AlphaBeta:\nclass BetaAlpha:\n")
+        substring_sha = hashlib.sha256(substring_path.read_bytes()).hexdigest()
+        prefix_manifest = [{
+            "path": str(substring_path), "sha256": substring_sha,
+            "symbol": "Alpha", "line_start": 1,
+        }]
+        suffix_manifest = [{
+            "path": str(substring_path), "sha256": substring_sha,
+            "symbol": "Alpha", "line_start": 2,
+        }]
+        prefix = {
+            "schema_version": 1,
+            "records": [{
+                "path": str(substring_path), "source_sha256": substring_sha,
+                "symbol": "Alpha", "line_start": 1,
+                "observation": "class AlphaBeta:",
+                "hypothesis": "A prefix must not bind the Alpha identifier.",
+            }],
+            "uncertainties_and_next_questions": ["Is Alpha an exact symbol?"],
+        }
+        suffix = {
+            **prefix,
+            "records": [{
+                **prefix["records"][0],
+                "line_start": 2, "observation": "class BetaAlpha:",
+            }],
+        }
+        cases: list[
+            tuple[str, dict[str, Any], list[dict[str, Any]], bool]
+        ] = [
+            ("valid_grounded_record", valid, manifest, True),
+            ("valid_dotted_symbol", dotted, dotted_manifest, True),
+            ("boolean_schema_version", {**valid, "schema_version": True}, manifest, False),
+            ("symbol_prefix_collision", prefix, prefix_manifest, False),
+            ("symbol_suffix_collision", suffix, suffix_manifest, False),
+            ("wrong_cardinality", {**valid, "records": []}, manifest, False),
             (
                 "extra_record_field",
                 {**valid, "records": [{**valid["records"][0], "extra": "x"}]},
+                manifest,
                 False,
             ),
             (
@@ -158,11 +243,21 @@ def run_conformance_suite() -> dict[str, Any]:
                 {**valid, "records": [{
                     **valid["records"][0], "source_sha256": "0" * 64,
                 }]},
+                manifest,
                 False,
             ),
             (
                 "wrong_line",
                 {**valid, "records": [{**valid["records"][0], "line_start": 2}]},
+                manifest,
+                False,
+            ),
+            (
+                "wrong_symbol",
+                {**valid, "records": [{
+                    **valid["records"][0], "symbol": "value",
+                }]},
+                manifest,
                 False,
             ),
             (
@@ -171,15 +266,16 @@ def run_conformance_suite() -> dict[str, Any]:
                     **valid["records"][0],
                     "observation": "Alpha definitely controls training.",
                 }]},
+                manifest,
                 False,
             ),
         ]
         results = []
-        for case_id, payload, should_accept in cases:
+        for case_id, payload, case_manifest, should_accept in cases:
             accepted = True
             try:
                 validate_source_inventory(
-                    json.dumps(payload, ensure_ascii=False), manifest,
+                    json.dumps(payload, ensure_ascii=False), case_manifest,
                 )
             except SourceInventoryValidationError:
                 accepted = False
@@ -189,6 +285,58 @@ def run_conformance_suite() -> dict[str, Any]:
                 "observed": "accept" if accepted else "reject",
                 "passed": accepted is should_accept,
             })
+        preflight_path = Path(temp_dir) / "preflight.json"
+        candidate_path = Path(temp_dir) / "candidate.json"
+        receipt_path = Path(temp_dir) / "receipt.json"
+        manifest_sha = hashlib.sha256(json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        preflight_path.write_text(json.dumps({
+            "verified_source_manifest": manifest,
+            "verified_source_manifest_sha256": manifest_sha,
+        }), encoding="utf-8")
+        candidate_path.write_text(
+            json.dumps(valid, ensure_ascii=False), encoding="utf-8",
+        )
+        cli_passed = False
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--candidate", str(candidate_path),
+                    "--preflight", str(preflight_path),
+                    "--receipt", str(receipt_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            stdout_receipt = json.loads(completed.stdout)
+            disk_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            cli_passed = (
+                completed.returncode == 0
+                and stdout_receipt == disk_receipt
+                and disk_receipt.get("result") == "pass"
+                and disk_receipt.get("validator_version") == VALIDATOR_VERSION
+                and disk_receipt.get("source_manifest_sha256") == manifest_sha
+                and disk_receipt.get("candidate_sha256")
+                    == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+                and disk_receipt.get("preflight_sha256")
+                    == hashlib.sha256(preflight_path.read_bytes()).hexdigest()
+            )
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            cli_passed = False
+        results.append({
+            "case_id": "cli_validate_artifact_receipt",
+            "expected": "accept",
+            "observed": "accept" if cli_passed else "reject",
+            "passed": cli_passed,
+        })
         if not all(item["passed"] for item in results):
             raise SourceInventoryValidationError(
                 "source inventory conformance suite failed"
@@ -200,3 +348,86 @@ def run_conformance_suite() -> dict[str, Any]:
             "cases": results,
             "status": "PASS",
         }
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_artifact(
+    candidate_path: Path, preflight_path: Path, receipt_path: Path,
+) -> dict[str, Any]:
+    """Validate one candidate against the Controller-verified source manifest."""
+    preflight = _strict_json_loads(preflight_path.read_text(encoding="utf-8"))
+    if not isinstance(preflight, dict):
+        raise SourceInventoryValidationError("preflight must be a JSON object")
+    source_manifest = preflight.get("verified_source_manifest")
+    expected_manifest_sha = preflight.get("verified_source_manifest_sha256")
+    if (
+        not isinstance(source_manifest, list)
+        or not source_manifest
+        or expected_manifest_sha != hashlib.sha256(
+            json.dumps(
+                source_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    ):
+        raise SourceInventoryValidationError(
+            "preflight source-manifest identity is missing or changed"
+        )
+    content = candidate_path.read_text(encoding="utf-8")
+    validate_source_inventory(content, source_manifest)
+    receipt = {
+        "schema_version": 1,
+        "validator_id": VALIDATOR_ID,
+        "validator_version": VALIDATOR_VERSION,
+        "candidate_path": str(candidate_path.resolve()),
+        "candidate_sha256": _sha256_file(candidate_path),
+        "preflight_path": str(preflight_path.resolve()),
+        "preflight_sha256": _sha256_file(preflight_path),
+        "source_manifest_sha256": expected_manifest_sha,
+        "record_count": len(source_manifest),
+        "result": "pass",
+    }
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate a frozen source inventory against canonical preflight",
+    )
+    parser.add_argument("--conformance", action="store_true")
+    parser.add_argument("--candidate")
+    parser.add_argument("--preflight")
+    parser.add_argument("--receipt")
+    args = parser.parse_args()
+    artifact_args = (args.candidate, args.preflight, args.receipt)
+    if args.conformance:
+        if any(artifact_args):
+            parser.error("--conformance cannot be combined with artifact arguments")
+        print(json.dumps(run_conformance_suite(), ensure_ascii=False, sort_keys=True))
+        return 0
+    if not all(artifact_args):
+        parser.error("--candidate, --preflight, and --receipt are required")
+    try:
+        receipt = validate_artifact(
+            Path(args.candidate).resolve(),
+            Path(args.preflight).resolve(),
+            Path(args.receipt).resolve(),
+        )
+    except (OSError, UnicodeError, SourceInventoryValidationError) as exc:
+        parser.error(str(exc))
+    print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

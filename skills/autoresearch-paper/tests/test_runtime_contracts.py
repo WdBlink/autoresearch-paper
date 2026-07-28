@@ -549,7 +549,7 @@ class RuntimeContracts(unittest.TestCase):
             self.assertIn("apps", argv)
             self.assertIn("multi_agent", argv)
             self.assertIn("multi_agent_v2", argv)
-            self.assertIn("agents.enabled=false", argv)
+            self.assertNotIn("agents.enabled=false", argv)
             self.assertIn(
                 "include_collaboration_mode_instructions=false", argv
             )
@@ -1570,6 +1570,89 @@ class RuntimeContracts(unittest.TestCase):
             after = sorted(str(p.relative_to(plan)) for p in plan.rglob("*") if p.is_file())
             self.assertEqual(before, after)
 
+    def test_l0_staged_state_wins_without_rewriting_progress_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = self.make_plan(Path(td))
+            self.write_manifest(plan)
+            staged = plan / "state" / "staged_research" / "v1"
+            staged.mkdir(parents=True)
+            (staged / "state.json").write_text(json.dumps({
+                "plan_id": "plan_abc",
+                "state": "PAUSED",
+                "active_stage_id": "stage_1",
+            }) + "\n")
+            # Both legacy sources deliberately disagree with staged authority.
+            (plan / "state.json").write_text(json.dumps({
+                "state": {"status": "running", "cycle_started_at": 0},
+            }) + "\n")
+            progress = plan / "state" / "progress.json"
+            progress.write_text(json.dumps({
+                "status": "running",
+                "projection_version": "staged-research-progress/v1",
+                "sentinel": "controller-owned-bytes",
+            }, indent=2) + "\n")
+            before = progress.read_bytes()
+
+            proc = run([
+                "python3", "references/scripts/plan-l0-guard.py",
+                "--plan-dir", str(plan), "--once", "--stale-sec", "1",
+            ])
+
+            result = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertEqual(result["status"], "PAUSED")
+            self.assertEqual(result["state_source"], "staged_research/v1")
+            self.assertEqual(result["action"], "ok")
+            self.assertEqual(progress.read_bytes(), before)
+            l0 = json.loads((plan / "state" / "l0_status.json").read_text())
+            self.assertEqual(l0["state_source"], "staged_research/v1")
+
+    def test_malformed_or_unknown_staged_state_never_falls_back_to_legacy(self) -> None:
+        for case in ("malformed", "unknown"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                plan = self.make_plan(tmp, f"staged_invalid_{case}")
+                self.write_manifest(plan)
+                staged = plan / "state" / "staged_research" / "v1"
+                staged.mkdir(parents=True)
+                staged_state = staged / "state.json"
+                if case == "malformed":
+                    staged_state.write_text("{not-json\n")
+                else:
+                    staged_state.write_text(json.dumps({
+                        "plan_id": "plan_staged",
+                        "state": "UNKNOWN_FUTURE_STATE",
+                    }) + "\n")
+                (plan / "state.json").write_text(json.dumps({
+                    "state": {"status": "running", "cycle_started_at": 0},
+                }) + "\n")
+                progress = plan / "state" / "progress.json"
+                progress.write_text(json.dumps({
+                    "status": "running", "sentinel": "legacy-must-not-win",
+                }, indent=2) + "\n")
+                before = progress.read_bytes()
+
+                l0_proc = run([
+                    "python3", "references/scripts/plan-l0-guard.py",
+                    "--plan-dir", str(plan), "--once", "--stale-sec", "1",
+                ])
+                l0 = json.loads(l0_proc.stdout.strip().splitlines()[-1])
+                self.assertEqual(l0["action"], "invalid_staged_state")
+                self.assertEqual(l0["state_source"], "staged_invalid")
+                self.assertEqual(progress.read_bytes(), before)
+
+                rescue_proc = run([
+                    "python3", "references/scripts/plan-rescue-daemon.py",
+                    "--dry-run", "--once",
+                ], env={
+                    "HOME": str(tmp),
+                    "AUTORESEARCH_PLAN_ROOTS": str(tmp),
+                })
+                self.assertIn(
+                    f"staged_invalid_{case}: invalid_staged_state",
+                    rescue_proc.stdout,
+                )
+                self.assertEqual(progress.read_bytes(), before)
+
     def test_l0_runtime_stall_never_enables_scientific_pivot(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = self.make_plan(Path(td))
@@ -1584,6 +1667,40 @@ class RuntimeContracts(unittest.TestCase):
             self.assertFalse((plan / "control" / "pivot_requested.json").exists())
             eligibility = json.loads(self.harness("pivot-eligibility", "--plan-dir", str(plan)).stdout)
             self.assertFalse(eligibility["eligible"])
+
+    def test_rescue_prefers_staged_state_then_falls_back_to_legacy_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staged_plan = self.make_plan(tmp, "staged_priority")
+            self.write_manifest(staged_plan)
+            staged = staged_plan / "state" / "staged_research" / "v1"
+            staged.mkdir(parents=True)
+            (staged / "state.json").write_text(json.dumps({
+                "plan_id": "plan_staged",
+                "state": "PAUSED",
+                "active_stage_id": "stage_1",
+                "cycle_started_at": int(time.time() * 1000),
+            }) + "\n")
+            (staged_plan / "state.json").write_text(json.dumps({
+                "state": {"status": "running"},
+            }) + "\n")
+            (staged_plan / "state" / "progress.json").write_text(json.dumps({
+                "status": "running",
+            }) + "\n")
+
+            legacy_plan = self.make_plan(tmp, "legacy_fallback")
+            self.write_manifest(legacy_plan)
+            (legacy_plan / "state" / "progress.json").write_text(json.dumps({
+                "status": "running",
+            }) + "\n")
+
+            proc = run([
+                "python3", "references/scripts/plan-rescue-daemon.py",
+                "--dry-run", "--once",
+            ], env={"HOME": str(tmp), "AUTORESEARCH_PLAN_ROOTS": str(tmp)})
+
+            self.assertIn("staged_priority: wait", proc.stdout)
+            self.assertIn("legacy_fallback: l0_l0_missing", proc.stdout)
 
     def test_resolve_plan_dir_and_stop_json_escaping(self) -> None:
         with tempfile.TemporaryDirectory() as td:

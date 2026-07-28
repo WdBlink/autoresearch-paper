@@ -25,6 +25,19 @@ from typing import Any
 
 MAVIS_PLANS_DIR = Path.home() / ".mavis" / "plans"
 DEFAULT_STALE_SEC = int(os.environ.get("AUTORESEARCH_STALE_SEC", "7200"))
+STAGED_STATE_RELATIVE = Path("state/staged_research/v1/state.json")
+STAGED_RUNNING_STATES = {
+    "CONTRACTED",
+    "STAGE_AUTHORIZED",
+    "DEVELOPING",
+    "CANDIDATE_FROZEN",
+    "GATE_QUERIED",
+    "ACCEPTED",
+    "REJECTED",
+    "ESCALATED",
+    "RECORDED",
+}
+STAGED_STATES = STAGED_RUNNING_STATES | {"PAUSED", "COMPLETE"}
 
 
 def now_iso() -> str:
@@ -91,9 +104,41 @@ def remove_signal(plan_dir: Path, name: str) -> None:
             pass
 
 
-def read_state(plan_dir: Path) -> dict[str, Any]:
+def read_state_with_source(plan_dir: Path) -> tuple[dict[str, Any], str]:
+    staged_path = plan_dir / STAGED_STATE_RELATIVE
+    if staged_path.exists():
+        try:
+            staged = json.loads(staged_path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {
+                "state": "INVALID",
+                "failure": "canonical_staged_state_unreadable",
+            }, "staged_invalid"
+        if not isinstance(staged, dict) or staged.get("state") not in STAGED_STATES:
+            return {
+                "state": "INVALID",
+                "failure": "canonical_staged_state_invalid",
+            }, "staged_invalid"
+        return staged, "staged_research/v1"
     raw = read_json(plan_dir / "state.json", {})
-    return raw.get("state", raw) if isinstance(raw, dict) else {}
+    state = raw.get("state", raw) if isinstance(raw, dict) else {}
+    return (state if isinstance(state, dict) else {}), "legacy"
+
+
+def read_state(plan_dir: Path) -> dict[str, Any]:
+    return read_state_with_source(plan_dir)[0]
+
+
+def state_status(state: dict[str, Any], source: str) -> str:
+    if source in {"staged_research/v1", "staged_invalid"}:
+        return str(state.get("state", "unknown"))
+    return str(state.get("status", "unknown"))
+
+
+def is_running_status(status: str, source: str) -> bool:
+    if source == "staged_research/v1":
+        return status in STAGED_RUNNING_STATES
+    return status == "running"
 
 
 def read_progress(plan_dir: Path) -> dict[str, Any]:
@@ -279,12 +324,35 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     (plan_dir / "state").mkdir(exist_ok=True)
     (plan_dir / "control").mkdir(exist_ok=True)
 
-    state = read_state(plan_dir)
-    status = state.get("status", "unknown")
-    progress = read_progress(plan_dir)
+    state, state_source = read_state_with_source(plan_dir)
+    status = state_status(state, state_source)
+    # In staged plans progress.json is a controller-rendered compatibility
+    # projection. L0 must neither consult nor overwrite it.
+    progress = (
+        None
+        if state_source in {"staged_research/v1", "staged_invalid"}
+        else read_progress(plan_dir)
+    )
     resource_health = verify_resources(plan_dir, repair=args.repair_resources, dry_run=args.dry_run)
 
     actions: list[str] = []
+
+    if state_source == "staged_invalid":
+        result = {
+            "plan_id": plan_id,
+            "action": "invalid_staged_state",
+            "status": status,
+            "state_source": state_source,
+            "failure": state.get("failure"),
+            "resource_health": resource_health,
+        }
+        if not args.dry_run:
+            write_json(plan_dir / "state" / "l0_status.json", result | {"ts": now_iso()})
+            append_jsonl(
+                plan_dir / "state" / "rescue_history.jsonl",
+                result | {"ts": now_iso()},
+            )
+        return result
 
     if has_signal(plan_dir, "resume_signal.json"):
         if not args.dry_run:
@@ -305,6 +373,7 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         if validation["returncode"] != 0:
             result = {
                 "plan_id": plan_id, "action": "invalid_stop_authority", "status": status,
+                "state_source": state_source,
                 "actions": actions, "resource_health": resource_health,
             }
             if not args.dry_run:
@@ -326,6 +395,7 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             if cleanup["returncode"] != 0:
                 result = {
                     "plan_id": plan_id, "action": "stop_cleanup_failed", "status": status,
+                    "state_source": state_source,
                     "actions": actions, "resource_health": resource_health,
                 }
                 if not args.dry_run:
@@ -333,13 +403,15 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
                 return result
         else:
             actions.append("cleanup_missing")
-        progress["status"] = "stopped"
-        if not args.dry_run:
+        if progress is not None:
+            progress["status"] = "stopped"
+        if not args.dry_run and progress is not None:
             write_progress(plan_dir, progress)
         result = {
             "plan_id": plan_id,
             "action": "stop_cleanup_requested",
             "status": status,
+            "state_source": state_source,
             "actions": actions,
             "resource_health": resource_health,
         }
@@ -356,13 +428,19 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
         age = None
         if cycle_started_ms:
             age = now_epoch - float(cycle_started_ms) / 1000.0
-        if status == "running" and (age is None or age >= stale_sec):
+        if is_running_status(status, state_source) and (age is None or age >= stale_sec):
             hb_token = f"NO_HEARTBEAT:{cycle_started_ms or 'unknown'}"
-            progress["last_stale_heartbeat_ts"] = hb_token
+            if progress is not None:
+                progress["last_stale_heartbeat_ts"] = hb_token
             action = record_runtime_stall(plan_dir, hb_token, f"running plan has no last_seen heartbeat for >= {stale_sec}s", args.dry_run)
-            if not args.dry_run:
+            if not args.dry_run and progress is not None:
                 write_progress(plan_dir, progress)
-            result = {"plan_id": plan_id, "action": action, "status": status, "heartbeat": None, "resource_health": resource_health}
+            result = {
+                "plan_id": plan_id, "action": action, "status": status,
+                "state_source": state_source, "heartbeat": None,
+                "last_stale_heartbeat_ts": hb_token,
+                "resource_health": resource_health,
+            }
             if not args.dry_run:
                 write_json(plan_dir / "state" / "l0_status.json", result | {"ts": now_iso()})
                 append_jsonl(plan_dir / "state" / "rescue_history.jsonl", result | {"ts": now_iso()})
@@ -370,26 +448,41 @@ def patrol_plan(plan_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     else:
         hb_epoch = float(heartbeat.get("_epoch") or 0)
         age = now_epoch - hb_epoch
-        progress["last_heartbeat_ts"] = heartbeat.get("ts") or heartbeat.get("timestamp")
-        if status == "running" and age >= stale_sec:
+        last_heartbeat_ts = heartbeat.get("ts") or heartbeat.get("timestamp")
+        if progress is not None:
+            progress["last_heartbeat_ts"] = last_heartbeat_ts
+        if is_running_status(status, state_source) and age >= stale_sec:
             hb_token = heartbeat.get("ts") or heartbeat.get("timestamp") or str(hb_epoch)
-            progress["last_stale_heartbeat_ts"] = hb_token
+            if progress is not None:
+                progress["last_stale_heartbeat_ts"] = hb_token
             action = record_runtime_stall(plan_dir, str(hb_token), f"last heartbeat is stale: {int(age)}s >= {stale_sec}s", args.dry_run)
-            if not args.dry_run:
+            if not args.dry_run and progress is not None:
                 write_progress(plan_dir, progress)
-            result = {"plan_id": plan_id, "action": action, "status": status, "heartbeat_age_sec": int(age), "resource_health": resource_health}
+            result = {
+                "plan_id": plan_id, "action": action, "status": status,
+                "state_source": state_source,
+                "last_heartbeat_ts": last_heartbeat_ts,
+                "last_stale_heartbeat_ts": hb_token,
+                "heartbeat_age_sec": int(age), "resource_health": resource_health,
+            }
             if not args.dry_run:
                 write_json(plan_dir / "state" / "l0_status.json", result | {"ts": now_iso()})
                 append_jsonl(plan_dir / "state" / "rescue_history.jsonl", result | {"ts": now_iso()})
             return result
 
-    progress["status"] = status if status != "unknown" else progress.get("status", "running")
-    if not args.dry_run:
+    if progress is not None:
+        progress["status"] = status if status != "unknown" else progress.get("status", "running")
+    if not args.dry_run and progress is not None:
         write_progress(plan_dir, progress)
     result = {
         "plan_id": plan_id,
         "action": "ok",
         "status": status,
+        "state_source": state_source,
+        "last_heartbeat_ts": (
+            heartbeat.get("ts") or heartbeat.get("timestamp")
+            if heartbeat is not None else None
+        ),
         "runtime_failure_state": str(plan_dir / "state" / "failure_state.json"),
         "resource_health": resource_health,
     }
@@ -414,7 +507,11 @@ def find_plan_dirs(plan_id: str | None, plan_dir: str | None) -> list[Path]:
     for d in MAVIS_PLANS_DIR.iterdir():
         if not d.is_dir():
             continue
-        if (d / "state.json").exists() or (d / "resource_manifest.json").exists():
+        if (
+            (d / STAGED_STATE_RELATIVE).exists()
+            or (d / "state.json").exists()
+            or (d / "resource_manifest.json").exists()
+        ):
             dirs.append(d)
     return dirs
 
