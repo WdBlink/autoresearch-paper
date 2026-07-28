@@ -32,6 +32,25 @@ def digest(value: object) -> str:
 class StagedResearchGovernanceTests(unittest.TestCase):
     maxDiff = None
 
+    def test_provider_quota_absolute_retry_time_is_typed(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "quota_classification_runtime", RUNTIME,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        classified = runtime.classify_frontier_transport_failure(
+            "",
+            "You've hit your usage limit; try again at Aug 2nd, 2026 7:36 AM.",
+        )
+        self.assertEqual(classified["failure"], "provider_quota")
+        self.assertEqual(
+            runtime.parse_utc(classified["retry_not_before"])
+            .astimezone().strftime("%Y-%m-%d %H:%M"),
+            "2026-08-02 07:36",
+        )
+
     def test_immutable_atomic_publication_freezes_before_replace(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "atomic_publication_runtime", RUNTIME,
@@ -1774,6 +1793,111 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         )
         executable.chmod(0o755)
         return executable
+
+    def quota_codex(self, plan: Path) -> Path:
+        executable = plan / "quota-codex"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "a=sys.argv[1:]\n"
+            "if a[:2]==['login','status']:\n"
+            " print('Logged in with ChatGPT'); raise SystemExit(0)\n"
+            "if a[-2:]==['features','list']:\n"
+            " print('multi_agent stable false'); raise SystemExit(0)\n"
+            "print('Usage limit reached; try again in 0 seconds', file=sys.stderr)\n"
+            "raise SystemExit(2)\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
+    def retry_launchctl(self, plan: Path) -> Path:
+        executable = plan / "retry-launchctl"
+        services = plan / "retry-launchd-services"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib,plistlib,sys\n"
+            f"services=pathlib.Path({str(services)!r});services.mkdir(exist_ok=True)\n"
+            "args=sys.argv[1:]\n"
+            "if args[0]=='print':\n"
+            " label=args[-1].rsplit('/',1)[-1];raise SystemExit(0 if (services/label).exists() else 3)\n"
+            "if args[0]=='bootstrap':\n"
+            " label=plistlib.loads(pathlib.Path(args[-1]).read_bytes())['Label'];(services/label).write_text(args[-1]);raise SystemExit(0)\n"
+            "if args[0]=='bootout':\n"
+            " label=args[-1].rsplit('/',1)[-1];(services/label).unlink(missing_ok=True);raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
+    def test_named_checkpoint_retry_uses_retry_budget_and_types_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan, capacity_value=self.capacity_v2())
+            self.preflight(plan)
+            original = "far_cp01_quota"
+            self.create_cp01_request(plan, original)
+            failed = self.invoke(
+                "send-frontier-request", "--plan-dir", str(plan),
+                "--request-id", original,
+                "--codex-bin", str(self.quota_codex(plan)),
+                ok=False,
+            )
+            self.assertIn("Codex transport failed", failed.stderr)
+            status = json.loads(
+                (plan / "state" / "frontier" / "requests" / original
+                 / "status.json").read_text()
+            )
+            self.assertEqual(status["failure"], "provider_quota")
+            self.assertIn("retry_not_before", status)
+            before = json.loads(
+                (plan / "state" / "staged_research" / "v1"
+                 / "capacity-ledger.json").read_text()
+            )
+            self.assertEqual(before["checkpoint_capacity"]["CP-01"]["spent"], 1)
+            self.assertEqual(before["retry_budget"]["remaining_attempts"], 3)
+
+            success_codex = self.fake_codex(plan)
+            trigger = json.loads(self.invoke(
+                "register-frontier-retry-trigger", "--plan-dir", str(plan),
+                "--interval-seconds", "60", "--timeout", "300",
+                "--codex-bin", str(success_codex),
+                "--launchctl-bin", str(self.retry_launchctl(plan)),
+            ).stdout)
+            self.assertEqual(
+                trigger["scope"], "due_provider_quota_frontier_retry_only",
+            )
+            self.assertFalse(trigger["worker_dispatch_authority"])
+            self.assertFalse(trigger["research_transition_authority"])
+
+            env = dict(os.environ)
+            env["CODEX_BIN"] = str(success_codex)
+            recovered = json.loads(self.invoke(
+                "recover-due-frontier-retry", "--plan-dir", str(plan),
+                env=env,
+            ).stdout)
+            self.assertTrue(recovered["attempted"])
+            self.assertEqual(recovered["state"], "APPLIED")
+            retried = recovered["request_id"]
+            request = json.loads(
+                (plan / "state" / "frontier" / "requests" / retried
+                 / "request.json").read_text()
+            )
+            self.assertEqual(
+                request["retry_lineage"]["logical_request_id"], original,
+            )
+            after = json.loads(
+                (plan / "state" / "staged_research" / "v1"
+                 / "capacity-ledger.json").read_text()
+            )
+            self.assertEqual(after["checkpoint_capacity"]["CP-01"]["spent"], 1)
+            self.assertEqual(after["retry_budget"]["remaining_attempts"], 2)
+            duplicate = self.invoke(
+                "retry-frontier-request", "--plan-dir", str(plan),
+                "--source-request-id", retried,
+                "--request-id", "far_cp01_quota_retry_2",
+                ok=False,
+            )
+            self.assertIn("already applied", duplicate.stderr)
 
     def apply_strong_review(
         self, plan: Path, report_path: Path, *,

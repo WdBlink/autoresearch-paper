@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Add immutable logical retry lineages for failed named frontier checkpoints.
+  Each retry receives a new request ID, spends the independent retry budget and
+  a new global frontier reservation, never reopens the nominal checkpoint slot,
+  and shares one exact-once apply boundary with every sibling attempt.
+- Classify provider usage-window failures as `provider_quota`, recording
+  `retry_not_before` when the transport reports a duration. Actual retry output
+  remains capped by the frozen per-attempt retry token limit. A narrow external
+  retry trigger can wake due CP-01 recovery before the full durable loop is
+  admitted; its receipt explicitly denies Worker and general transition authority.
+- Add a Claude-native runtime-assurance activation closure for unattended
+  durable execution. The immutable receipt binds distinct external launchd L0
+  and L1 scheduler/controller identities, the L2 Worker heartbeat contract,
+  frozen health/stale intervals, and zero-model-call activation probes.
+- Add health-only L0 ticks that run deterministic patrol and recover an unloaded
+  L1 trigger without dispatching a model. Durable Workers now emit
+  controller-owned start/periodic heartbeat receipts and fail closed before
+  budget mutation when activation is missing, unloaded, stale, or mismatched.
+
 ## v0.17.2 — 2026-07-27
 
 - Close the remaining real CP-01 findings from frozen field plan

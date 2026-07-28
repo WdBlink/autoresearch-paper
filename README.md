@@ -110,6 +110,8 @@ heartbeat watchdogs, and manifest-driven cleanup.
 - Tracks failed directions so agents pivot structurally instead of repeating
   the same dead end.
 - Separates runtime stalls from scientific no-improvement using typed failures.
+- Requires a plan-bound, independently registered L0/L1/L2 assurance closure
+  before any unattended durable Worker can start.
 - Requires signed, expiring, replay-protected pause, resume, stop, waiver,
   worker cancellation, and cleanup actions.
 - Removes only exact-path, token-bound, plan-owned ephemeral resources.
@@ -140,25 +142,23 @@ The target control plane is Claude Code, with a deterministic file-backed
 controller between model output and formal plan state. Legacy MAVIS resources
 are compatibility-only. The research flow is:
 
-The diagram below still includes the legacy autonomous resource path; worker
-and frontier dispatch now enter through the Claude Code controller.
+```
+Claude Code control plane
+        │
+        ▼
+deterministic controller ── canonical staged/durable state ── evidence ledger
+        │
+        ├── L0 launchd health supervisor (health-only, zero model calls)
+        ├── L1 launchd durable work trigger (leases + state advance)
+        └── L2 controller Worker heartbeat receipts
+                │
+                ├── MiniMax/Claude Worker proposals
+                └── sparse Codex checkpoints + independent retry lineage
+```
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Brief  →  Tier  →  Plan  →  Bootstrap  →  Run  →  Deliver      │
-│  LLM     arxiv/   YAML     watchdog     team     paper.tex        │
-│          conf/    gen      agent        plan     + bib + figs    │
-│          j-q1     (T0)     + cron       (T1-T8)  + readiness     │
-│                   evaluator + hook                                │
-└──────────────────────────────────────────────────────────────────┘
-                                    │
-                ┌───────────────────┼───────────────────┐
-                ▼                   ▼                   ▼
-         L0 guard (fs)      L1 hourly (cron)    L2 per-task (JSONL)
-         filesystem         watchdog agent      last_seen.jsonl
-         corruption         stall detection     producer liveness
-         check
-```
+L0, L1, and L2 are bound by one immutable activation receipt but keep distinct
+scheduler/command identities. Legacy Mavis cron, `plan-l0-guard.py`, and
+`last_seen.jsonl` remain compatibility artifacts rather than activation proof.
 
 **Research gate (T6.1/T6.2):** The controller binds evaluator, evidence,
 threshold, candidate, and measured verdict hashes. Bare PASS text is rejected.
@@ -409,6 +409,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **Unreleased** — adds typed provider-quota recovery and exact-once logical
+  retry lineages for named checkpoints. Adds the Claude-native runtime
+  assurance closure: independent launchd L0 and L1 services, controller-owned
+  L2 Worker heartbeats, interval validation, activation/test receipts, and
+  health-only L1 recovery with zero model calls. A separate least-authority
+  trigger can resume a due initial CP-01 quota retry before L1 admission.
 - **v0.17.2** — closes the remaining real Plan021 CP-01 findings: validator
   schema versions require JSON integers rather than booleans, and a Worker
   cannot pre-author Controller-owned role-visible provenance. Frozen source

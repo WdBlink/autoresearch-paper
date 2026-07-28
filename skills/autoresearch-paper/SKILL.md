@@ -246,6 +246,9 @@ Generated plans must initialize:
   path/hash, Runtime path/hash, byte identity, and exact conformance result
 - generated `state/progress.json` and `state/research-dossier.md` projections;
   neither is transition authority
+- for unattended durable execution, a current `state/runtime_assurance/v1/`
+  activation receipt binding independent L0/L1 scheduler identities and the
+  L2 Worker heartbeat contract before the first Worker dispatch
 - `state/directions_tried.json`
 - `state/candidate_registry.jsonl`
 - `state/scoreboard.tsv`
@@ -370,6 +373,10 @@ python3 references/scripts/harness-runtime.py init-durable-plan --plan-dir PLAN 
 python3 references/scripts/harness-runtime.py register-durable-trigger \
   --plan-dir PLAN --interval-seconds 300 --jitter-seconds 30 \
   --session-budget-seconds 1800 --human-escalation-after-seconds 900
+python3 references/scripts/harness-runtime.py activate-runtime-assurance \
+  --plan-dir PLAN --schedule-id research_loop \
+  --health-interval-seconds 1800 --worker-stale-seconds 7200 \
+  --frontier-stale-seconds 7200 --heartbeat-stale-seconds 3600
 python3 references/scripts/harness-runtime.py run-durable-tick --plan-dir PLAN
 python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale-seconds 7200
 ```
@@ -377,16 +384,23 @@ python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale
 The production wake-up is externally registered and survives the initiating
 Claude Code session. Tick state, leases, canonical revisions, and context
 capsules are file-backed; a file-only schedule is not treated as a trigger.
-Patrol records only typed runtime failures. `bootstrap-watchdog.sh` remains an
-explicit legacy fixture.
+Before the first unattended Worker, `activate-runtime-assurance` must publish a
+current immutable receipt proving a loaded, independently identified L0 health
+supervisor, the loaded L1 work trigger, and the L2 Worker heartbeat contract.
+Health-only ticks are bounded to zero model dispatches and may re-bootstrap L1.
+Missing, unloaded, stale, interval-invalid, mismatched, or legacy-only
+activation blocks before Worker budget mutation. Patrol records only typed
+runtime failures. `bootstrap-watchdog.sh` remains an explicit legacy fixture.
+`plan-l0-guard.py` is retained only for legacy replay and migration; it is not
+Claude-native activation evidence.
 
 Heartbeat layers:
 
 | Layer | Mechanism | Purpose |
 |---|---|---|
-| L0 | `plan-l0-guard.py` via launchd/manual patrol | session-independent stale detection, repair, cleanup requests |
-| L1 | launchd-backed durable trigger and lease | wakes and reconciles the deterministic controller |
-| L2 | `last_seen.jsonl` hook | per-task activity heartbeat |
+| L0 | independently registered `run-runtime-assurance-tick` launchd service | session-independent health, patrol, and L1 recovery without model calls |
+| L1 | separately registered launchd durable trigger and lease | wakes and reconciles the deterministic work controller |
+| L2 | controller Worker heartbeat receipts, with hook-compatible CLI | per-Worker liveness bound to the activation contract |
 
 The UI remains useful for status and control, but it is not the L0
 heartbeat. L0 must be session-independent so a stale session is not
@@ -531,6 +545,13 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **Unreleased** — Named checkpoint retries now use a new immutable request
+  ID and independent retry budget without reopening the nominal checkpoint
+  slot; provider usage windows are typed and a least-authority external trigger
+  can resume a due initial CP-01 retry without Worker authority. Unattended
+  Workers additionally require a plan-bound L0/L1/L2 runtime-assurance
+  activation receipt, with
+  zero-model-call health ticks and controller Worker heartbeats.
 - **v0.17.2 (2026-07-27)** — Real Plan021 CP-01 findings are closed without
   mutating the blocked field record. Source inventories and stage reports now
   require a true JSON integer schema version; their frozen conformance suites
