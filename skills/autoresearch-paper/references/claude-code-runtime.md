@@ -143,6 +143,8 @@ python3 references/scripts/harness-runtime.py inspect-worker \
   --plan-dir PLAN --worker-run-id RUN
 python3 references/scripts/harness-runtime.py inspect-plan-runtime \
   --plan-dir PLAN
+python3 references/scripts/harness-runtime.py serve-plan-dashboard \
+  --plan-dir PLAN --host 127.0.0.1 --port 8765
 python3 references/scripts/harness-runtime.py wait-worker \
   --plan-dir PLAN --worker-run-id RUN --deadline-seconds 60
 python3 references/scripts/harness-runtime.py send-worker-message \
@@ -460,7 +462,17 @@ applied `stop` receipt through `unregister-runtime-assurance`.
 controller and staged/durable canonical pointers, every L0/L1/retry receipt and
 live scheduler state, Worker status/process identity, heartbeats, logs, and
 declared resources. It writes no plan or scheduler state and reports receipt /
-live-state disagreement rather than normalizing it. `shutdown-plan` owns a
+live-state disagreement rather than normalizing it.
+
+`serve-plan-dashboard` is a compiled, single-plan view over that same fresh
+inspection. It binds only to a literal loopback address, serves packaged local
+assets with a restrictive CSP, and exposes GET/HEAD snapshot, rebuildable
+dossier, and currently bound bounded-log routes. It retains no lifecycle
+credential, rejects operation journaling and mutation methods, and never
+turns browser state into Runtime authority. Node.js is a contributor build
+dependency only; the installed server uses Python's standard library.
+
+`shutdown-plan` owns a
 PREPARED/COMMITTED recovery journal under `state/runtime_shutdown/v1/`. After
 the stop receipt has already blocked controller work, shutdown disables L0
 before L1 so L0 cannot restore it, disables the frontier-retry trigger, then

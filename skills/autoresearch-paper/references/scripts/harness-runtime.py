@@ -46,6 +46,7 @@ from stage_report_validator import (
     run_conformance_suite as run_stage_report_conformance_suite,
     validate_stage_report,
 )
+from dashboard_server import DashboardError, make_dashboard_server
 
 
 SCHEMA_VERSION = 1
@@ -6976,6 +6977,44 @@ def command_inspect_plan_runtime(args: argparse.Namespace) -> dict[str, Any]:
             plan_dir / "state" / "runtime_shutdown" / "v1" / "current.json"
         ),
     }
+
+
+def command_serve_plan_dashboard(args: argparse.Namespace) -> dict[str, Any]:
+    """Serve one fresh inspection surface without lifecycle authority."""
+    plan_dir = Path(args.plan_dir).resolve(strict=True)
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    assets_dir = SCRIPT_DIR.parent / "dashboard"
+
+    def inspect() -> dict[str, Any]:
+        return command_inspect_plan_runtime(argparse.Namespace(
+            plan_dir=str(plan_dir), launchctl_bin=resolved_launchctl,
+        ))
+
+    try:
+        server = make_dashboard_server(
+            host=args.host,
+            port=args.port,
+            plan_dir=plan_dir,
+            assets_dir=assets_dir,
+            snapshot_provider=inspect,
+        )
+    except (DashboardError, OSError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
+    host, port = server.server_address[:2]
+    started = {
+        "ok": True,
+        "observation_only": True,
+        "plan_id": plan_identity(plan_dir),
+        "url": f"http://{host}:{port}/",
+    }
+    print(json.dumps(started, sort_keys=True), flush=True)
+    try:
+        server.serve_forever(poll_interval=0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return {**started, "stopped": True}
 
 
 def runtime_shutdown_root(plan_dir: Path) -> Path:
@@ -17252,6 +17291,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_plan.set_defaults(handler=command_inspect_plan_runtime)
 
+    dashboard = sub.add_parser(
+        "serve-plan-dashboard",
+        help="serve one loopback-only read-only plan dashboard",
+    )
+    dashboard.add_argument("--plan-dir", required=True)
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    dashboard.set_defaults(handler=command_serve_plan_dashboard)
+
     wait = sub.add_parser("wait-worker")
     wait.add_argument("--plan-dir", required=True)
     wait.add_argument("--worker-run-id", required=True)
@@ -17878,9 +17929,9 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         operation_id = getattr(args, "operation_id", None)
-        if args.command == "inspect-plan-runtime" and operation_id:
+        if args.command in {"inspect-plan-runtime", "serve-plan-dashboard"} and operation_id:
             raise ContractError(
-                "inspect-plan-runtime is observation-only and rejects operation journaling"
+                f"{args.command} is observation-only and rejects operation journaling"
             )
         if operation_id:
             if not OPERATION_ID_RE.fullmatch(operation_id):

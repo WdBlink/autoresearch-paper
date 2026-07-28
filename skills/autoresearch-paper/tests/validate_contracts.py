@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +37,9 @@ def main() -> int:
         "references/scripts/resolve-plan-dir.py",
         "references/scripts/register-plan-id.py",
         "references/scripts/harness-runtime.py",
+        "references/scripts/dashboard_server.py",
+        "references/dashboard/index.html",
+        "references/dashboard/THIRD_PARTY_NOTICES.md",
         "references/scripts/run-claude-harness.py",
         "references/claude-code-runtime.md",
         "references/frontier-response.schema.json",
@@ -59,6 +63,7 @@ def main() -> int:
         "tests/test_claude_cutover_e2e.py",
         "tests/test_runtime_v2_security.py",
         "tests/test_durable_loop_runtime.py",
+        "tests/test_dashboard_server.py",
         "tests/test_evaluator_admission.py",
         "tests/test_production_transport.py",
         "tests/test_scientific_truth_and_failure_routing.py",
@@ -79,6 +84,19 @@ def main() -> int:
         "SKILL.md must expose the Claude Code target runtime and sparse frontier path",
         errors,
     )
+    dashboard_index = read("references/dashboard/index.html")
+    dashboard_assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', dashboard_index)
+    require(bool(dashboard_assets), "compiled dashboard index must reference local assets", errors)
+    require(
+        all((ROOT / "references" / "dashboard" / asset.removeprefix("/")).is_file() for asset in dashboard_assets),
+        "compiled dashboard index contains a missing asset",
+        errors,
+    )
+    require(
+        "https://" not in dashboard_index and "http://" not in dashboard_index,
+        "compiled dashboard must not load remote runtime assets",
+        errors,
+    )
     require(
         contains(
             "references/claude-code-runtime.md", "init-policy", "create-human-action",
@@ -90,6 +108,7 @@ def main() -> int:
             "activate-runtime-assurance", "run-runtime-assurance-tick",
             "unregister-runtime-assurance", "record-worker-heartbeat",
             "inspect-plan-runtime", "shutdown-plan",
+            "serve-plan-dashboard",
             "apply-work-unit-result", "apply-guardian-proposal",
             "guardian-validate-lifecycle", "admit-evaluator",
             "check-autonomy-eligibility", "create-durable-frontier-request",
@@ -294,13 +313,13 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.17.2"' in read("SKILL.md"), "SKILL.md version must be 0.17.2", errors)
+    require('version: "0.18.0"' in read("SKILL.md"), "SKILL.md version must be 0.18.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.17.2" in repository_readme_text,
-            "README version must be 0.17.2",
+            "Current version:** v0.18.0" in repository_readme_text,
+            "README version must be 0.18.0",
             errors,
         )
         require(

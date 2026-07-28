@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.18.0 — 2026-07-28
+
+- Add the compiled Research Ledger Dashboard for one explicitly selected plan.
+  Its Python standard-library server binds to a literal loopback address and
+  exposes only GET/HEAD snapshot, rebuildable dossier, and currently bound
+  bounded-log routes; local assets ship in the installed skill and require no
+  Node.js or network access at runtime.
+- Preserve typed absence and live, stale, empty, partial, mismatch, stopped,
+  and request-error states without inventing metrics or progress. Repeated
+  real Plan027 polling is byte-stable, and desktop/mobile browser validation
+  covers focus targets, reduced motion, overflow, and failed-refresh retention.
 
 - Add immutable logical retry lineages for failed named frontier checkpoints.
   Each retry receives a new request ID, spends the independent retry budget and
