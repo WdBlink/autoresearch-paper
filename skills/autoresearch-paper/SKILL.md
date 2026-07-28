@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.17.2"
+  version: "0.18.0"
 ---
 
 # Autoresearch Paper
@@ -384,6 +384,8 @@ python3 references/scripts/harness-runtime.py activate-runtime-assurance \
 python3 references/scripts/harness-runtime.py run-durable-tick --plan-dir PLAN
 python3 references/scripts/harness-runtime.py run-patrol --plan-dir PLAN --stale-seconds 7200
 python3 references/scripts/harness-runtime.py inspect-plan-runtime --plan-dir PLAN
+python3 references/scripts/harness-runtime.py serve-plan-dashboard \
+  --plan-dir PLAN --host 127.0.0.1 --port 8765
 ```
 
 The production wake-up is externally registered and survives the initiating
@@ -425,6 +427,7 @@ Expose these commands by resolving `<plan-id>` to `<plan-dir>` with
 | Command | Action |
 |---|---|
 | `/autoresearch-paper status` | run read-only `inspect-plan-runtime` and render controller, scheduler, Worker, process, log, gate, and patrol state |
+| `/autoresearch-paper dashboard` | serve the selected plan through the compiled loopback-only Research Ledger; GET/HEAD observation routes only, no lifecycle credential or control |
 | `/autoresearch-paper pause` | create and apply a signed `pause` record |
 | `/autoresearch-paper resume` | create and apply a signed `resume` record |
 | `/autoresearch-paper stop` | create/apply signed `stop`, replay-safe shutdown L0 → L1 → retry → bound Workers, then report cleanup residuals |
@@ -556,7 +559,12 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
-- **Unreleased** — Named checkpoint retries now use a new immutable request
+- **v0.18.0 (2026-07-28)** — The selected Research Ledger Dashboard adds a
+  compiled, loopback-only, single-plan observation surface over fresh Runtime
+  inspection. Python serves GET/HEAD-only snapshot, rebuildable dossier, and
+  currently bound bounded-log routes with local assets, restrictive CSP, no
+  lifecycle credential, and no Node.js runtime dependency. Named checkpoint
+  retries now use a new immutable request
   ID and independent retry budget without reopening the nominal checkpoint
   slot; provider usage windows are typed and a least-authority external trigger
   can resume a due initial CP-01 retry without Worker authority. Unattended

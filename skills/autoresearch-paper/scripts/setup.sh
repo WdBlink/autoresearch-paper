@@ -121,6 +121,9 @@ for path in \
   "${ROOT_DIR}/references/scientific-figure-pipeline.md" \
   "${ROOT_DIR}/references/canonical-conformance-workflow.json" \
   "${ROOT_DIR}/references/scripts/harness-runtime.py" \
+  "${ROOT_DIR}/references/scripts/dashboard_server.py" \
+  "${ROOT_DIR}/references/dashboard/index.html" \
+  "${ROOT_DIR}/references/dashboard/THIRD_PARTY_NOTICES.md" \
   "${ROOT_DIR}/references/scripts/run-claude-harness.py" \
   "${ROOT_DIR}/references/scripts/cleanup-plan-resources.sh" \
   "${ROOT_DIR}/references/scripts/plan-l0-guard.py" \
@@ -131,6 +134,14 @@ for path in \
   else
     fail "required file ${path#${ROOT_DIR}/}"
     printf '  fix: reinstall with: npx skills add WdBlink/autoresearch-paper -g --copy\n' >&2
+  fi
+done
+
+for suffix in js css woff2; do
+  if find "${ROOT_DIR}/references/dashboard/assets" -maxdepth 1 -type f -name "*.${suffix}" -print -quit 2>/dev/null | grep -q .; then
+    ok "found compiled Dashboard .${suffix} asset"
+  else
+    fail "compiled Dashboard .${suffix} asset"
   fi
 done
 

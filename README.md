@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.17.2
+- **Current version:** v0.18.0
 - **Stability:** Experimental; bounded stage-crossing acceptance target
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
@@ -39,6 +39,9 @@ start writing.
   binds source data, transformations, renderer identity, commands, outputs,
   hashes, a figure-stage-frozen expected set, an exact inventory, and
   output-bound human review before writing.
+  v0.18 adds the compiled Research Ledger Dashboard: one explicitly selected
+  plan, fresh read-only inspection, bounded bound-log and dossier views,
+  loopback-only serving, local assets, and no browser lifecycle authority.
   New staged plans freeze a human-owned optimization contract and exactly one
   first-stage envelope. CP-01 uses the strongest allowed Codex reviewer, while
   the deterministic controller remains authoritative. Each candidate gets one
@@ -127,12 +130,15 @@ heartbeat watchdogs, and manifest-driven cleanup.
 - Blocks unattended conference/journal autonomy until evaluator authority,
   replay, regression, immutable inputs, search space, and complexity policy
   pass executable admission; any identity drift revokes eligibility.
+- Serves one plan through a compiled Research Ledger Dashboard without adding
+  a second progress store, a Node.js runtime dependency, or browser controls.
 
 ## Quick Start
 
 ```text
 /autoresearch-paper — turn a research brief into a gated paper pipeline.
 /autoresearch-paper status — inspect canonical, scheduler, Worker, process, log, and watchdog state without mutation.
+/autoresearch-paper dashboard — open the loopback-only Research Ledger for one selected plan.
 /autoresearch-paper stop — exact-once runtime shutdown, then report exact residual resources.
 ```
 
@@ -204,7 +210,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.17.2 with a full bundle refresh so the
+Upgrade copied installations to v0.18.0 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -291,6 +297,7 @@ During a run:
 | Command | Action |
 |---|---|
 | `/autoresearch-paper status` | show plan progress, research gate, stale count, and resource health |
+| `/autoresearch-paper dashboard` | serve one selected plan through the loopback-only, GET/HEAD-only Research Ledger |
 | `/autoresearch-paper pause` | soft-pause through `control/pause_requested.json` |
 | `/autoresearch-paper resume` | resume and verify/repair watchdog resources |
 | `/autoresearch-paper stop` | apply signed stop; disable L0, L1, retry, and identity-matching Workers exactly once; report residuals |
@@ -323,6 +330,7 @@ autoresearch-paper/
 │       ├── SKILL.md
 │       ├── scripts/
 │       │   └── setup.sh
+│       ├── dashboard/                 # pinned React/Vite build source
 │       ├── assets/
 │       │   ├── task-prompt-snippets.md
 │       │   └── first-action-last-seen-hook.md
@@ -345,7 +353,9 @@ autoresearch-paper/
 │       │   ├── reviewer-readiness-rubric.md
 │       │   ├── bootstrap-watchdog.sh
 │       │   ├── launchd/
+│       │   ├── dashboard/             # precompiled runtime assets
 │       │   └── scripts/
+│       │       ├── dashboard_server.py
 │       │       └── harness-runtime.py
 │       └── tests/
 └── docs/
@@ -411,7 +421,11 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
-- **Unreleased** — adds typed provider-quota recovery and exact-once logical
+- **v0.18.0** — adds the compiled, loopback-only Research Ledger Dashboard
+  over fresh `inspect-plan-runtime` results, including typed absence,
+  live/stale/empty/partial/mismatch/stopped/error presentation, bounded bound-log
+  access, rebuildable dossier viewing, restrictive CSP, and Python-only
+  installed serving. It also adds typed provider-quota recovery and exact-once logical
   retry lineages for named checkpoints. Adds the Claude-native runtime
   assurance closure: independent launchd L0 and L1 services, controller-owned
   L2 Worker heartbeats, interval validation, activation/test receipts, and
@@ -525,7 +539,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.17.2}
+  version = {0.18.0}
 }
 ```
 
@@ -537,7 +551,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.17.2-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.18.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/
