@@ -116,6 +116,7 @@ GUARDIAN_OBSERVATION_SCHEMA = SCRIPT_DIR.parent / "guardian-observation.schema.j
 EVALUATOR_ADMISSION_SCHEMA = SCRIPT_DIR.parent / "evaluator-admission.schema.json"
 STAGED_RESEARCH_SCHEMA = SCRIPT_DIR.parent / "staged-research.schema.json"
 ROLE_VISIBLE_STATE_SCHEMA = SCRIPT_DIR.parent / "role-visible-state.schema.json"
+CODEX_HOST_BRIEF_SCHEMA = SCRIPT_DIR.parent / "codex-host-brief.schema.json"
 FIGURE_VALIDATOR = SCRIPT_DIR / "validate-figure-artifacts.py"
 CHECKPOINT_EVIDENCE_PROFILES = {
     ("CP-01", None): {
@@ -360,7 +361,8 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
             raise ContractError("top_level_plan_audit has an invalid closed shape")
         if (
             plan_audit.get("required") is not True
-            or plan_audit.get("declared_author_model_family") != "MiniMax-M3"
+            or plan_audit.get("declared_author_model_family")
+            != ("Codex" if policy.get("host_runtime") == "codex" else "MiniMax-M3")
             or plan_audit.get("reviewer_runtime") != "codex"
             or plan_audit.get("reviewer_model") != PLAN_AUDIT_MODEL
             or plan_audit.get("reasoning_effort") != PLAN_AUDIT_REASONING_EFFORT
@@ -368,7 +370,7 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
             or plan_audit.get("dependent_transition") != "approve_execution"
         ):
             raise ContractError(
-                "top_level_plan_audit must pin MiniMax-M3 authorship and "
+                "top_level_plan_audit must pin the active Host authorship and "
                 f"{PLAN_AUDIT_MODEL}/{PLAN_AUDIT_REASONING_EFFORT} Codex review"
             )
     frontier_transport = policy.get("frontier_transport", "codex-default")
@@ -389,6 +391,553 @@ def load_policy(plan_dir: Path) -> dict[str, Any]:
     if worker_budget <= 0:
         raise ContractError("worker_max_budget_usd must be positive")
     return policy
+
+
+def worker_session_path(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "worker_session.json"
+
+
+def worker_session_binding_path(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "worker_session_binding.json"
+
+
+def record_worker_session_failure(
+    plan_dir: Path, failure_class: str, details: dict[str, Any] | None = None,
+) -> Path:
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "failure_class": failure_class,
+        "details": details or {},
+        "observed_at": utc_now(),
+    }
+    target = (
+        plan_dir / "state" / "worker_session_failures"
+        / f"{int(time.time_ns())}-{uuid.uuid4().hex}.json"
+    )
+    atomic_write_json(target, receipt, immutable=True)
+    return target
+
+
+def worker_session_policy(
+    plan_dir: Path,
+    policy: dict[str, Any],
+    resolved_claude_bin: str,
+    allowed_tools: list[str],
+) -> dict[str, Any]:
+    """Return the immutable transport policy bound to one Claude session."""
+    result = {
+        "plan_id": plan_identity(plan_dir),
+        "working_directory": str(plan_dir.resolve()),
+        "runtime": "claude-code",
+        "worker_model": policy["worker_model"],
+        "model_policy_sha256": sha256_file(policy_path(plan_dir)),
+        "claude_executable": resolved_claude_bin,
+        "permission_mode": "dontAsk",
+        "allowed_tools": sorted(allowed_tools),
+    }
+    entry_policy_path = (
+        plan_dir / "control" / "codex-host-entry" / "v1"
+        / "worker-session-policy.json"
+    )
+    if entry_policy_path.is_file():
+        validate_immutable_binding(
+            entry_policy_path, sha256_file(entry_policy_path),
+            "Codex host worker session policy",
+        )
+        entry_policy = read_json(entry_policy_path)
+        ceiling = entry_policy.get("allowed_tool_ceiling")
+        if (
+            entry_policy.get("plan_id") != plan_identity(plan_dir)
+            or entry_policy.get("runtime") != "claude-code"
+            or entry_policy.get("worker_model") != policy["worker_model"]
+            or entry_policy.get("claude_executable") != resolved_claude_bin
+            or entry_policy.get("permission_mode") != "dontAsk"
+            or entry_policy.get("session_mode") != "persistent_exact_resume"
+            or not isinstance(ceiling, list)
+            or not set(allowed_tools).issubset(set(ceiling))
+        ):
+            raise ContractError("Codex host worker session policy does not authorize this turn")
+        try:
+            uuid.UUID(entry_policy["session_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ContractError("Codex host worker session policy has an invalid session_id") from exc
+        result["codex_host_entry_policy_sha256"] = sha256_file(entry_policy_path)
+    return result
+
+
+def acquire_worker_session_lease(plan_dir: Path) -> Any:
+    """Acquire the one-writer lease before consuming Worker capacity."""
+    path = plan_dir / "state" / ".worker_session.delivery.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        record_worker_session_failure(
+            plan_dir, "session_busy",
+            {"lock_path": str(path), "transport_launched": False},
+        )
+        raise ContractError(
+            "session_busy: Claude worker session is busy; concurrent delivery is forbidden"
+        ) from exc
+    return handle
+
+
+def release_worker_session_lease(handle: Any | None) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def load_or_create_worker_session(
+    plan_dir: Path,
+    policy: dict[str, Any],
+    resolved_claude_bin: str,
+    allowed_tools: list[str],
+) -> dict[str, Any]:
+    path = worker_session_path(plan_dir)
+    binding_path = worker_session_binding_path(plan_dir)
+    bound_policy = worker_session_policy(
+        plan_dir, policy, resolved_claude_bin, allowed_tools,
+    )
+    bound_sha = sha256_json(bound_policy)
+    if path.exists() or binding_path.exists():
+        if not path.exists() or not binding_path.exists():
+            record_worker_session_failure(
+                plan_dir, "session_missing",
+                {
+                    "state_present": path.exists(),
+                    "binding_present": binding_path.exists(),
+                    "transport_launched": False,
+                },
+            )
+            raise ContractError(
+                "session_missing: Claude worker session state/binding pair is incomplete; "
+                "automatic session rotation is forbidden"
+            )
+        if (
+            binding_path.is_symlink()
+            or not binding_path.is_file()
+            or binding_path.stat().st_mode & 0o777 != 0o444
+        ):
+            record_worker_session_failure(
+                plan_dir, "session_binding_drift",
+                {"binding_path": str(binding_path), "transport_launched": False},
+            )
+            raise ContractError("session_binding_drift: immutable session binding changed")
+        binding = read_json(binding_path)
+        session = read_json(path)
+        required = {
+            "schema_version", "plan_id", "session_id", "state", "turn_count",
+            "bound_policy", "bound_policy_sha256", "binding_path",
+            "binding_sha256", "created_at", "updated_at",
+        }
+        if set(session) - (required | {
+            "active_run_id", "last_run_id", "last_turn_receipt",
+            "last_turn_receipt_sha256", "paused_reason",
+        }):
+            raise ContractError("worker session contains unknown fields")
+        if not required.issubset(session):
+            raise ContractError("worker session is incomplete")
+        try:
+            uuid.UUID(session["session_id"])
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ContractError("worker session_id must be a UUID") from exc
+        binding_sha = sha256_file(binding_path)
+        binding_required = {
+            "schema_version", "plan_id", "session_id", "bound_policy",
+            "bound_policy_sha256", "created_at",
+        }
+        if (
+            set(binding) != binding_required
+            or binding.get("schema_version") != SCHEMA_VERSION
+            or binding.get("plan_id") != plan_identity(plan_dir)
+            or not isinstance(binding.get("created_at"), str)
+            or binding.get("bound_policy_sha256")
+            != sha256_json(binding.get("bound_policy"))
+        ):
+            record_worker_session_failure(
+                plan_dir, "session_binding_drift",
+                {"binding_path": str(binding_path), "transport_launched": False},
+            )
+            raise ContractError("session_binding_drift: immutable session binding contents changed")
+        try:
+            uuid.UUID(binding["session_id"])
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ContractError("session_binding_drift: binding session_id is not a UUID") from exc
+        if (
+            session["schema_version"] != SCHEMA_VERSION
+            or session["plan_id"] != plan_identity(plan_dir)
+            or session["session_id"] != binding["session_id"]
+            or session["bound_policy"] != bound_policy
+            or session["bound_policy_sha256"] != bound_sha
+            or Path(session["binding_path"]).resolve() != binding_path.resolve()
+            or session["binding_sha256"] != binding_sha
+        ):
+            mismatches = sorted(
+                key for key in set(session.get("bound_policy", {})) | set(bound_policy)
+                if session.get("bound_policy", {}).get(key) != bound_policy.get(key)
+            )
+            record_worker_session_failure(
+                plan_dir, "session_policy_drift",
+                {"mismatched_fields": mismatches, "transport_launched": False},
+            )
+            raise ContractError(
+                "session_policy_drift: Claude worker session binding drifted "
+                f"({','.join(mismatches) or 'identity'}); automatic rebinding is forbidden"
+            )
+        require_non_negative_int(session["turn_count"], "worker_session.turn_count")
+        validate_worker_session_turn_chain(plan_dir, session)
+        if session["state"] == "PAUSED":
+            record_worker_session_failure(
+                plan_dir, "session_paused",
+                {"paused_reason": session.get("paused_reason"), "transport_launched": False},
+            )
+            raise ContractError(
+                "session_paused: Claude worker session is PAUSED; inspect the terminal receipt before recovery"
+            )
+        if session["state"] not in {"READY", "BUSY"}:
+            record_worker_session_failure(
+                plan_dir, "session_state_invalid",
+                {"state": session["state"], "transport_launched": False},
+            )
+            raise ContractError(f"unsupported Claude worker session state: {session['state']}")
+        if session["state"] == "BUSY":
+            record_worker_session_failure(
+                plan_dir, "delivery_uncertain",
+                {"active_run_id": session.get("active_run_id"), "transport_launched": False},
+            )
+            raise ContractError(
+                "delivery_uncertain: Claude worker session has an unresolved BUSY delivery; reconcile before reuse"
+            )
+        return session
+    turns_root = plan_dir / "state" / "worker_session_turns"
+    if turns_root.exists() and any(turns_root.glob("*.json")):
+        record_worker_session_failure(
+            plan_dir, "session_missing", {"transport_launched": False},
+        )
+        raise ContractError(
+            "session_missing: Claude worker session binding is missing after prior turns; "
+            "automatic session rotation is forbidden"
+        )
+    now = utc_now()
+    entry_policy_path = codex_host_entry_root(plan_dir) / "worker-session-policy.json"
+    session_id = (
+        read_json(entry_policy_path)["session_id"]
+        if entry_policy_path.is_file()
+        else str(uuid.uuid4())
+    )
+    binding = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "session_id": session_id,
+        "bound_policy": bound_policy,
+        "bound_policy_sha256": bound_sha,
+        "created_at": now,
+    }
+    atomic_write_json(binding_path, binding, immutable=True)
+    session = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "session_id": session_id,
+        "state": "READY",
+        "turn_count": 0,
+        "bound_policy": bound_policy,
+        "bound_policy_sha256": bound_sha,
+        "binding_path": str(binding_path),
+        "binding_sha256": sha256_file(binding_path),
+        "created_at": now,
+        "updated_at": now,
+    }
+    atomic_write_json(path, session)
+    return session
+
+
+def validate_worker_session_turn_chain(
+    plan_dir: Path, session: dict[str, Any], *, expected_turn_count: int | None = None,
+) -> None:
+    turn_count = (
+        session["turn_count"] if expected_turn_count is None else expected_turn_count
+    )
+    require_non_negative_int(turn_count, "worker_session.turn_count")
+    turns_root = plan_dir / "state" / "worker_session_turns"
+    receipts = sorted(turns_root.glob("*.json")) if turns_root.exists() else []
+    if len(receipts) != turn_count:
+        record_worker_session_failure(
+            plan_dir, "session_turn_rollback",
+            {
+                "declared_turn_count": turn_count,
+                "receipt_count": len(receipts),
+                "transport_launched": False,
+            },
+        )
+        raise ContractError(
+            "session_turn_rollback: mutable turn_count does not match immutable receipts"
+        )
+    for index, receipt_path in enumerate(receipts, 1):
+        if (
+            receipt_path.is_symlink()
+            or not receipt_path.is_file()
+            or receipt_path.stat().st_mode & 0o777 != 0o444
+        ):
+            raise ContractError("session_turn_rollback: turn receipt is not immutable")
+        receipt = read_json(receipt_path)
+        if (
+            receipt.get("session_id") != session["session_id"]
+            or receipt.get("turn_index") != index
+            or not receipt_path.name.startswith(f"{index:06d}-")
+        ):
+            raise ContractError("session_turn_rollback: turn receipt lineage changed")
+    if turn_count:
+        last = receipts[-1]
+        if (
+            session.get("last_turn_receipt") != str(last)
+            or session.get("last_turn_receipt_sha256") != sha256_file(last)
+        ):
+            raise ContractError("session_turn_rollback: last turn pointer changed")
+
+
+def update_worker_session(
+    plan_dir: Path, session: dict[str, Any], state: str,
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    if state not in {"READY", "BUSY", "PAUSED", "CLOSED"}:
+        raise ContractError(f"invalid Claude worker session state: {state}")
+    current = read_json(worker_session_path(plan_dir))
+    binding_path = worker_session_binding_path(plan_dir)
+    if (
+        current.get("session_id") != session.get("session_id")
+        or current.get("bound_policy_sha256") != session.get("bound_policy_sha256")
+        or current.get("binding_sha256") != sha256_file(binding_path)
+    ):
+        raise ContractError("Claude worker session changed while its lease was held")
+    current.update(updates)
+    current["state"] = state
+    current["updated_at"] = utc_now()
+    validate_worker_session_turn_chain(plan_dir, current)
+    atomic_write_json(worker_session_path(plan_dir), current)
+    return current
+
+
+def claude_transport_metadata(raw: str, expected_session_id: str) -> dict[str, Any]:
+    """Extract cost observations without making them correctness authority."""
+    try:
+        envelope = strict_json_loads(raw)
+    except ContractError:
+        envelope = None
+    if not isinstance(envelope, dict):
+        return {
+            "reported_session_id": None,
+            "reported_model": None,
+            "reported_provider": None,
+            "reported_transcript_sha256": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_creation_input_tokens": None,
+            "cache_read_input_tokens": None,
+        }
+    reported = envelope.get("session_id")
+    if reported is not None and reported != expected_session_id:
+        raise ContractError("Claude response reported a different session_id")
+    usage = envelope.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    reported_model = envelope.get("model")
+    reported_provider = envelope.get("provider")
+    reported_transcript_sha256 = envelope.get("transcript_sha256")
+    metadata = {
+        "reported_session_id": reported,
+        "reported_model": reported_model if isinstance(reported_model, str) else None,
+        "reported_provider": (
+            reported_provider if isinstance(reported_provider, str) else None
+        ),
+        "reported_transcript_sha256": (
+            reported_transcript_sha256
+            if isinstance(reported_transcript_sha256, str)
+            and re.fullmatch(r"[a-f0-9]{64}", reported_transcript_sha256)
+            else None
+        ),
+    }
+    for key in (
+        "input_tokens", "output_tokens", "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        value = usage.get(key)
+        metadata[key] = (
+            value if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
+    return metadata
+
+
+def classify_claude_transport_failure(exit_code: int, stderr: str) -> str:
+    normalized = stderr.lower()
+    if any(marker in normalized for marker in (
+        "rate limit", "usage limit", "quota", "5-hour", "5 hour",
+        "token plan", "retry after",
+    )):
+        return "provider_quota"
+    if "session" in normalized and any(marker in normalized for marker in (
+        "not found", "unknown", "missing", "does not exist", "invalid",
+    )):
+        return "session_missing"
+    if any(marker in normalized for marker in (
+        "authentication", "unauthorized", "invalid api key", "login required",
+    )):
+        return "authentication_failure"
+    return f"claude_exit_{exit_code}"
+
+
+def commit_worker_session_turn(
+    plan_dir: Path,
+    session: dict[str, Any],
+    *,
+    run_id: str,
+    turn_index: int,
+    instruction_path: Path,
+    outcome: str,
+    transport_metadata: dict[str, Any] | None = None,
+    failure: str | None = None,
+) -> dict[str, Any]:
+    if outcome not in {"COMPLETED", "FAILED", "PAUSED", "CANCELLED"}:
+        raise ContractError("invalid Claude worker session turn outcome")
+    metadata = transport_metadata or {
+        "reported_session_id": None,
+        "reported_model": None,
+        "reported_provider": None,
+        "reported_transcript_sha256": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_creation_input_tokens": None,
+        "cache_read_input_tokens": None,
+    }
+    instruction = read_json(instruction_path)
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "session_id": session["session_id"],
+        "turn_index": turn_index,
+        "invocation_mode": "created" if turn_index == 1 else "resumed",
+        "expected_worker_model": session["bound_policy"]["worker_model"],
+        "adapter_identity": {
+            "runtime": session["bound_policy"]["runtime"],
+            "claude_executable": session["bound_policy"]["claude_executable"],
+            "model_policy_sha256": session["bound_policy"]["model_policy_sha256"],
+        },
+        "exit_class": outcome,
+        "worker_run_id": run_id,
+        "instruction_path": str(instruction_path),
+        "instruction_sha256": sha256_file(instruction_path),
+        "task_contract_sha256": instruction["task_contract_sha256"],
+        "context_capsule_id": instruction["context_capsule_id"],
+        "context_capsule_sha256": instruction["context_capsule_sha256"],
+        "context_state_revision": instruction["context_state_revision"],
+        "input_manifest_sha256": instruction["input_manifest_sha256"],
+        "artifact_outputs_sha256": instruction["artifact_outputs_sha256"],
+        "output_schema_sha256": instruction["output_schema_sha256"],
+        "outcome": outcome,
+        "failure": failure,
+        "transport_usage": metadata,
+        "transport_stdout_sha256": (
+            sha256_file(worker_run_dir(plan_dir, run_id) / "transport.stdout")
+            if (worker_run_dir(plan_dir, run_id) / "transport.stdout").is_file()
+            else None
+        ),
+        "result_sha256": (
+            sha256_file(worker_run_dir(plan_dir, run_id) / "result.json")
+            if (worker_run_dir(plan_dir, run_id) / "result.json").is_file()
+            else None
+        ),
+        "completed_at": utc_now(),
+    }
+    receipt_path = (
+        plan_dir / "state" / "worker_session_turns"
+        / f"{turn_index:06d}-{run_id}.json"
+    )
+    if receipt_path.exists():
+        prior = read_json(receipt_path)
+        stable_receipt = {key: value for key, value in receipt.items() if key != "completed_at"}
+        stable_prior = {key: value for key, value in prior.items() if key != "completed_at"}
+        if stable_prior != stable_receipt:
+            raise ContractError("Claude worker session turn receipt changed")
+        receipt = prior
+    else:
+        atomic_write_json(receipt_path, receipt, immutable=True)
+    next_state = "READY" if outcome == "COMPLETED" else "PAUSED"
+    updates = {
+        "turn_count": turn_index,
+        "active_run_id": None,
+        "last_run_id": run_id,
+        "last_turn_receipt": str(receipt_path),
+        "last_turn_receipt_sha256": sha256_file(receipt_path),
+    }
+    if failure is not None:
+        updates["paused_reason"] = failure
+    else:
+        updates.pop("paused_reason", None)
+    return update_worker_session(plan_dir, session, next_state, updates)
+
+
+def reconcile_worker_session_turn(
+    plan_dir: Path, run_id: str, outcome: str, failure: str | None,
+) -> dict[str, Any] | None:
+    """Converge a PREPARED operation's Worker and session terminal state."""
+    status = read_json(worker_status_path(plan_dir, run_id))
+    if status.get("worker_session_mode") != "persistent":
+        return None
+    session_path = worker_session_path(plan_dir)
+    if not session_path.is_file():
+        record_worker_session_failure(
+            plan_dir, "session_missing",
+            {"worker_run_id": run_id, "reconciliation_required": True},
+        )
+        raise ContractError("session_missing: prepared Worker lost its session state")
+    lease = acquire_worker_session_lease(plan_dir)
+    try:
+        session = read_json(session_path)
+        if (
+            session.get("last_run_id") == run_id
+            and session.get("state") in {"READY", "PAUSED"}
+        ):
+            validate_worker_session_turn_chain(plan_dir, session)
+            return session
+        if (
+            session.get("state") != "BUSY"
+            or session.get("active_run_id") != run_id
+            or session.get("session_id") != status.get("worker_session_id")
+        ):
+            record_worker_session_failure(
+                plan_dir, "delivery_uncertain",
+                {
+                    "worker_run_id": run_id,
+                    "session_state": session.get("state"),
+                    "active_run_id": session.get("active_run_id"),
+                },
+            )
+            raise ContractError(
+                "delivery_uncertain: prepared Worker/session lineage cannot be reconciled"
+            )
+        instruction_path = Path(status["instruction_path"]).resolve()
+        turn_index = status.get("worker_session_turn")
+        if not isinstance(turn_index, int) or isinstance(turn_index, bool):
+            raise ContractError("prepared Worker has no valid session turn index")
+        stdout_path = worker_run_dir(plan_dir, run_id) / "transport.stdout"
+        metadata = (
+            claude_transport_metadata(stdout_path.read_text(), session["session_id"])
+            if stdout_path.is_file()
+            else None
+        )
+        return commit_worker_session_turn(
+            plan_dir, session, run_id=run_id, turn_index=turn_index,
+            instruction_path=instruction_path, outcome=outcome,
+            transport_metadata=metadata, failure=failure,
+        )
+    finally:
+        release_worker_session_lease(lease)
 
 
 def validate_top_level_plan_review_contract(
@@ -437,7 +986,7 @@ def validate_top_level_plan_review_contract(
             "top-level-plan-review-v1", "staged-contract-stage-review-v1",
             "staged-contract-stage-review-v2",
         }
-        or contract.get("declared_author_model_family") != "MiniMax-M3"
+        or contract.get("declared_author_model_family") not in {"MiniMax-M3", "Codex"}
         or contract.get("reviewer_profile") != expected_profile
         or evidence_roles != expected_evidence_roles
         or contract.get("dependent_transition") != "approve_execution"
@@ -615,6 +1164,14 @@ def validate_schema(instance: Any, schema: dict[str, Any], path: str = "$") -> N
             if key in properties:
                 validate_schema(value, properties[key], f"{path}.{key}")
     if isinstance(instance, list) and "items" in schema:
+        if len(instance) < int(schema.get("minItems", 0)):
+            raise ContractError(f"{path} has too few items")
+        if "maxItems" in schema and len(instance) > int(schema["maxItems"]):
+            raise ContractError(f"{path} has too many items")
+        if schema.get("uniqueItems") is True:
+            encoded = [canonical_json(value) for value in instance]
+            if len(encoded) != len(set(encoded)):
+                raise ContractError(f"{path} must contain unique items")
         for index, value in enumerate(instance):
             validate_schema(value, schema["items"], f"{path}[{index}]")
     if isinstance(instance, str):
@@ -628,6 +1185,8 @@ def validate_schema(instance: Any, schema: dict[str, Any], path: str = "$") -> N
         require_finite_number(instance, path)
         if "minimum" in schema and instance < schema["minimum"]:
             raise ContractError(f"{path} is below minimum")
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            raise ContractError(f"{path} is not above exclusive minimum")
         if "maximum" in schema and instance > schema["maximum"]:
             raise ContractError(f"{path} is above maximum")
 
@@ -637,9 +1196,10 @@ def validate_supported_schema(schema: Any, path: str = "$") -> None:
     if not isinstance(schema, dict):
         raise ContractError(f"{path} schema must be an object")
     supported = {
-        "$schema", "title", "description", "type", "properties", "required",
+        "$schema", "$id", "title", "description", "type", "properties", "required",
         "additionalProperties", "items", "enum", "const", "minLength",
-        "pattern", "minimum", "maximum", "maxLength",
+        "pattern", "minimum", "exclusiveMinimum", "maximum", "maxLength",
+        "minItems", "maxItems", "uniqueItems",
     }
     unknown = set(schema) - supported
     if unknown:
@@ -3505,6 +4065,146 @@ def command_resolve_acceptance_dispute(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "resolution_receipt": str(target), **receipt}
 
 
+def codex_host_entry_root(plan_dir: Path) -> Path:
+    return plan_dir / "control" / "codex-host-entry" / "v1"
+
+
+def codex_host_activation_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "codex_host_entry" / "v1"
+
+
+def validate_closed_brief_path(
+    raw: Any, field: str, *, require_directory: bool,
+) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ContractError(f"$.{field} must be a non-empty absolute path")
+    candidate = Path(raw)
+    if not candidate.is_absolute() or str(candidate) != str(candidate.resolve()):
+        raise ContractError(f"$.{field} must be a canonical absolute path")
+    cursor = Path(candidate.anchor)
+    for part in candidate.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ContractError(f"$.{field} must not traverse a symlink: {cursor}")
+    if require_directory and not candidate.is_dir():
+        raise ContractError(f"$.{field} must be an existing directory: {candidate}")
+    if not require_directory and not candidate.exists():
+        raise ContractError(f"$.{field} does not exist: {candidate}")
+    return candidate
+
+
+def validate_closed_brief(brief: dict[str, Any], plan_dir: Path) -> dict[str, Any]:
+    schema = read_json(CODEX_HOST_BRIEF_SCHEMA)
+    validate_supported_schema(schema)
+    validate_schema(brief, schema)
+    for field in ("objective", "target_venue", "initial_direction"):
+        if not brief[field].strip():
+            raise ContractError(f"$.{field} must not be blank")
+    for field in ("candidate_ideas", "stop_conditions"):
+        if any(not value.strip() for value in brief[field]):
+            raise ContractError(f"$.{field} must not contain blank values")
+    if not brief["code_roots"] and not brief["material_roots"]:
+        raise ContractError("$.code_roots or $.material_roots must contain at least one root")
+    resolved: dict[str, list[str]] = {}
+    for field in ("code_roots", "material_roots"):
+        resolved[field] = [
+            str(validate_closed_brief_path(value, f"{field}[{index}]", require_directory=True))
+            for index, value in enumerate(brief[field])
+        ]
+    for section, field in (
+        ("strongest_comparable_baseline", "evidence_paths"),
+        ("evaluator_metric_context", "evaluator_paths"),
+    ):
+        values = brief[section][field]
+        resolved[f"{section}.{field}"] = [
+            str(validate_closed_brief_path(
+                value, f"{section}.{field}[{index}]", require_directory=False,
+            ))
+            for index, value in enumerate(values)
+        ]
+    permissions = brief["permissions"]
+    if not permissions["external_model_calls"]:
+        raise ContractError(
+            "$.permissions.external_model_calls must authorize the declared Codex/Claude route"
+        )
+    for field in ("owned_write_roots", "allowed_read_roots"):
+        resolved[f"permissions.{field}"] = [
+            str(validate_closed_brief_path(
+                value, f"permissions.{field}[{index}]", require_directory=True,
+            ))
+            for index, value in enumerate(permissions[field])
+        ]
+    plan_dir = plan_dir.absolute()
+    if str(plan_dir) != str(plan_dir.resolve()):
+        raise ContractError("plan_dir must be a canonical absolute path")
+    if plan_dir.parent.is_symlink() or not plan_dir.parent.is_dir():
+        raise ContractError("plan_dir parent must be an existing non-symlink directory")
+    owned_roots = [Path(value) for value in resolved["permissions.owned_write_roots"]]
+    if not any(plan_dir == root or root in plan_dir.parents for root in owned_roots):
+        raise ContractError("plan_dir is outside $.permissions.owned_write_roots")
+    allowed_roots = [Path(value) for value in resolved["permissions.allowed_read_roots"]]
+    for label in (
+        "code_roots", "material_roots",
+        "strongest_comparable_baseline.evidence_paths",
+        "evaluator_metric_context.evaluator_paths",
+    ):
+        for value in resolved[label]:
+            path = Path(value)
+            if not any(path == root or root in path.parents for root in allowed_roots):
+                raise ContractError(
+                    f"$.{label} path is outside $.permissions.allowed_read_roots: {path}"
+                )
+    bounds = brief["resource_bounds"]
+    minimum_input = bounds["frontier_calls"] * CHATGPT_USAGE_FLOOR["min_input_tokens"]
+    minimum_output = bounds["frontier_calls"] * CHATGPT_USAGE_FLOOR["min_output_tokens"]
+    if bounds["frontier_input_tokens"] < minimum_input:
+        raise ContractError(
+            "$.resource_bounds.frontier_input_tokens cannot fund every declared frontier call; "
+            f"require at least {minimum_input}"
+        )
+    if bounds["frontier_output_tokens"] < minimum_output:
+        raise ContractError(
+            "$.resource_bounds.frontier_output_tokens cannot fund every declared frontier call; "
+            f"require at least {minimum_output}"
+        )
+    return brief
+
+
+def validate_immutable_binding(path: Path, expected_sha256: Any, label: str) -> None:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o777 != 0o444
+        or sha256_file(path) != expected_sha256
+    ):
+        raise ContractError(f"{label} binding changed")
+
+
+def validate_codex_host_preparation(plan_dir: Path) -> dict[str, Any]:
+    receipt_path = codex_host_entry_root(plan_dir) / "prepared-receipt.json"
+    validate_immutable_binding(
+        receipt_path, sha256_file(receipt_path) if receipt_path.is_file() else None,
+        "Codex host prepared receipt",
+    )
+    receipt = read_json(receipt_path)
+    if receipt.get("plan_id") != plan_identity(plan_dir) or receipt.get("status") != "PREPARED":
+        raise ContractError("Codex host prepared receipt correlation mismatch")
+    for path_field, hash_field in (
+        ("closed_brief_path", "closed_brief_sha256"),
+        ("model_policy_path", "model_policy_sha256"),
+        ("worker_session_policy_path", "worker_session_policy_sha256"),
+        ("initial_planning_request_path", "initial_planning_request_sha256"),
+        ("resource_manifest_initial_path", "resource_manifest_initial_sha256"),
+    ):
+        validate_immutable_binding(
+            Path(receipt.get(path_field, "")), receipt.get(hash_field),
+            f"Codex host {path_field}",
+        )
+    if sha256_file(policy_path(plan_dir)) != receipt["model_policy_sha256"]:
+        raise ContractError("Codex host model policy changed after preparation")
+    return receipt
+
+
 def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     target = policy_path(plan_dir)
@@ -3569,6 +4269,305 @@ def command_init_policy(args: argparse.Namespace) -> dict[str, Any]:
     atomic_write_json(target, policy, immutable=True)
     load_policy(plan_dir)
     return {"ok": True, "policy_path": str(target)}
+
+
+def command_prepare_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]:
+    """Atomically publish a validated, plan-owned Codex Host preparation."""
+    raw_source = Path(args.brief)
+    if raw_source.is_symlink() or not raw_source.is_file():
+        raise ContractError("brief must be an existing regular non-symlink JSON file")
+    source = raw_source.resolve()
+    brief = read_json(source)
+    plan_dir = Path(args.plan_dir).absolute()
+    validate_closed_brief(brief, plan_dir)
+    resolved_claude = resolve_executable(args.claude_bin, label="Claude Code")
+    if plan_dir.exists():
+        if not plan_dir.is_dir():
+            raise ContractError("plan_dir exists and is not a directory")
+        receipt = validate_codex_host_preparation(plan_dir)
+        if read_json(Path(receipt["closed_brief_path"])) != brief:
+            raise ContractError("existing Codex host plan was prepared from another brief")
+        return {"ok": True, "idempotent": True, **receipt}
+    bounds = brief["resource_bounds"]
+    plan_id = f"plan_{sha256_json(brief)[:24]}"
+    temp_dir = plan_dir.parent / f".{plan_dir.name}.prepare-{uuid.uuid4().hex}"
+    session_id = str(uuid.uuid4())
+    try:
+        (temp_dir / "state").mkdir(parents=True)
+        entry_root = codex_host_entry_root(temp_dir)
+        entry_root.mkdir(parents=True)
+        (temp_dir / "control" / "staged-inputs").mkdir(parents=True)
+        (temp_dir / "control" / "review-materials").mkdir(parents=True)
+        closed_brief_path = entry_root / "closed-brief.json"
+        atomic_write_json(closed_brief_path, brief, immutable=True)
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_id,
+            "plan_dir": str(plan_dir),
+            "status": "prepared",
+            "owner_id": brief["permissions"]["owner_id"],
+            "cleanup_owner": brief["permissions"]["owner_id"],
+            "agents": [], "sessions": [], "crons": [], "hooks": [],
+            "launchd": [], "local_processes": [], "remote_processes": [],
+            "locks": [],
+            "resources": [{
+                "resource_id": "codex_host_entry_v1",
+                "kind": "codex_host_entry",
+                "path": "control/codex-host-entry/v1",
+                "ephemeral": False,
+                "run_scoped": True,
+                "cleanup_owner": brief["permissions"]["owner_id"],
+            }],
+        }
+        atomic_write_json(temp_dir / "resource_manifest.json", manifest)
+        command_init_policy(argparse.Namespace(
+            plan_dir=str(temp_dir), worker_model=args.worker_model,
+            worker_max_budget_usd=bounds["worker_max_budget_usd"],
+            frontier_model=args.frontier_model,
+            frontier_reasoning_effort=args.frontier_reasoning_effort,
+            plan_audit_model=PLAN_AUDIT_MODEL,
+            plan_audit_reasoning_effort=PLAN_AUDIT_REASONING_EFFORT,
+            frontier_transport="chatgpt-https",
+            max_frontier_calls=bounds["frontier_calls"],
+            max_frontier_input_tokens=bounds["frontier_input_tokens"],
+            max_frontier_output_tokens=bounds["frontier_output_tokens"],
+            scientific_pivot_threshold=2,
+        ))
+        model_policy_path = policy_path(temp_dir)
+        model_policy = read_json(model_policy_path)
+        model_policy["host_runtime"] = "codex"
+        model_policy["worker_runtime"] = "claude-code"
+        model_policy["initial_plan_author"] = {
+            "runtime": "codex", "model": args.frontier_model,
+            "reasoning_effort": args.frontier_reasoning_effort,
+            "executable_stage_limit": 1,
+        }
+        model_policy["top_level_plan_audit"]["declared_author_model_family"] = "Codex"
+        atomic_write_json(model_policy_path, model_policy, immutable=True)
+        session_policy_path = entry_root / "worker-session-policy.json"
+        session_policy = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_id,
+            "runtime": "claude-code",
+            "worker_model": args.worker_model,
+            "session_id": session_id,
+            "session_mode": "persistent_exact_resume",
+            "claude_executable": resolved_claude,
+            "permission_mode": "dontAsk",
+            "allowed_tool_ceiling": [
+                "Bash", "Edit", "Glob", "Grep", "Read",
+                "WebFetch", "WebSearch", "Write",
+            ],
+        }
+        atomic_write_json(session_policy_path, session_policy, immutable=True)
+        planning_path = entry_root / "initial-planning-request.json"
+        planning_request = {
+            "schema_version": SCHEMA_VERSION,
+            "request_kind": "codex_initial_single_stage_plan",
+            "plan_id": plan_id,
+            "closed_brief_path": str(plan_dir / closed_brief_path.relative_to(temp_dir)),
+            "closed_brief_sha256": sha256_file(closed_brief_path),
+            "model_policy_sha256": sha256_file(model_policy_path),
+            "author_runtime": "codex",
+            "author_model": args.frontier_model,
+            "reasoning_effort": args.frontier_reasoning_effort,
+            "executable_stage_limit": 1,
+            "required_outputs": [
+                "optimization_contract", "first_stage_envelope",
+                "evaluation_profile", "checkpoint_capacity",
+                "preflight_inputs", "durable_graph", "cp01_review_materials",
+            ],
+            "continuation_policy": "exactly_one_named_next_stage_may_be_pre_authorized",
+            "controller_only_transitions": True,
+        }
+        atomic_write_json(planning_path, planning_request, immutable=True)
+        manifest_snapshot_path = entry_root / "resource-manifest.initial.json"
+        atomic_write_json(manifest_snapshot_path, manifest, immutable=True)
+        receipt_path = entry_root / "prepared-receipt.json"
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "plan_id": plan_id,
+            "status": "PREPARED",
+            "closed_brief_path": str(plan_dir / closed_brief_path.relative_to(temp_dir)),
+            "closed_brief_sha256": sha256_file(closed_brief_path),
+            "model_policy_path": str(plan_dir / model_policy_path.relative_to(temp_dir)),
+            "model_policy_sha256": sha256_file(model_policy_path),
+            "worker_session_policy_path": str(plan_dir / session_policy_path.relative_to(temp_dir)),
+            "worker_session_policy_sha256": sha256_file(session_policy_path),
+            "initial_planning_request_path": str(plan_dir / planning_path.relative_to(temp_dir)),
+            "initial_planning_request_sha256": sha256_file(planning_path),
+            "resource_manifest_initial_path": str(plan_dir / manifest_snapshot_path.relative_to(temp_dir)),
+            "resource_manifest_initial_sha256": sha256_file(manifest_snapshot_path),
+            "owner_id": brief["permissions"]["owner_id"],
+            "prepared_at": utc_now(),
+        }
+        atomic_write_json(receipt_path, receipt, immutable=True)
+        os.replace(temp_dir, plan_dir)
+    finally:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+    return {"ok": True, **validate_codex_host_preparation(plan_dir)}
+
+
+def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
+    receipt_path = codex_host_activation_root(plan_dir) / "activation-receipt.json"
+    validate_immutable_binding(
+        receipt_path, sha256_file(receipt_path) if receipt_path.is_file() else None,
+        "Codex host activation receipt",
+    )
+    receipt = read_json(receipt_path)
+    if receipt.get("plan_id") != plan_identity(plan_dir) or receipt.get("status") != "ACTIVATED":
+        raise ContractError("Codex host activation receipt correlation mismatch")
+    for path_field, hash_field in (
+        ("prepared_receipt_path", "prepared_receipt_sha256"),
+        ("authorization_receipt_path", "authorization_receipt_sha256"),
+        ("contract_path", "contract_sha256"),
+        ("stage_envelope_path", "stage_envelope_sha256"),
+        ("evaluation_profile_path", "evaluation_profile_sha256"),
+        ("checkpoint_capacity_path", "checkpoint_capacity_sha256"),
+        ("preflight_inputs_path", "preflight_inputs_sha256"),
+        ("durable_graph_path", "durable_graph_sha256"),
+        ("staged_state_snapshot_path", "staged_state_snapshot_sha256"),
+        ("research_dossier_path", "research_dossier_sha256"),
+        ("worker_session_policy_path", "worker_session_policy_sha256"),
+    ):
+        validate_immutable_binding(
+            Path(receipt.get(path_field, "")), receipt.get(hash_field),
+            f"Codex host activation {path_field}",
+        )
+    validate_applied_action_receipt(
+        plan_dir, Path(receipt["authorization_receipt_path"]), "authorize_contract",
+    )
+    return receipt
+
+
+def ensure_codex_host_activation_manifest(plan_dir: Path, receipt_path: Path) -> None:
+    manifest_path = plan_dir / "resource_manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["status"] = "activated"
+    activation_resource = {
+        "resource_id": "codex_host_activation_v1",
+        "kind": "authenticated_activation",
+        "path": str(receipt_path.relative_to(plan_dir)),
+        "ephemeral": False,
+        "run_scoped": True,
+        "cleanup_owner": manifest.get("cleanup_owner"),
+    }
+    resources = manifest.setdefault("resources", [])
+    prior = next(
+        (
+            item for item in resources
+            if isinstance(item, dict)
+            and item.get("resource_id") == activation_resource["resource_id"]
+        ),
+        None,
+    )
+    if prior is not None and prior != activation_resource:
+        raise ContractError("Codex host activation resource ownership changed")
+    if prior is None:
+        resources.append(activation_resource)
+    atomic_write_json(manifest_path, manifest)
+
+
+def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]:
+    """Bind one authenticated first-stage activation to the prepared entry."""
+    plan_dir = Path(args.plan_dir).resolve()
+    prepared = validate_codex_host_preparation(plan_dir)
+    canonical_prepared = codex_host_entry_root(plan_dir) / "prepared-receipt.json"
+    if Path(args.prepared_receipt).resolve() != canonical_prepared:
+        raise ContractError("prepared receipt must be the canonical Codex host entry receipt")
+    activation_root = codex_host_activation_root(plan_dir)
+    receipt_path = activation_root / "activation-receipt.json"
+    if receipt_path.is_file():
+        receipt = validate_codex_host_activation(plan_dir)
+        ensure_codex_host_activation_manifest(plan_dir, receipt_path)
+        return {"ok": True, "idempotent": True, **receipt}
+    authorization_path = Path(args.authorization_receipt).resolve()
+    validate_applied_action_receipt(plan_dir, authorization_path, "authorize_contract")
+    immutable_inputs = {
+        "contract": Path(args.contract).resolve(),
+        "stage_envelope": Path(args.stage_envelope).resolve(),
+        "evaluation_profile": Path(args.evaluation_profile).resolve(),
+        "checkpoint_capacity": Path(args.checkpoint_capacity).resolve(),
+        "preflight_inputs": Path(args.preflight_inputs).resolve(),
+        "durable_graph": Path(args.graph).resolve(),
+    }
+    for label, path in immutable_inputs.items():
+        validate_immutable_binding(path, sha256_file(path) if path.is_file() else None, label)
+    closed_brief = read_json(Path(prepared["closed_brief_path"]))
+    declared_capacity = read_json(immutable_inputs["checkpoint_capacity"])
+    declared_envelope = read_json(immutable_inputs["stage_envelope"])
+    worker_capacity = declared_capacity.get("worker_dispatch_capacity", {})
+    if worker_capacity.get("authorized_calls", 0) > closed_brief["resource_bounds"]["worker_dispatches"]:
+        raise ContractError(
+            "checkpoint capacity exceeds $.resource_bounds.worker_dispatches"
+        )
+    if (
+        declared_envelope.get("stage_budget_and_stop", {}).get("time_seconds", 0)
+        > closed_brief["resource_bounds"]["wall_clock_seconds"]
+    ):
+        raise ContractError("stage time budget exceeds $.resource_bounds.wall_clock_seconds")
+    graph_path = immutable_inputs["durable_graph"]
+    graph = validate_durable_graph(plan_dir, read_json(graph_path))
+    if graph.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("durable graph belongs to another plan")
+    staged = command_init_staged_research(argparse.Namespace(
+        plan_dir=str(plan_dir), plan_id=plan_identity(plan_dir),
+        contract=str(immutable_inputs["contract"]),
+        stage_envelope=str(immutable_inputs["stage_envelope"]),
+        evaluation_profile=str(immutable_inputs["evaluation_profile"]),
+        checkpoint_capacity=str(immutable_inputs["checkpoint_capacity"]),
+        authorization_receipt=str(authorization_path),
+        incumbent_sha256=args.incumbent_sha256,
+    ))
+    preflight = command_preflight_staged_research(argparse.Namespace(
+        plan_dir=str(plan_dir),
+        preflight_inputs=str(immutable_inputs["preflight_inputs"]),
+    ))
+    projections = command_rebuild_staged_projections(argparse.Namespace(
+        plan_dir=str(plan_dir),
+    ))
+    activation_root.mkdir(parents=True, exist_ok=True)
+    staged_snapshot_path = activation_root / "staged-state-at-activation.json"
+    atomic_write_json(staged_snapshot_path, staged_load_state(plan_dir), immutable=True)
+    dossier_path = plan_dir / "state" / "research-dossier.md"
+    dossier_snapshot_path = activation_root / "research-dossier-at-activation.md"
+    atomic_write_bytes(dossier_snapshot_path, dossier_path.read_bytes(), immutable=True)
+    worker_policy_path = Path(prepared["worker_session_policy_path"])
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "status": "ACTIVATED",
+        "prepared_receipt_path": str(canonical_prepared),
+        "prepared_receipt_sha256": sha256_file(canonical_prepared),
+        "authorization_receipt_path": str(authorization_path),
+        "authorization_receipt_sha256": sha256_file(authorization_path),
+        "contract_path": str(immutable_inputs["contract"]),
+        "contract_sha256": sha256_file(immutable_inputs["contract"]),
+        "stage_envelope_path": str(immutable_inputs["stage_envelope"]),
+        "stage_envelope_sha256": sha256_file(immutable_inputs["stage_envelope"]),
+        "evaluation_profile_path": str(immutable_inputs["evaluation_profile"]),
+        "evaluation_profile_sha256": sha256_file(immutable_inputs["evaluation_profile"]),
+        "checkpoint_capacity_path": str(immutable_inputs["checkpoint_capacity"]),
+        "checkpoint_capacity_sha256": sha256_file(immutable_inputs["checkpoint_capacity"]),
+        "preflight_inputs_path": str(immutable_inputs["preflight_inputs"]),
+        "preflight_inputs_sha256": sha256_file(immutable_inputs["preflight_inputs"]),
+        "durable_graph_path": str(graph_path),
+        "durable_graph_sha256": sha256_file(graph_path),
+        "staged_state_snapshot_path": str(staged_snapshot_path),
+        "staged_state_snapshot_sha256": sha256_file(staged_snapshot_path),
+        "research_dossier_path": str(dossier_snapshot_path),
+        "research_dossier_sha256": sha256_file(dossier_snapshot_path),
+        "worker_session_policy_path": str(worker_policy_path),
+        "worker_session_policy_sha256": sha256_file(worker_policy_path),
+        "staged_state": staged["state"],
+        "preflight_status": preflight.get("status", "passed"),
+        "projection_revision": projections.get("audit_revision"),
+        "activated_at": utc_now(),
+    }
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    ensure_codex_host_activation_manifest(plan_dir, receipt_path)
+    return {"ok": True, **validate_codex_host_activation(plan_dir)}
 
 
 OUTPUT_CAPABILITY_CLASSES = {"research-intermediate", "paper-deliverable"}
@@ -3994,6 +4993,25 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     if not 1 <= args.timeout <= 86400:
         raise ContractError("timeout must be between 1 and 86400 seconds")
     resolved_claude_bin = resolve_executable(args.claude_bin, label="Claude Code")
+    stateless_worker_session = bool(
+        getattr(args, "stateless_worker_session", False)
+    )
+    if (
+        not stateless_worker_session
+        and unattended_durable_plan(plan_dir)
+        and context_capsule is None
+    ):
+        record_worker_session_failure(
+            plan_dir, "context_capsule_missing",
+            {
+                "task_contract_sha256": sha256_file(contract_path),
+                "transport_launched": False,
+            },
+        )
+        raise ContractError(
+            "context_capsule_missing: persistent unattended Worker requires "
+            "the current canonical context capsule"
+        )
     operation_id = getattr(args, "operation_id", None)
     run_id = "cwr_" + (operation_id[3:35] if operation_id else uuid.uuid4().hex)
     staged_usage: dict[str, int] | None = None
@@ -4020,22 +5038,41 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
                 resource_request["worker_tokens"], "stage_resource_request.worker_tokens",
             ),
         }
+    session_lease = (
+        None if stateless_worker_session
+        else acquire_worker_session_lease(plan_dir)
+    )
+    worker_session = (
+        None if stateless_worker_session
+        else load_or_create_worker_session(
+            plan_dir, policy, resolved_claude_bin, allowed_tools,
+        )
+    )
     (plan_dir / "state" / "worker_runs").mkdir(parents=True, exist_ok=True)
     run_dir = worker_run_dir(plan_dir, run_id, must_exist=False)
     if run_dir.exists():
         prior = read_json(run_dir / "status.json")
         if prior.get("contract_sha256") != sha256_file(contract_path):
+            release_worker_session_lease(session_lease)
             raise ContractError("deterministic worker operation identity collision")
         if context_capsule and (
             prior.get("context_capsule_id") != context_capsule["capsule_id"]
             or prior.get("context_capsule_sha256") != context_capsule["capsule_sha256"]
         ):
+            release_worker_session_lease(session_lease)
             raise ContractError("deterministic worker operation was rebound to another capsule")
         if prior.get("status") == "RUNNING":
             prior = update_worker_status(plan_dir, run_id, "PAUSED", {
                 "failure": "transport_outcome_uncertain", "reconciliation_required": True,
             })
+            if worker_session is not None:
+                update_worker_session(
+                    plan_dir, worker_session, "PAUSED",
+                    {"paused_reason": "transport_outcome_uncertain"},
+                )
+            release_worker_session_lease(session_lease)
             raise ContractError("worker delivery outcome is uncertain; inspect and explicitly reconcile")
+        release_worker_session_lease(session_lease)
         return {**prior, "idempotent": True}
     if staged_usage is not None:
         staged_reserve_worker_dispatch_and_budget(
@@ -4058,13 +5095,49 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "writing_gate": writing_gate,
         "context_capsule": context_capsule,
     }, indent=2)
+    turn_index = (
+        None if worker_session is None else worker_session["turn_count"] + 1
+    )
+    instruction_record = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "worker_run_id": run_id,
+        "task_id": task_id,
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "context_capsule_id": (
+            None if context_capsule is None else context_capsule["capsule_id"]
+        ),
+        "context_capsule_sha256": (
+            None if context_capsule is None else context_capsule["capsule_sha256"]
+        ),
+        "context_state_revision": (
+            None if context_capsule is None else context_capsule["state_revision"]
+        ),
+        "input_manifest_sha256": sha256_json(inputs),
+        "artifact_outputs_sha256": sha256_json(declarations),
+        "output_schema_sha256": sha256_json(output_schema),
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "session_id": (
+            None if worker_session is None else worker_session["session_id"]
+        ),
+        "turn_index": turn_index,
+        "created_at": utc_now(),
+    }
+    instruction_path = run_dir / "instruction.json"
+    atomic_write_json(instruction_path, instruction_record, immutable=True)
     cmd = [
         resolved_claude_bin, "-p", "--model", policy["worker_model"],
         "--output-format", "json", "--json-schema", json.dumps(output_schema),
         "--max-budget-usd", str(policy["worker_max_budget_usd"]),
         "--permission-mode", "dontAsk", "--tools", ",".join(allowed_tools),
-        "--no-session-persistence",
     ]
+    if worker_session is None:
+        cmd.append("--no-session-persistence")
+    elif worker_session["turn_count"] == 0:
+        cmd.extend(["--session-id", worker_session["session_id"]])
+    else:
+        cmd.extend(["--resume", worker_session["session_id"]])
     input_dirs = sorted({str(Path(item["path"]).parent) for item in inputs})
     if input_dirs:
         # Claude Code treats files outside cwd as permission-denied even when
@@ -4082,6 +5155,15 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "artifact_outputs": declarations,
         "output_capability_class": declarations[0]["capability"]["class"] if declarations else None,
         "model_policy_sha256": sha256_file(policy_path(plan_dir)),
+        "worker_session_mode": (
+            "stateless" if worker_session is None else "persistent"
+        ),
+        "worker_session_id": (
+            None if worker_session is None else worker_session["session_id"]
+        ),
+        "worker_session_turn": turn_index,
+        "instruction_path": str(instruction_path),
+        "instruction_sha256": sha256_file(instruction_path),
         "started_at": utc_now(),
     }
     if writing_gate_path:
@@ -4097,6 +5179,10 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             "context_state_revision": context_capsule["state_revision"],
         })
     atomic_write_json(run_dir / "status.json", started)
+    if worker_session is not None:
+        worker_session = update_worker_session(
+            plan_dir, worker_session, "BUSY", {"active_run_id": run_id},
+        )
     try:
         if context_capsule is not None and unattended_durable_plan(plan_dir):
             assurance = validate_runtime_assurance_activation(plan_dir)
@@ -4114,19 +5200,53 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             )
     except FileNotFoundError as exc:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "claude_not_found", "completed_at": utc_now()})
+        if worker_session is not None:
+            commit_worker_session_turn(
+                plan_dir, worker_session, run_id=run_id,
+                turn_index=turn_index, instruction_path=instruction_path,
+                outcome="FAILED", failure="claude_not_found",
+            )
+        release_worker_session_lease(session_lease)
         raise ContractError(f"Claude Code executable not found: {args.claude_bin}") from exc
     except subprocess.TimeoutExpired as exc:
         update_worker_status(plan_dir, run_id, "PAUSED", {"failure": "worker_timeout", "completed_at": utc_now()})
+        if worker_session is not None:
+            commit_worker_session_turn(
+                plan_dir, worker_session, run_id=run_id,
+                turn_index=turn_index, instruction_path=instruction_path,
+                outcome="PAUSED", failure="worker_timeout",
+            )
+        release_worker_session_lease(session_lease)
         raise ContractError(f"Claude worker timed out after {args.timeout}s") from exc
     if proc.returncode != 0:
+        transport_failure = classify_claude_transport_failure(
+            proc.returncode, proc.stderr,
+        )
         terminal = update_worker_status(
             plan_dir, run_id, "FAILED",
-            {"exit_code": proc.returncode, "completed_at": utc_now()},
+            {
+                "failure": transport_failure,
+                "exit_code": proc.returncode,
+                "completed_at": utc_now(),
+            },
         )
+        if worker_session is not None:
+            commit_worker_session_turn(
+                plan_dir, worker_session, run_id=run_id,
+                turn_index=turn_index, instruction_path=instruction_path,
+                outcome=("CANCELLED" if terminal.get("status") == "CANCELLED" else "FAILED"),
+                failure=transport_failure,
+            )
+        release_worker_session_lease(session_lease)
         if terminal.get("status") == "CANCELLED":
             return terminal
         raise ContractError(f"Claude worker failed with exit {proc.returncode}: {proc.stderr[:300]}")
+    transport_metadata: dict[str, Any] | None = None
     try:
+        if worker_session is not None:
+            transport_metadata = claude_transport_metadata(
+                proc.stdout, worker_session["session_id"],
+            )
         result = extract_structured_claude_output(proc.stdout)
         validate_schema(result, output_schema)
         if not isinstance(result, dict):
@@ -4134,16 +5254,46 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         validate_worker_artifact_proposals(result, declarations)
         result_path = run_dir / "result.json"
         atomic_write_json(result_path, {"result": result, "artifact_outputs": declarations})
-        completed = update_worker_status(plan_dir, run_id, "COMPLETED", {
-            "completed_at": utc_now(), "result_path": str(result_path),
-            "result_sha256": sha256_file(result_path),
+    except ContractError as exc:
+        invalid_failure = (
+            "response_session_drift"
+            if "different session_id" in str(exc)
+            else "invalid_worker_output"
+        )
+        update_worker_status(plan_dir, run_id, "FAILED", {
+            "failure": invalid_failure, "completed_at": utc_now(),
         })
-        if completed.get("status") == "CANCELLED":
-            return {**completed, "ignored_result_path": str(result_path)}
-        return completed
-    except ContractError:
-        update_worker_status(plan_dir, run_id, "FAILED", {"failure": "invalid_worker_output", "completed_at": utc_now()})
+        if worker_session is not None:
+            commit_worker_session_turn(
+                plan_dir, worker_session, run_id=run_id,
+                turn_index=turn_index, instruction_path=instruction_path,
+                outcome="FAILED", transport_metadata=transport_metadata,
+                failure=f"{invalid_failure}:{str(exc)[:160]}",
+            )
+        release_worker_session_lease(session_lease)
         raise
+    completed = update_worker_status(plan_dir, run_id, "COMPLETED", {
+        "completed_at": utc_now(), "result_path": str(result_path),
+        "result_sha256": sha256_file(result_path),
+    })
+    if completed.get("status") == "CANCELLED":
+        if worker_session is not None:
+            commit_worker_session_turn(
+                plan_dir, worker_session, run_id=run_id,
+                turn_index=turn_index, instruction_path=instruction_path,
+                outcome="CANCELLED", transport_metadata=transport_metadata,
+                failure="cancelled_during_delivery",
+            )
+        release_worker_session_lease(session_lease)
+        return {**completed, "ignored_result_path": str(result_path)}
+    if worker_session is not None:
+        commit_worker_session_turn(
+            plan_dir, worker_session, run_id=run_id,
+            turn_index=turn_index, instruction_path=instruction_path,
+            outcome="COMPLETED", transport_metadata=transport_metadata,
+        )
+    release_worker_session_lease(session_lease)
+    return completed
 
 
 def command_reconcile_orphan_worker_budget(args: argparse.Namespace) -> dict[str, Any]:
@@ -6748,6 +7898,552 @@ def command_run_runtime_assurance_tick(args: argparse.Namespace) -> dict[str, An
     return {"ok": True, "health_tick": str(tick_path), **tick}
 
 
+def host_bootstrap_root(plan_dir: Path) -> Path:
+    return plan_dir / "state" / "host_bootstrap" / "v1"
+
+
+def record_host_bootstrap_failure(plan_dir: Path, error: str) -> None:
+    """Attach a typed recoverable failure only after bootstrap has PREPARED."""
+    journal_path = host_bootstrap_root(plan_dir) / "journal.json"
+    if not journal_path.is_file():
+        return
+    journal = read_json(journal_path)
+    if "simulated crash" in error:
+        failure_class = "bootstrap_interrupted"
+    elif "binding changed" in error or "changed" in error:
+        failure_class = "bootstrap_binding_drift"
+    elif "scheduler" in error or "L0" in error or "L1" in error:
+        failure_class = "bootstrap_scheduler_failure"
+    else:
+        failure_class = "bootstrap_component_failure"
+    fingerprint = hashlib.sha256(
+        f"{journal.get('request_sha256')}\0{failure_class}\0{error}".encode()
+    ).hexdigest()
+    journal["last_failure"] = {
+        "failure_class": failure_class,
+        "fingerprint": fingerprint,
+        "error": error,
+        "recoverable": True,
+        "recorded_at": utc_now(),
+    }
+    journal["updated_at"] = journal["last_failure"]["recorded_at"]
+    atomic_write_json(journal_path, journal)
+
+
+def validate_host_bootstrap_receipt(plan_dir: Path) -> dict[str, Any]:
+    """Validate the committed Codex-host runtime bootstrap against live host state."""
+    root = host_bootstrap_root(plan_dir)
+    current = read_json(root / "current.json")
+    if current.get("status") != "READY" or current.get("active") is not True:
+        raise ContractError("Codex host runtime bootstrap is not READY")
+    receipt_path = Path(current.get("receipt_path", ""))
+    if (
+        not receipt_path.is_file()
+        or receipt_path.stat().st_mode & 0o777 != 0o444
+        or sha256_file(receipt_path) != current.get("receipt_sha256")
+    ):
+        raise ContractError("Codex host bootstrap receipt binding changed")
+    receipt = read_json(receipt_path)
+    if receipt.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("Codex host bootstrap receipt belongs to another plan")
+    bindings = (
+        ("request_path", "request_sha256"),
+        ("durable_head_probe_path", "durable_head_probe_sha256"),
+        ("l1_registration_receipt_path", "l1_registration_receipt_sha256"),
+        ("runtime_assurance_receipt_path", "runtime_assurance_receipt_sha256"),
+        ("l0_recovery_probe_path", "l0_recovery_probe_sha256"),
+        ("l1_functional_probe_path", "l1_functional_probe_sha256"),
+        ("l2_heartbeat_contract_path", "l2_heartbeat_contract_sha256"),
+        ("l2_conformance_probe_path", "l2_conformance_probe_sha256"),
+        ("dashboard_config_path", "dashboard_config_sha256"),
+        ("runtime_resources_path", "runtime_resources_sha256"),
+    )
+    for path_field, hash_field in bindings:
+        path = Path(receipt.get(path_field, ""))
+        if (
+            not path.is_file()
+            or path.stat().st_mode & 0o777 != 0o444
+            or sha256_file(path) != receipt.get(hash_field)
+        ):
+            raise ContractError(f"Codex host bootstrap binding changed: {path_field}")
+    if "entry_prepared_receipt_path" in receipt:
+        entry = validate_codex_host_preparation(plan_dir)
+        activation = validate_codex_host_activation(plan_dir)
+        for path_field, hash_field in (
+            ("entry_prepared_receipt_path", "entry_prepared_receipt_sha256"),
+            ("entry_activation_receipt_path", "entry_activation_receipt_sha256"),
+            ("closed_brief_path", "closed_brief_sha256"),
+            ("worker_session_policy_path", "worker_session_policy_sha256"),
+            ("staged_state_snapshot_path", "staged_state_snapshot_sha256"),
+        ):
+            validate_immutable_binding(
+                Path(receipt.get(path_field, "")), receipt.get(hash_field),
+                f"Codex host bootstrap {path_field}",
+            )
+        if (
+            receipt["entry_prepared_receipt_sha256"]
+            != sha256_file(codex_host_entry_root(plan_dir) / "prepared-receipt.json")
+            or receipt["entry_activation_receipt_sha256"]
+            != sha256_file(codex_host_activation_root(plan_dir) / "activation-receipt.json")
+            or entry["closed_brief_sha256"] != receipt["closed_brief_sha256"]
+            or activation["staged_state_snapshot_sha256"]
+            != receipt["staged_state_snapshot_sha256"]
+        ):
+            raise ContractError("Codex host entry lineage changed after bootstrap")
+    l1 = read_json(Path(receipt["l1_registration_receipt_path"]))
+    assurance = validate_runtime_assurance_activation(plan_dir)
+    assert assurance is not None
+    if (
+        l1.get("scheduler_label") != receipt.get("l1_scheduler_label")
+        or assurance.get("l0_scheduler_label") != receipt.get("l0_scheduler_label")
+        or not scheduler_is_loaded(
+            assurance["launchctl_bin"], receipt["l1_scheduler_label"],
+        )
+    ):
+        raise ContractError("Codex host bootstrap scheduler binding is not live")
+    l0_probe = read_json(Path(receipt["l0_recovery_probe_path"]))
+    l1_probe = read_json(Path(receipt["l1_functional_probe_path"]))
+    l2_probe = read_json(Path(receipt["l2_conformance_probe_path"]))
+    l0_health_tick_path = Path(l0_probe.get("health_tick_path", ""))
+    if (
+        not l0_health_tick_path.is_file()
+        or l0_health_tick_path.stat().st_mode & 0o777 != 0o444
+        or sha256_file(l0_health_tick_path) != l0_probe.get("health_tick_sha256")
+    ):
+        raise ContractError("Codex host L0 health-tick binding changed")
+    l0_health_tick = read_json(l0_health_tick_path)
+    if (
+        l0_probe.get("model_dispatches") != 0
+        or l0_probe.get("l1_restored") is not True
+        or l0_health_tick.get("model_dispatches") != 0
+        or l1_probe.get("due") is not False
+        or l1_probe.get("model_dispatches") != 0
+        or l2_probe.get("model_dispatches") != 0
+        or l2_probe.get("live_worker_evidence") is not False
+    ):
+        raise ContractError("Codex host bootstrap functional probe changed")
+    return receipt
+
+
+def command_bootstrap_host_runtime(args: argparse.Namespace) -> dict[str, Any]:
+    """Transactionally compose and exercise L0/L1/L2 for the Codex Host."""
+    plan_dir = Path(args.plan_dir).resolve()
+    if not plan_dir.is_dir():
+        raise ContractError("plan_dir must be an existing directory")
+    policy = load_policy(plan_dir)
+    check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
+    entry_prepared = None
+    entry_activation = None
+    if (codex_host_entry_root(plan_dir) / "prepared-receipt.json").is_file():
+        entry_prepared = validate_codex_host_preparation(plan_dir)
+        entry_activation = validate_codex_host_activation(plan_dir)
+    graph_path = Path(args.graph).resolve()
+    graph = validate_durable_graph(plan_dir, read_json(graph_path))
+    if graph.get("plan_id") != plan_identity(plan_dir):
+        raise ContractError("durable graph belongs to another plan")
+    if (
+        entry_activation is not None
+        and (
+            entry_activation.get("durable_graph_path") != str(graph_path)
+            or entry_activation.get("durable_graph_sha256") != sha256_file(graph_path)
+        )
+    ):
+        raise ContractError("Codex host activation does not bind this durable graph")
+    autonomy_tier = {
+        "conference": "conference_unattended",
+        "journal-q1": "journal_q1_unattended",
+    }.get(graph.get("target_tier")) if graph.get("execution_mode") == "unattended" else None
+    if autonomy_tier is not None:
+        validate_current_evaluator_admission(plan_dir, graph, autonomy_tier)
+    resolved_launchctl = resolve_executable(args.launchctl_bin, label="launchctl")
+    if not 60 <= args.interval_seconds <= 86400:
+        raise ContractError("interval_seconds must be between 60 and 86400")
+    if not 0 <= args.jitter_seconds < args.interval_seconds:
+        raise ContractError("jitter_seconds must be non-negative and below interval_seconds")
+    for name in (
+        "session_budget_seconds", "human_escalation_after_seconds", "lease_seconds",
+        "health_interval_seconds", "worker_stale_seconds",
+        "frontier_stale_seconds", "heartbeat_stale_seconds",
+    ):
+        value = getattr(args, name)
+        if not 1 <= value <= 86400:
+            raise ContractError(f"{name} must be between 1 and 86400")
+    if args.health_interval_seconds < 60:
+        raise ContractError("health_interval_seconds must be at least 60")
+    shortest_stale = min(
+        args.worker_stale_seconds,
+        args.frontier_stale_seconds,
+        args.heartbeat_stale_seconds,
+    )
+    if (
+        args.health_interval_seconds > 3600
+        or 2 * args.health_interval_seconds > shortest_stale
+    ):
+        raise ContractError(
+            "health interval must be at most one hour and no more than half "
+            "the shortest stale threshold"
+        )
+    if not 1 <= args.dashboard_port <= 65535:
+        raise ContractError("dashboard_port must be between 1 and 65535")
+    dashboard_index = SCRIPT_DIR.parent / "dashboard" / "index.html"
+    dashboard_server = SCRIPT_DIR / "dashboard_server.py"
+    if not dashboard_index.is_file() or not dashboard_server.is_file():
+        raise ContractError("compiled Dashboard assets are incomplete")
+    target_graph = durable_graph_path(plan_dir)
+    if target_graph.is_file() and read_json(target_graph) != graph:
+        raise ContractError("durable plan is already initialized with another graph")
+
+    root = host_bootstrap_root(plan_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    request_path = root / "request.json"
+    existing_request = read_json(request_path) if request_path.is_file() else None
+    created_at = existing_request.get("created_at") if existing_request else utc_now()
+    if existing_request:
+        first_due_at = existing_request["first_due_at"]
+    else:
+        first_due_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=args.interval_seconds)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    request = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": plan_identity(plan_dir),
+        "host": "codex",
+        "graph_path": str(graph_path),
+        "graph_sha256": sha256_file(graph_path),
+        "graph_canonical_sha256": sha256_json(graph),
+        "model_policy_sha256": sha256_file(policy_path(plan_dir)),
+        "schedule_id": args.schedule_id,
+        "interval_seconds": args.interval_seconds,
+        "jitter_seconds": args.jitter_seconds,
+        "session_budget_seconds": args.session_budget_seconds,
+        "human_escalation_after_seconds": args.human_escalation_after_seconds,
+        "lease_seconds": args.lease_seconds,
+        "health_interval_seconds": args.health_interval_seconds,
+        "worker_stale_seconds": args.worker_stale_seconds,
+        "frontier_stale_seconds": args.frontier_stale_seconds,
+        "heartbeat_stale_seconds": args.heartbeat_stale_seconds,
+        "launchctl_bin": resolved_launchctl,
+        "dashboard_host": "127.0.0.1",
+        "dashboard_port": args.dashboard_port,
+        "dashboard_index_sha256": sha256_file(dashboard_index),
+        "dashboard_server_sha256": sha256_file(dashboard_server),
+        "first_due_at": first_due_at,
+        "created_at": created_at,
+    }
+    if existing_request and existing_request != request:
+        raise ContractError("Codex host bootstrap request changed")
+    if not request_path.is_file():
+        atomic_write_json(request_path, request, immutable=True)
+    current_path = root / "current.json"
+    receipt_path = root / "bootstrap-receipt.json"
+    if receipt_path.is_file():
+        receipt = validate_host_bootstrap_receipt(plan_dir)
+        return {"ok": True, "idempotent": True, **receipt}
+    journal_path = root / "journal.json"
+    journal = read_json(journal_path) if journal_path.is_file() else {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "request_path": str(request_path),
+        "request_sha256": sha256_file(request_path),
+        "phase": "PREPARED",
+        "prepared_at": utc_now(),
+    }
+    if (
+        journal.get("plan_id") != request["plan_id"]
+        or journal.get("request_sha256") != sha256_file(request_path)
+    ):
+        raise ContractError("Codex host bootstrap journal correlation mismatch")
+    atomic_write_json(journal_path, journal)
+
+    durable = command_init_durable_plan(argparse.Namespace(
+        plan_dir=str(plan_dir), graph=str(graph_path),
+    ))
+    journal.update({"phase": "DURABLE_READY", "durable": durable, "updated_at": utc_now()})
+    atomic_write_json(journal_path, journal)
+    l1 = command_register_durable_trigger(argparse.Namespace(
+        plan_dir=str(plan_dir), schedule_id=args.schedule_id,
+        interval_seconds=args.interval_seconds, jitter_seconds=args.jitter_seconds,
+        session_budget_seconds=args.session_budget_seconds,
+        human_escalation_after_seconds=args.human_escalation_after_seconds,
+        lease_seconds=args.lease_seconds, first_due_at=first_due_at,
+        launchctl_bin=resolved_launchctl, simulate_crash_after_bootstrap=False,
+    ))
+    journal.update({"phase": "L1_READY", "l1": l1, "updated_at": utc_now()})
+    atomic_write_json(journal_path, journal)
+    if args.simulate_crash_after == "l1_registered":
+        raise ContractError("simulated crash after Codex host L1 registration")
+    assurance = command_activate_runtime_assurance(argparse.Namespace(
+        plan_dir=str(plan_dir), schedule_id=args.schedule_id,
+        health_interval_seconds=args.health_interval_seconds,
+        worker_stale_seconds=args.worker_stale_seconds,
+        frontier_stale_seconds=args.frontier_stale_seconds,
+        heartbeat_stale_seconds=args.heartbeat_stale_seconds,
+        launchctl_bin=resolved_launchctl,
+    ))
+    journal.update({"phase": "L0_L2_READY", "assurance": assurance, "updated_at": utc_now()})
+    atomic_write_json(journal_path, journal)
+    if args.simulate_crash_after == "assurance_activated":
+        raise ContractError("simulated crash after Codex host assurance activation")
+
+    probe_time = (
+        parse_utc(first_due_at) - timedelta(seconds=1)
+    ).isoformat().replace("+00:00", "Z")
+    l1_result = command_run_durable_tick(argparse.Namespace(
+        plan_dir=str(plan_dir), schedule_id=args.schedule_id,
+        observed_at=probe_time, simulate_crash_after_tick_apply=False,
+    ))
+    if l1_result.get("due") is not False:
+        raise ContractError("Codex host L1 probe unexpectedly advanced the plan")
+    l1_probe = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "kind": "l1_non_due_functional_probe",
+        "controller_command_sha256": read_json(
+            Path(l1["schedule_contract_path"])
+        )["controller_command_sha256"],
+        "due": False,
+        "model_dispatches": 0,
+        "observed_at": utc_now(),
+    }
+    l1_probe_path = root / "l1-functional-probe.json"
+    if not l1_probe_path.is_file():
+        atomic_write_json(l1_probe_path, l1_probe, immutable=True)
+    elif {
+        key: value for key, value in read_json(l1_probe_path).items()
+        if key != "observed_at"
+    } != {key: value for key, value in l1_probe.items() if key != "observed_at"}:
+        raise ContractError("Codex host L1 probe changed")
+    if args.simulate_crash_after == "l1_probe":
+        raise ContractError("simulated crash after Codex host L1 probe")
+
+    service_target = scheduler_service_target(l1["scheduler_label"])
+    removed = False
+    if scheduler_is_loaded(resolved_launchctl, l1["scheduler_label"]):
+        proc = subprocess.run(
+            [resolved_launchctl, "bootout", service_target],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise ContractError("Codex host could not exercise L1 loss")
+        removed = True
+    if args.simulate_crash_after == "l1_bootout":
+        raise ContractError("simulated crash after Codex host L1 bootout")
+    externally_restored = scheduler_is_loaded(
+        resolved_launchctl, l1["scheduler_label"],
+    )
+    health = command_run_runtime_assurance_tick(argparse.Namespace(
+        plan_dir=str(plan_dir),
+    ))
+    l1_restored = scheduler_is_loaded(resolved_launchctl, l1["scheduler_label"])
+    if not removed or not l1_restored:
+        raise ContractError("Codex host L0 probe did not restore the exact L1")
+    l0_probe = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "kind": "l0_l1_recovery_probe",
+        "l1_was_removed": removed,
+        "l1_restored": l1_restored,
+        "recovered_by_tick": health.get("recovered_l1") is True,
+        "recovered_by_external_l0": externally_restored,
+        "health_tick_path": health["health_tick"],
+        "health_tick_sha256": sha256_file(Path(health["health_tick"])),
+        "model_dispatches": 0,
+        "observed_at": utc_now(),
+    }
+    l0_probe_path = root / "l0-recovery-probe.json"
+    if not l0_probe_path.is_file():
+        atomic_write_json(l0_probe_path, l0_probe, immutable=True)
+    elif any(
+        read_json(l0_probe_path).get(key) != l0_probe.get(key)
+        for key in ("plan_id", "kind", "l1_was_removed", "l1_restored", "model_dispatches")
+    ):
+        raise ContractError("Codex host L0 recovery probe changed")
+
+    assurance_receipt_path = Path(
+        assurance.get("activation_receipt")
+        or assurance.get("activation_receipt_path")
+        or read_json(runtime_assurance_root(plan_dir) / "current.json")[
+            "activation_receipt_path"
+        ]
+    )
+    assurance_receipt = read_json(assurance_receipt_path)
+    l2_probe_path = root / "l2-conformance-probe.json"
+    l2_probe = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "kind": "l2_heartbeat_contract_conformance",
+        "heartbeat_contract_sha256": assurance_receipt["l2_heartbeat_contract_sha256"],
+        "activation_probe_sha256": assurance_receipt["test_heartbeat_sha256"],
+        "model_dispatches": 0,
+        "live_worker_evidence": False,
+        "live_worker_gate": "T032",
+        "observed_at": utc_now(),
+    }
+    if not l2_probe_path.is_file():
+        atomic_write_json(l2_probe_path, l2_probe, immutable=True)
+    elif any(
+        read_json(l2_probe_path).get(key) != l2_probe.get(key)
+        for key in (
+            "plan_id", "kind", "heartbeat_contract_sha256",
+            "activation_probe_sha256", "model_dispatches", "live_worker_evidence",
+        )
+    ):
+        raise ContractError("Codex host L2 conformance probe changed")
+
+    dashboard_config_path = root / "dashboard-config.json"
+    dashboard_config = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "host": "127.0.0.1",
+        "port": args.dashboard_port,
+        "observation_only": True,
+        "index_sha256": request["dashboard_index_sha256"],
+        "server_sha256": request["dashboard_server_sha256"],
+    }
+    if not dashboard_config_path.is_file():
+        atomic_write_json(dashboard_config_path, dashboard_config, immutable=True)
+    elif read_json(dashboard_config_path) != dashboard_config:
+        raise ContractError("Codex host Dashboard configuration changed")
+
+    runtime_resources_path = root / "runtime-resources.json"
+    runtime_resources = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "ownership_scope": "shutdown-plan",
+        "resources": [
+            {"kind": "launchd", "layer": "L0", "label": assurance_receipt["l0_scheduler_label"]},
+            {"kind": "launchd", "layer": "L1", "label": l1["scheduler_label"]},
+        ],
+    }
+    if not runtime_resources_path.is_file():
+        atomic_write_json(runtime_resources_path, runtime_resources, immutable=True)
+    elif read_json(runtime_resources_path) != runtime_resources:
+        raise ContractError("Codex host runtime resource binding changed")
+    manifest_path = plan_dir / "resource_manifest.json"
+    manifest = read_json(manifest_path)
+    resource_entry = {
+        "resource_id": "codex_host_runtime_assurance_v1",
+        "kind": "runtime_assurance_bundle",
+        "path": str(runtime_resources_path.relative_to(plan_dir)),
+        "ephemeral": False,
+        "run_scoped": True,
+        "ownership_generation": sha256_file(request_path)[:16],
+    }
+    resources = manifest.setdefault("resources", [])
+    prior_resource = next(
+        (item for item in resources if isinstance(item, dict)
+         and item.get("resource_id") == resource_entry["resource_id"]),
+        None,
+    )
+    if prior_resource is None:
+        resources.append(resource_entry)
+        atomic_write_json(manifest_path, manifest)
+    elif prior_resource != resource_entry:
+        raise ContractError("Codex host runtime resource manifest changed")
+
+    durable_head_path = durable_root(plan_dir) / "canonical" / "head.json"
+    durable_head_probe_path = root / "durable-head-probe.json"
+    durable_head = read_json(durable_head_path)
+    durable_head_probe = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "kind": "bootstrap_durable_head_binding",
+        "head_path": str(durable_head_path),
+        "head_sha256_at_bootstrap": sha256_file(durable_head_path),
+        "state_revision": durable_head["state_revision"],
+        "state_path": durable_head["state_path"],
+        "state_sha256": durable_head["state_sha256"],
+        "event_id": durable_head["event_id"],
+    }
+    if not durable_head_probe_path.is_file():
+        atomic_write_json(
+            durable_head_probe_path, durable_head_probe, immutable=True,
+        )
+    elif read_json(durable_head_probe_path) != durable_head_probe:
+        raise ContractError("Codex host durable head probe changed")
+    l1_receipt_path = Path(
+        l1.get("registration_receipt")
+        or l1.get("registration_receipt_path")
+        or read_json(durable_schedule_root(plan_dir, args.schedule_id) / "current.json")[
+            "registration_receipt_path"
+        ]
+    )
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "host": "codex",
+        "status": "READY",
+        "request_path": str(request_path),
+        "request_sha256": sha256_file(request_path),
+        "model_policy_sha256": sha256_file(policy_path(plan_dir)),
+        "durable_head_path": str(durable_head_path),
+        "durable_head_sha256": sha256_file(durable_head_path),
+        "durable_head_probe_path": str(durable_head_probe_path),
+        "durable_head_probe_sha256": sha256_file(durable_head_probe_path),
+        "l0_scheduler_label": assurance_receipt["l0_scheduler_label"],
+        "l1_scheduler_label": l1["scheduler_label"],
+        "l1_registration_receipt_path": str(l1_receipt_path),
+        "l1_registration_receipt_sha256": sha256_file(l1_receipt_path),
+        "runtime_assurance_receipt_path": str(assurance_receipt_path),
+        "runtime_assurance_receipt_sha256": sha256_file(assurance_receipt_path),
+        "l0_recovery_probe_path": str(l0_probe_path),
+        "l0_recovery_probe_sha256": sha256_file(l0_probe_path),
+        "l1_functional_probe_path": str(l1_probe_path),
+        "l1_functional_probe_sha256": sha256_file(l1_probe_path),
+        "l2_heartbeat_contract_path": assurance_receipt["l2_heartbeat_contract_path"],
+        "l2_heartbeat_contract_sha256": assurance_receipt["l2_heartbeat_contract_sha256"],
+        "l2_conformance_probe_path": str(l2_probe_path),
+        "l2_conformance_probe_sha256": sha256_file(l2_probe_path),
+        "dashboard_config_path": str(dashboard_config_path),
+        "dashboard_config_sha256": sha256_file(dashboard_config_path),
+        "runtime_resources_path": str(runtime_resources_path),
+        "runtime_resources_sha256": sha256_file(runtime_resources_path),
+        "live_l2_worker_evidence": None,
+        "live_l2_worker_gate": "T032",
+        "committed_at": utc_now(),
+    }
+    if entry_prepared is not None and entry_activation is not None:
+        receipt.update({
+            "entry_prepared_receipt_path": str(
+                codex_host_entry_root(plan_dir) / "prepared-receipt.json"
+            ),
+            "entry_prepared_receipt_sha256": sha256_file(
+                codex_host_entry_root(plan_dir) / "prepared-receipt.json"
+            ),
+            "entry_activation_receipt_path": str(
+                codex_host_activation_root(plan_dir) / "activation-receipt.json"
+            ),
+            "entry_activation_receipt_sha256": sha256_file(
+                codex_host_activation_root(plan_dir) / "activation-receipt.json"
+            ),
+            "closed_brief_path": entry_prepared["closed_brief_path"],
+            "closed_brief_sha256": entry_prepared["closed_brief_sha256"],
+            "worker_session_policy_path": entry_prepared["worker_session_policy_path"],
+            "worker_session_policy_sha256": entry_prepared["worker_session_policy_sha256"],
+            "staged_state_snapshot_path": entry_activation["staged_state_snapshot_path"],
+            "staged_state_snapshot_sha256": entry_activation["staged_state_snapshot_sha256"],
+        })
+    atomic_write_json(receipt_path, receipt, immutable=True)
+    journal.update({
+        "phase": "COMMITTED", "receipt_path": str(receipt_path),
+        "receipt_sha256": sha256_file(receipt_path), "updated_at": utc_now(),
+    })
+    atomic_write_json(journal_path, journal)
+    atomic_write_json(current_path, {
+        "schema_version": SCHEMA_VERSION,
+        "plan_id": request["plan_id"],
+        "status": "READY",
+        "active": True,
+        "receipt_path": str(receipt_path),
+        "receipt_sha256": sha256_file(receipt_path),
+        "last_health_action": "l1_restored",
+        "last_health_tick_path": health["health_tick"],
+        "live_l2_worker_evidence": None,
+        "updated_at": receipt["committed_at"],
+    })
+    return {"ok": True, **receipt}
+
+
 def command_unregister_runtime_assurance(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     authorization = validate_applied_action_receipt(
@@ -6890,6 +8586,49 @@ def declared_runtime_resources(plan_dir: Path) -> list[dict[str, Any]]:
     return declared
 
 
+def inspect_host_bootstrap_binding(plan_dir: Path) -> dict[str, Any]:
+    current_path = host_bootstrap_root(plan_dir) / "current.json"
+    if not current_path.is_file():
+        return {
+            "present": False,
+            "status": "ABSENT",
+            "active": False,
+            "last_health_action": None,
+            "live_l2_worker_evidence": None,
+            "receipt": observable_file(None),
+            "last_health_tick": observable_file(None),
+        }
+    current = read_json(current_path)
+    receipt_path = Path(current["receipt_path"]) \
+        if isinstance(current.get("receipt_path"), str) else None
+    assurance_current = optional_json(
+        runtime_assurance_root(plan_dir) / "current.json"
+    ) or {}
+    tick_value = assurance_current.get("last_health_tick_path") \
+        or current.get("last_health_tick_path")
+    tick_path = Path(tick_value) if isinstance(tick_value, str) else None
+    tick = optional_json(tick_path) if tick_path is not None else None
+    validation_error = None
+    try:
+        validate_host_bootstrap_receipt(plan_dir)
+    except ContractError as exc:
+        validation_error = str(exc)
+    return {
+        "present": True,
+        "status": current.get("status"),
+        "active": current.get("active") is True,
+        "last_health_action": (
+            "l1_restored" if isinstance(tick, dict) and tick.get("recovered_l1") is True
+            else "healthy" if isinstance(tick, dict)
+            else current.get("last_health_action")
+        ),
+        "live_l2_worker_evidence": current.get("live_l2_worker_evidence"),
+        "validation_error": validation_error,
+        "receipt": observable_file(receipt_path),
+        "last_health_tick": observable_file(tick_path),
+    }
+
+
 def command_inspect_plan_runtime(args: argparse.Namespace) -> dict[str, Any]:
     """Correlate runtime truth without writing state or scheduler resources."""
     plan_dir = Path(args.plan_dir).resolve()
@@ -6971,6 +8710,7 @@ def command_inspect_plan_runtime(args: argparse.Namespace) -> dict[str, Any]:
         },
         "schedulers": schedulers,
         "workers": workers,
+        "host_bootstrap": inspect_host_bootstrap_binding(plan_dir),
         "declared_resources": declared_runtime_resources(plan_dir),
         "mismatches": mismatches,
         "shutdown": optional_json(
@@ -16943,6 +18683,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    codex_prepare = sub.add_parser(
+        "prepare-codex-host-plan",
+        help="validate a closed brief and atomically prepare an installed Codex Host plan",
+    )
+    codex_prepare.add_argument("--brief", required=True)
+    codex_prepare.add_argument("--plan-dir", required=True)
+    codex_prepare.add_argument("--claude-bin", default=os.environ.get("CLAUDE_BIN", "claude"))
+    codex_prepare.add_argument("--worker-model", default="MiniMax-M3")
+    codex_prepare.add_argument("--frontier-model", default=PLAN_AUDIT_MODEL)
+    codex_prepare.add_argument(
+        "--frontier-reasoning-effort",
+        default=PLAN_AUDIT_REASONING_EFFORT,
+        choices=["low", "medium", "high", "xhigh", "max", "ultra"],
+    )
+    codex_prepare.set_defaults(handler=command_prepare_codex_host_plan)
+
+    codex_activate = sub.add_parser(
+        "activate-codex-host-plan",
+        help="bind one authenticated first stage to a prepared Codex Host plan",
+    )
+    codex_activate.add_argument("--plan-dir", required=True)
+    codex_activate.add_argument("--prepared-receipt", required=True)
+    codex_activate.add_argument("--authorization-receipt", required=True)
+    codex_activate.add_argument("--contract", required=True)
+    codex_activate.add_argument("--stage-envelope", required=True)
+    codex_activate.add_argument("--evaluation-profile", required=True)
+    codex_activate.add_argument("--checkpoint-capacity", required=True)
+    codex_activate.add_argument("--preflight-inputs", required=True)
+    codex_activate.add_argument("--graph", required=True)
+    codex_activate.add_argument("--incumbent-sha256", required=True)
+    codex_activate.set_defaults(handler=command_activate_codex_host_plan)
+
     staged_prepare = sub.add_parser(
         "prepare-staged-research",
         help="validate bootstrap closure and prepare exact authorization hashes",
@@ -17219,6 +18991,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--timeout", type=int, default=1800)
     worker.add_argument("--writing-gate-receipt")
     worker.add_argument("--context-capsule")
+    worker.add_argument(
+        "--stateless-worker-session", action="store_true",
+        help=(
+            "explicit compatibility mode; default binds this plan to one "
+            "persistent Claude Code session"
+        ),
+    )
     worker.set_defaults(handler=command_dispatch_worker)
 
     recover_worker_budget = sub.add_parser(
@@ -17600,6 +19379,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     assurance_activate.set_defaults(handler=command_activate_runtime_assurance)
 
+    host_bootstrap = sub.add_parser(
+        "bootstrap-host-runtime",
+        help="transactionally compose and exercise Codex-host L0/L1/L2 assurance",
+    )
+    host_bootstrap.add_argument("--plan-dir", required=True)
+    host_bootstrap.add_argument("--graph", required=True)
+    host_bootstrap.add_argument("--schedule-id", default="research_loop")
+    host_bootstrap.add_argument("--interval-seconds", type=int, default=300)
+    host_bootstrap.add_argument("--jitter-seconds", type=int, default=30)
+    host_bootstrap.add_argument("--session-budget-seconds", type=int, default=1800)
+    host_bootstrap.add_argument(
+        "--human-escalation-after-seconds", type=int, default=900,
+    )
+    host_bootstrap.add_argument("--lease-seconds", type=int, default=300)
+    host_bootstrap.add_argument(
+        "--health-interval-seconds", type=int, default=1800,
+    )
+    host_bootstrap.add_argument("--worker-stale-seconds", type=int, default=7200)
+    host_bootstrap.add_argument("--frontier-stale-seconds", type=int, default=7200)
+    host_bootstrap.add_argument("--heartbeat-stale-seconds", type=int, default=3600)
+    host_bootstrap.add_argument("--dashboard-port", type=int, default=8765)
+    host_bootstrap.add_argument(
+        "--launchctl-bin", default=os.environ.get("LAUNCHCTL_BIN", "launchctl"),
+    )
+    host_bootstrap.add_argument(
+        "--simulate-crash-after",
+        choices=["l1_registered", "assurance_activated", "l1_probe", "l1_bootout"],
+    )
+    host_bootstrap.set_defaults(handler=command_bootstrap_host_runtime)
+
     assurance_tick = sub.add_parser("run-runtime-assurance-tick")
     assurance_tick.add_argument("--plan-dir", required=True)
     assurance_tick.set_defaults(handler=command_run_runtime_assurance_tick)
@@ -17852,10 +19661,40 @@ def reconcile_ambiguous_prepared_operation(
         if run_dir.is_dir() and (run_dir / "status.json").is_file():
             status = read_json(run_dir / "status.json")
             if status.get("status") in TERMINAL_WORKER_STATES:
+                reconcile_worker_session_turn(
+                    plan_dir, run_id, status["status"], status.get("failure"),
+                )
                 return {**status, "operation_reconciled": True}
-            update_worker_status(plan_dir, run_id, "PAUSED", {
-                "failure": "transport_outcome_uncertain", "reconciliation_required": True,
+            process_reconciliation = signal_bound_worker_process(
+                status, term_grace_seconds=1.0,
+            )
+            if process_reconciliation.get("outcome") not in {
+                "terminated", "already_absent",
+            }:
+                update_worker_status(plan_dir, run_id, status["status"], {
+                    "failure": "transport_outcome_unresolved",
+                    "reconciliation_required": True,
+                    "process_reconciliation": process_reconciliation,
+                })
+                record_worker_session_failure(
+                    plan_dir, "delivery_uncertain", {
+                        "worker_run_id": run_id,
+                        "reconciliation_required": True,
+                        "process_reconciliation": process_reconciliation,
+                    },
+                )
+                raise ContractError(
+                    "delivery_uncertain: Worker process termination is unproven; "
+                    "session remains BUSY and no terminal receipt was committed"
+                )
+            status = update_worker_status(plan_dir, run_id, "PAUSED", {
+                "failure": "transport_outcome_uncertain",
+                "reconciliation_required": True,
+                "process_reconciliation": process_reconciliation,
             })
+            reconcile_worker_session_turn(
+                plan_dir, run_id, "PAUSED", "transport_outcome_uncertain",
+            )
         raise ContractError("worker operation is ambiguous and PAUSED; explicit reconciliation is required")
     if args.command == "send-frontier-request":
         current = read_json(status_path(plan_dir, args.request_id))
@@ -17929,6 +19768,10 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         operation_id = getattr(args, "operation_id", None)
+        if args.command == "prepare-codex-host-plan" and operation_id:
+            raise ContractError(
+                "prepare-codex-host-plan rejects operation journaling before plan publication"
+            )
         if args.command in {"inspect-plan-runtime", "serve-plan-dashboard"} and operation_id:
             raise ContractError(
                 f"{args.command} is observation-only and rejects operation journaling"
@@ -17986,6 +19829,13 @@ def main() -> int:
         else:
             result = args.handler(args)
     except ContractError as exc:
+        if getattr(args, "command", None) == "bootstrap-host-runtime":
+            try:
+                record_host_bootstrap_failure(
+                    Path(args.plan_dir).resolve(), str(exc),
+                )
+            except (ContractError, OSError, ValueError):
+                pass
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 20 if args.command == "check-writing-gate" else 2
     print(json.dumps(result, indent=2, sort_keys=True))

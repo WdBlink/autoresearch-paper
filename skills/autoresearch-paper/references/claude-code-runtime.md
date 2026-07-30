@@ -1,16 +1,95 @@
 ---
 name: claude-code-runtime
-description: Claude Code target Harness, MiniMax M3 workers, and sparse Codex gates.
+description: Codex-host migration transport for a persistent Claude Code MiniMax M3 worker session.
 ---
 
-# Claude Code Runtime
+# Codex Host / Claude Code Worker Runtime
 
-Claude Code is the canonical Harness entry point. The deterministic controller
-is `scripts/harness-runtime.py`; it dispatches bounded MiniMax M3 work through
-`claude -p` and requests Codex advice through `codex exec` only at CP-01 through
-CP-04. The primary path has no `mavis` executable, daemon, instruction-set, or
-fallback dependency. MAVIS appears only behind explicit `--legacy-mavis`
-compatibility flags.
+The target architecture makes Codex the Host for bootstrap, top-level research
+planning, strong review, and loop control. A physically separate Claude Code
+session runs MiniMax M3 Worker turns. The deterministic controller is
+`scripts/harness-runtime.py`; it remains the only lifecycle and evidence
+authority between both model runtimes and canonical state.
+
+T030 implements the persistent Claude Worker-session transport. T031 adds the
+installed closed-brief entry, authenticated first-stage activation, and the
+transactional `bootstrap-host-runtime` closure. T032 must
+prove a complete Stage 1 terminal → strong review → Stage 2 compile → same
+Claude session Worker-start lineage. Therefore this branch is not yet a full
+Codex Host cutover. The primary path has no `mavis` dependency; MAVIS appears
+only behind explicit `--legacy-mavis` compatibility flags.
+
+PREPARED-operation recovery is fail closed. The controller publishes a
+terminal Worker/session receipt only after the exact bound process is proven
+terminated or absent. Identity mismatch, unavailable identity, or a still-live
+process keeps the Worker nonterminal and the session `BUSY`, persists a typed
+`delivery_uncertain` failure, and requires later deterministic reconciliation.
+
+## Codex Host runtime bootstrap
+
+Start from the installed Skill directory. `prepare-codex-host-plan` validates
+the complete `codex-host-brief.schema.json`, every path, ownership, and budget
+before it creates anything. A rejected brief leaves no target plan directory:
+
+```bash
+python3 references/scripts/harness-runtime.py prepare-codex-host-plan \
+  --brief /absolute/path/closed-brief.json \
+  --plan-dir /absolute/owned/plans/new-plan
+```
+
+The immutable preparation receipt points to the normalized brief, frozen model
+policy, fixed Claude-session policy/UUID, single-stage Codex planning request,
+and initial ownership manifest. The strongest Codex Host produces exactly one
+first-stage material set from that request. After `prepare-staged-research` and
+one applied `authorize_contract`, bind those exact immutable materials:
+
+```bash
+python3 references/scripts/harness-runtime.py activate-codex-host-plan \
+  --plan-dir PLAN \
+  --prepared-receipt PLAN/control/codex-host-entry/v1/prepared-receipt.json \
+  --authorization-receipt PLAN/state/human_actions/applied/RECORD.json \
+  --contract PLAN/control/staged-inputs/contract.json \
+  --stage-envelope PLAN/control/staged-inputs/stage-1.json \
+  --evaluation-profile PLAN/control/staged-inputs/evaluation-profile.json \
+  --checkpoint-capacity PLAN/control/staged-inputs/capacity.json \
+  --preflight-inputs PLAN/control/staged-inputs/preflight.json \
+  --graph PLAN/control/staged-inputs/durable-plan.json \
+  --incumbent-sha256 SHA256
+```
+
+Activation publishes canonical staged state and the generated dossier, but it
+does not replace CP-01. A fresh strongest-policy Codex task must review the
+Codex-authored first stage; only a validated deterministic `approve_execution`
+transition permits Host bootstrap. Routine recoverable work after activation
+does not request another human confirmation.
+
+For an already prepared, authorized plan, use one transaction instead of
+calling the runtime layers independently:
+
+```bash
+python3 references/scripts/harness-runtime.py bootstrap-host-runtime \
+  --plan-dir PLAN --graph PLAN/durable-plan.json \
+  --interval-seconds 300 --jitter-seconds 30 \
+  --session-budget-seconds 1800 \
+  --human-escalation-after-seconds 900 \
+  --health-interval-seconds 1800 \
+  --worker-stale-seconds 7200 \
+  --frontier-stale-seconds 7200 \
+  --heartbeat-stale-seconds 3600
+```
+
+The Runtime validates authority, graph, evaluator eligibility, intervals,
+launchctl, policy, and Dashboard assets before creating the bootstrap request.
+It then initializes the durable graph, registers L1, activates L0/L2, executes
+a non-due L1 probe, temporarily unloads the exact L1 service, and requires L0
+to restore it with zero model dispatches. READY is an immutable receipt over
+the probes, controller head, schedulers, L2 contract, Dashboard configuration,
+and owned runtime resources. A crash before READY resumes through the same
+request and component journals.
+
+The L2 conformance probe is intentionally not a fake live Worker. Its receipt
+sets `live_worker_evidence=false` and names T032 as the field Gate. Only real
+`dispatch-worker` heartbeat receipts can close that field requirement.
 
 ## Authority
 
@@ -131,6 +210,49 @@ authorized candidate as one writer input, class, and namespace; aliases,
 unrelated inputs, and class/path drift have no authority.
 Allowed tools are limited to `Read`, `Glob`, `Grep`, `WebSearch`, and
 `WebFetch`. Timeout is 1..86400 seconds.
+
+### Persistent plan-bound Claude session
+
+`dispatch-worker` defaults to exactly one Claude Code session per plan. The
+controller creates a UUID before the first delivery and invokes Claude with
+`--session-id UUID`. Every later delivery uses `--resume UUID`; it never uses
+`--continue`, a fuzzy session name, terminal keystroke injection, or Remote
+Control as the transport contract.
+
+The immutable binding is `state/worker_session_binding.json`; mutable delivery
+state is `state/worker_session.json`. The binding freezes session UUID, plan
+identity/root, MiniMax model, model-policy hash, resolved Claude executable,
+permission mode, and the exact read-only tool set. Every dispatch reconciles
+mutable `turn_count` against the contiguous immutable turn-receipt chain.
+Changing or rolling back any bound field fails closed instead of silently
+starting or rebinding a session. A non-blocking
+`state/.worker_session.delivery.lock` lease permits only one sender and is
+acquired before Worker dispatch capacity is consumed.
+
+Each run stores an immutable `instruction.json` with the task-contract hash,
+context-capsule binding, prompt hash, session ID, and turn index. Terminal
+receipts live under `state/worker_session_turns/` and directly repeat the task,
+capsule, revision, input/output, and schema hashes. They record outcome plus any
+reported input, output, cache-creation, and cache-read token counts. Missing
+fields are recorded as `null`; resumed context is not evidence of a cache hit.
+Prompt caching is an exact-prefix optimization and may be invalidated by model,
+tool, system-prompt, upgrade, compaction, or expiry changes. Neither session
+history nor cache observations can replace the canonical context capsule,
+evidence ledger, or deterministic transition validators.
+
+Unattended durable dispatch requires `--context-capsule`; omission is a typed
+pre-transport failure. Bounded non-production fixtures may use a null capsule,
+but gain no production or cutover evidence from doing so.
+
+Timeout, non-zero exit, invalid structured output, response session-ID drift,
+or an unresolved BUSY delivery pauses the binding. Typed pre-transport failures
+are persisted under `state/worker_session_failures/`. PREPARED operation
+reconciliation converges Worker and session to the same terminal outcome and
+repairs the safe crash windows around terminal receipt/state publication. The controller must inspect
+the immutable terminal evidence before recovery; it never blindly resends or
+rotates the session. Explicit compatibility tests may opt out with
+`--stateless-worker-session`, which restores `--no-session-persistence` and
+creates no session binding.
 
 ```bash
 python3 references/scripts/harness-runtime.py dispatch-worker \

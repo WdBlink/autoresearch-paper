@@ -1,10 +1,10 @@
 ---
 name: autoresearch-paper
-description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use for a multi-hour or multi-day Claude Code Harness with low-cost MiniMax M3 workers, four sparse Codex audits, hash-bound evaluator evidence, authenticated lifecycle actions, typed failures, pause/resume/stop, patrol, and owned cleanup. MAVIS is compatibility-only.
+description: Turn a paragraph-level research brief into a research-first autonomous paper pipeline. Use for the Codex-host migration with a physically separate, plan-bound Claude Code/MiniMax M3 worker session, hash-bound evaluator evidence, authenticated lifecycle actions, typed failures, pause/resume/stop, patrol, and owned cleanup. MAVIS is compatibility-only.
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.18.0"
+  version: "0.19.0"
 ---
 
 # Autoresearch Paper
@@ -15,10 +15,18 @@ blocks writing until research evidence passes or is explicitly waived,
 and manages watchdog, resume, stop, and cleanup resources through
 file-backed state.
 
+The target architecture is Codex as Host and a physically separate Claude
+Code session as the low-cost MiniMax M3 Worker. T030 implements the persistent
+Worker-session transport and T031 implements the installed closed-brief entry,
+authenticated activation, and transactional Host bootstrap. Until T032 closes,
+do not claim that the complete staged loop has completed the Codex Host cutover.
+
 ## Safety Rules
 
-- Never spawn Mavis agents, cron jobs, hooks, or launchd jobs before the
-  user confirms both tier and plan preview.
+- Never create a plan, model request, research artifact, cron, hook, or launchd
+  job until `prepare-codex-host-plan` validates the complete closed brief and
+  all referenced paths. Never start execution before the one authenticated
+  `authorize_contract` activation; do not ask for a second routine approval.
 - Never auto-abort. Watchdog and L0 findings are advisory until the user
   confirms a destructive action.
 - Never convert MiniMax M3 or Codex output directly into acceptance, waiver,
@@ -27,7 +35,7 @@ file-backed state.
 - Never start writing from a bare PASS string. Require a validated evaluator
   verdict or applied candidate/evaluator/tier-bound waiver receipt; every tier
   also requires APPLIED CP-04 `prewriting_final_evidence`.
-- Never dispatch a MiniMax worker from its own plan. For a v0.16 staged plan,
+- Never dispatch a MiniMax worker from its own plan. For a Codex-hosted staged plan,
   CP-01 binds the immutable human-owned optimization contract, exactly one
   first-stage envelope, its deterministic preflight, and named checkpoint
   capacity to an independent strongest-policy Codex review. The review is
@@ -79,11 +87,12 @@ file-backed state.
 run_autoresearch_paper(user_request) -> delivered_or_running_plan
 
 run scripts/setup.sh
-brief = collect_brief(user_request)
-tier = decide_tier(brief.target_venue, references/goal-keywords.md, references/tier-decision-tree.md)
-show tier, task count, estimated agents, wall-clock -> require explicit confirmation
-plan_dir = create_plan_dir_and_state(brief, tier)
-task_graph = generate_plan_yaml(
+closed_brief = collect_and_close_brief(user_request, references/codex-host-brief.schema.json)
+tier = closed_brief.target_tier
+plan_dir = run prepare-codex-host-plan --brief CLOSED_BRIEF --plan-dir PLAN
+initial_request = read PLAN/control/codex-host-entry/v1/initial-planning-request.json
+task_graph = strongest_codex_generate_exactly_one_first_stage(
+    initial_request,
     references/plan-template-<tier>.md,
     references/task-prompt-snippets.md,
     assets/task-prompt-snippets.md,
@@ -91,8 +100,6 @@ task_graph = generate_plan_yaml(
     references/lifecycle-contract.md,
     references/scientific-figure-pipeline.md
 )
-show human-readable plan preview + watchdog config -> require explicit "go"
-freeze Claude/MiniMax/Codex policy with references/scripts/harness-runtime.py init-policy
 prepare caller-authored bootstrap inputs only under control/staged-inputs/ and
   review materials only under control/review-materials/; never pre-create or
   write state/staged_research/v1/ because init-staged-research is its sole publisher
@@ -106,14 +113,21 @@ create and apply authorize_contract only with harness-runtime.py
 choose one stable RECORD_ID before hashing the contract, store the same value in
   contract.authorization_receipt_id, and pass it as create-human-action --record-id
 freeze the human-owned contract and exactly one first stage with init-staged-research
-run preflight-staged-research; bind contract + stage + preflight + named capacity to CP-01
-run the strongest reviewer allowed by the frozen policy; retain controller authority
+run activate-codex-host-plan to publish staged state, deterministic preflight,
+  generated dossier, fixed Claude session policy, and the authenticated activation receipt
+bind contract + stage + preflight + named capacity to CP-01
+run a fresh strongest-policy Codex review task; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
-route routine bounded tasks through harness-runtime.py dispatch-worker
+route routine bounded tasks through harness-runtime.py dispatch-worker; one
+  plan defaults to one persistent Claude Code session, with controller-owned
+  first-turn `--session-id` and later exact `--resume`
 at CP-01/02/03/04, create -> send -> validate -> apply -> assert the dependent transition
 write watchdog-system-prompt.md from references/watchdog-prompt-template.md
 schedule and run deterministic file-backed patrol through harness-runtime.py
 initialize the canonical durable task graph and register its external trigger
+run bootstrap-host-runtime so the closed brief, preparation, activation,
+  staged/durable state, fixed session policy, L0/L1/L2, Dashboard, and cleanup
+  ownership are composed, exercised, and bound by one READY receipt
 advance one canonical work unit and dispatch only from its fresh context capsule
 for MiniMax: dispatch-worker --context-capsule -> promote-worker-artifacts -> commit-durable-worker-result
 for capsule-bound Codex: create-durable-frontier-request -> send -> validate -> apply -> commit-durable-frontier-result
@@ -142,10 +156,11 @@ on finish or user stop:
     deliver paper paths, reviewer-readiness, watchdog summary, cleanup report
 ```
 
-## Target Runtime: Claude Code
+## Target Runtime: Codex Host + Claude Code Worker
 
-Read `references/claude-code-runtime.md` before dispatch. The current target
-adapter provides:
+Read `references/claude-code-runtime.md` before dispatch. T030 provides the
+cross-platform Worker-session transport and T031 closes the installed entry and
+bootstrap slice. T032 remains the explicit field gate for end-to-end staged control:
 
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
 - sole-authority `state/staged_research/v1/` state plus deterministic
@@ -159,7 +174,17 @@ adapter provides:
 - a mandatory independent CP-01 top-level-plan audit pinned to
   `gpt-5.6-sol` at `ultra`, with reviewer identity and policy hash carried into
   the durable `approve_execution` receipt;
-- non-interactive, schema-bounded MiniMax M3 worker dispatch through Claude Code;
+- non-interactive, schema-bounded MiniMax M3 worker dispatch through one
+  plan-bound Claude Code session; the first turn uses a controller-generated
+  UUID with `--session-id`, later turns use exact `--resume`, and a non-blocking
+  lease rejects concurrent senders before Worker capacity is consumed;
+- immutable instruction and per-turn terminal receipts with explicit token and
+  cache observations; missing usage remains `null`, and cache evidence never
+  authorizes a state transition;
+- a separate immutable UUID/policy binding, receipt-chain rollback checks,
+  typed pre-transport failure evidence, mandatory canonical capsules for
+  unattended durable turns, and joint Worker/session PREPARED recovery that
+  refuses terminal receipts while process termination remains unproven;
 - immutable, hash-bound requests for CP-01 through CP-04;
 - fail-closed frontier preflight before budget reservation, including Codex
   executable/auth, strict response-schema, model, and transport checks;
@@ -214,16 +239,19 @@ submission, and final claims.
 
 ## Inputs
 
-Ask for or parse these three fields:
+Parse the request into the closed schema below. Report only missing/invalid
+fields; do not create a partial plan:
 
 ```
-topic: what to study
-target_venue: arxiv | conference/venue | SCI Q1/journal
-materials: paths, PDFs, notes, repos, datasets, or empty
+objective; target_tier; target_venue; candidate_ideas; code_roots;
+material_roots; initial_direction; strongest_comparable_baseline;
+evaluator_metric_context; resource_bounds; permissions; stop_conditions
 ```
 
-If the user gives one paragraph, parse it internally. If the target venue
-is ambiguous, use the Channel B fallback in `references/tier-decision-tree.md`.
+The exact closed shape is `references/codex-host-brief.schema.json`. If the
+user gives one paragraph, parse it internally. If a required authority,
+resource bound, evaluator, baseline, or path cannot be inferred safely, stop
+and name that field before any mutation.
 
 ## Tier Contract
 
@@ -373,6 +401,11 @@ legibility, or venue compliance; those remain independent review duties.
 Target commands:
 
 ```bash
+python3 references/scripts/harness-runtime.py bootstrap-host-runtime \
+  --plan-dir PLAN --graph PLAN/durable-plan.json \
+  --interval-seconds 300 --health-interval-seconds 1800 \
+  --worker-stale-seconds 7200 --frontier-stale-seconds 7200 \
+  --heartbeat-stale-seconds 3600
 python3 references/scripts/harness-runtime.py init-durable-plan --plan-dir PLAN --graph PLAN/durable-plan.json
 python3 references/scripts/harness-runtime.py register-durable-trigger \
   --plan-dir PLAN --interval-seconds 300 --jitter-seconds 30 \
@@ -400,6 +433,13 @@ activation blocks before Worker budget mutation. Patrol records only typed
 runtime failures. `bootstrap-watchdog.sh` remains an explicit legacy fixture.
 `plan-l0-guard.py` is retained only for legacy replay and migration; it is not
 Claude-native activation evidence.
+
+`bootstrap-host-runtime` is the Codex-hosted composition path. Before it emits
+READY, it executes a non-due L1 handler probe, removes the exact L1 scheduler,
+requires a zero-model L0 health tick to restore that scheduler, validates the
+L2 heartbeat contract, binds Dashboard assets and runtime resources, and
+publishes one immutable bootstrap receipt. The L2 activation probe proves the
+contract only; a real Worker heartbeat is mandatory T032 field evidence.
 
 Worker status freezes the PID, process group, OS start/command identity, and
 plan-local stdout/stderr paths before the controller waits. `cancel-worker`
@@ -559,6 +599,15 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.19.0 (2026-07-30)** — T030/T031 reverse the target Host boundary:
+  Codex owns installed brief validation, initial single-stage planning, strong
+  review, and runtime bootstrap, while one UUID-bound Claude Code/MiniMax M3
+  session supplies bounded Worker turns. The closed brief and every referenced
+  path are validated before atomic plan publication; one authenticated
+  activation binds the first-stage materials, generated dossier, fixed Worker
+  policy, and ownership. READY additionally proves idempotent L0/L1/L2,
+  Dashboard, durable-state, and cleanup bindings. T032 real two-stage lineage
+  remains mandatory before claiming the Host cutover.
 - **v0.18.0 (2026-07-28)** — The selected Research Ledger Dashboard adds a
   compiled, loopback-only, single-plan observation surface over fresh Runtime
   inspection. Python serves GET/HEAD-only snapshot, rebuildable dossier, and

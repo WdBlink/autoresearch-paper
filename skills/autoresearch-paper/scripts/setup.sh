@@ -62,13 +62,13 @@ has_pinned_skill_for_agent() {
 need_cmd python3 "runs bundled guards and runtime tests" "install Python 3 and ensure python3 is on PATH"
 if [[ "${MODE}" != "test" ]]; then
   need_cmd jq "validates JSON prompts and runtime state during checks" "macOS: brew install jq"
-  need_cmd claude "hosts the target Harness and dispatches the plan-pinned low-cost worker" "install Claude Code and ensure claude is on PATH"
+  need_cmd claude "runs the physically separate plan-pinned MiniMax worker session" "install Claude Code and ensure claude is on PATH"
   if command -v mavis >/dev/null 2>&1; then
     ok "mavis (optional legacy compatibility runtime)"
   else
     warn "mavis not found; legacy compatibility paths are unavailable, but the target Claude Code runtime does not require it"
   fi
-  need_cmd codex "runs registered sparse frontier-advisor checkpoints" "install Codex CLI and sign in"
+  need_cmd codex "hosts bootstrap, initial planning, strong review, and registered checkpoints" "install Codex CLI and sign in"
   need_cmd npx "installs skills from GitHub" "install Node.js 18+ so npx is available"
   FIGURE_SKILL_PIN="70a0d595e54b8d92ca54f216d4315e0ab8c7d967"
   if has_pinned_skill_for_agent scientific-visualization "${FIGURE_SKILL_PIN}" claude-code; then
@@ -112,6 +112,7 @@ for path in \
   "${ROOT_DIR}/references/metric-contract.schema.json" \
   "${ROOT_DIR}/references/durable-plan.schema.json" \
   "${ROOT_DIR}/references/context-capsule.schema.json" \
+  "${ROOT_DIR}/references/codex-host-brief.schema.json" \
   "${ROOT_DIR}/references/guardian-observation.schema.json" \
   "${ROOT_DIR}/references/evaluator-admission.schema.json" \
   "${ROOT_DIR}/references/figure-artifact.schema.json" \

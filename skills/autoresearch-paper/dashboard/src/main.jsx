@@ -23,6 +23,7 @@ function shortHash(value) {
 
 function deriveMode(snapshot) {
   if (snapshot?.shutdown) return "stopped";
+  if (snapshot?.host_bootstrap?.validation_error) return "mismatch";
   if (snapshot?.mismatches?.length) return "mismatch";
   const canonicalPresent = Object.values(snapshot?.canonical ?? {}).some(
     (value) => value && typeof value === "object" && value.present,
@@ -142,6 +143,7 @@ function Dossier({ dossier }) {
 }
 
 function Dashboard({ snapshot, mode, error, refreshing, refresh, dossier }) {
+  const bootstrap = snapshot.host_bootstrap;
   const l0 = scheduler(snapshot, "l0_runtime_assurance");
   const l1 = scheduler(snapshot, "l1_durable_trigger");
   const retry = scheduler(snapshot, "frontier_retry_trigger");
@@ -149,6 +151,14 @@ function Dashboard({ snapshot, mode, error, refreshing, refresh, dossier }) {
   const workerState = workers.length
     ? { label: `${workers.length} observed`, tone: workers.some((item) => item.process?.identity_match === false) ? "danger" : "active" }
     : { label: "Empty", tone: "quiet" };
+  const bootstrapState = bootstrap?.validation_error
+    ? { label: "Invalid", tone: "danger" }
+    : bootstrap?.status === "READY"
+      ? { label: "Ready", tone: "active" }
+      : { label: bootstrap?.present ? (bootstrap.status ?? "Partial") : "Absent", tone: "quiet" };
+  const heartbeatState = bootstrap?.live_l2_worker_evidence
+    ? { label: "Live evidence", tone: "active" }
+    : { label: "Pending field run", tone: "quiet" };
   const agreement = snapshot.mismatches?.length ? `${snapshot.mismatches.length} recorded` : "0 recorded";
   const staged = snapshot.canonical?.staged_status ?? "STATE UNAVAILABLE";
   return (
@@ -169,8 +179,8 @@ function Dashboard({ snapshot, mode, error, refreshing, refresh, dossier }) {
               <motion.aside className="freshness" variants={enter}><StatusBadge mode={mode} refreshing={refreshing} /><dl><div><dt>Observed</dt><dd className="mono">{timestamp(snapshot.observed_at)}</dd></div><div><dt>Authority</dt><dd>Observation only</dd></div><div><dt>Mismatches</dt><dd className="mono">{agreement}</dd></div></dl></motion.aside>
             </section>
             <section className="ledger">
-              <motion.div variants={enter}><div className="section-head"><h2>Runtime ledger</h2><span className="mono">state vs host</span></div><RuntimeRow code="L0" title="Runtime assurance" detail={l0?.present ? (l0.label ?? "Activation record present") : "No activation record present"} state={layerState(l0)} index={0} /><RuntimeRow code="L1" title="Durable work trigger" detail={l1?.present ? (l1.label ?? "Schedule record present") : "No schedule record present"} state={layerState(l1)} index={1} /><RuntimeRow code="FR" title="Frontier retry" detail={retry?.present ? `Generation ${retry.generation ?? "?"} · receipt ${retry.receipt?.present ? "bound" : "missing"}` : "No retry record present"} state={layerState(retry)} index={2} /><RuntimeRow code="WK" title="Workers" detail={workers.length ? workers.map((item) => `${item.run_id} · ${item.status ?? "unknown"}`).join(", ") : "No Worker run discovered"} state={workerState} index={3} /></motion.div>
-              <motion.aside className="evidence" variants={enter}><h2>Evidence addresses</h2><EvidenceFile label="Staged state" file={snapshot.canonical?.staged_state} /><EvidenceFile label="Durable head" file={snapshot.canonical?.durable_head} /><EvidenceFile label="Frontier retry receipt" file={retry?.receipt} /><div className="evidence-row"><b>Scheduler agreement</b><span>{snapshot.mismatches?.length ? "Mismatch requires attention" : "No mismatch recorded"}</span></div><LogLinks snapshot={snapshot} /></motion.aside>
+              <motion.div variants={enter}><div className="section-head"><h2>Runtime ledger</h2><span className="mono">state vs host</span></div><RuntimeRow code="HS" title="Host bootstrap" detail={bootstrap?.validation_error ?? (bootstrap?.last_health_action ? `Last action · ${bootstrap.last_health_action}` : "No committed host bootstrap receipt")} state={bootstrapState} index={0} /><RuntimeRow code="L0" title="Runtime assurance" detail={l0?.present ? (l0.label ?? "Activation record present") : "No activation record present"} state={layerState(l0)} index={1} /><RuntimeRow code="L1" title="Durable work trigger" detail={l1?.present ? (l1.label ?? "Schedule record present") : "No schedule record present"} state={layerState(l1)} index={2} /><RuntimeRow code="L2" title="Worker heartbeat" detail={workers.length ? workers.map((item) => `${item.run_id} · ${item.status ?? "unknown"}`).join(", ") : "No live Worker heartbeat evidence yet"} state={heartbeatState} index={3} /><RuntimeRow code="FR" title="Frontier retry" detail={retry?.present ? `Generation ${retry.generation ?? "?"} · receipt ${retry.receipt?.present ? "bound" : "missing"}` : "No retry record present"} state={layerState(retry)} index={4} /><RuntimeRow code="WK" title="Workers" detail={workers.length ? `${workers.length} Worker record(s)` : "No Worker run discovered"} state={workerState} index={5} /></motion.div>
+              <motion.aside className="evidence" variants={enter}><h2>Evidence addresses</h2><EvidenceFile label="Host bootstrap receipt" file={bootstrap?.receipt} /><EvidenceFile label="Latest L0 health tick" file={bootstrap?.last_health_tick} /><EvidenceFile label="Staged state" file={snapshot.canonical?.staged_state} /><EvidenceFile label="Durable head" file={snapshot.canonical?.durable_head} /><EvidenceFile label="Frontier retry receipt" file={retry?.receipt} /><div className="evidence-row"><b>Scheduler agreement</b><span>{snapshot.mismatches?.length ? "Mismatch requires attention" : "No mismatch recorded"}</span></div><LogLinks snapshot={snapshot} /></motion.aside>
             </section>
             <Dossier dossier={dossier} />
           </motion.div>

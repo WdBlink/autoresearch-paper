@@ -20,10 +20,24 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.18.0
-- **Stability:** Experimental; bounded stage-crossing acceptance target
+- **Current version:** v0.19.0
+- **Stability:** Experimental; Codex Host T032 field-lineage acceptance pending
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
-- **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
+- **Direction:** The v1 target reverses the host boundary: Codex owns bootstrap,
+  top-level planning, strong review, and loop control; one physically separate,
+  plan-bound Claude Code session supplies MiniMax M3 Worker turns. T030 now
+  implements exact `--session-id`/`--resume` delivery, exclusive send leasing,
+  an immutable UUID/policy binding, receipt-chain rollback checks, joint
+  Worker/session crash reconciliation, immutable instruction/turn receipts,
+  and explicit cache-usage observations. An identity-uncertain live process
+  remains unresolved with the session `BUSY`; only proven termination or
+  absence permits terminal receipt publication.
+  T031 now provides the installed closed-brief entry, authenticated activation,
+  and a transactional runtime bootstrap that exercises L0 recovery and the
+  non-due L1 command path before reporting READY. Real L2
+  Worker heartbeat evidence and the full staged lineage remain T032 gates, so
+  the complete Codex Host cutover is not yet claimed.
+  The released v0.18 entry flow remains Claude-hosted. MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
   owned cleanup, the launchd-backed durable state loop, evaluator admission,
   capsule-bound MiniMax/Codex production transport, replayed scientific
@@ -120,8 +134,8 @@ heartbeat watchdogs, and manifest-driven cleanup.
 - Removes only exact-path, token-bound, plan-owned ephemeral resources.
 - Verifies paper packages with artifact-only reviewer checks, not producer
   self-claims.
-- Dispatches schema-bounded MiniMax M3 workers through Claude Code and reserves
-  a frozen budget before sparse Codex checkpoint audits.
+- Dispatches schema-bounded MiniMax M3 workers through one plan-bound Claude
+  Code session and reserves a frozen budget before Codex review boundaries.
 - Registers a session-independent launchd trigger with exactly-one tick claims,
   rebuildable canonical state, and fresh hash-bound task capsules.
 - Treats `state/staged_research/v1/` as the only staged runtime authority and
@@ -142,14 +156,34 @@ heartbeat watchdogs, and manifest-driven cleanup.
 /autoresearch-paper stop — exact-once runtime shutdown, then report exact residual resources.
 ```
 
+The installed Codex entry accepts one closed JSON brief. It validates every
+required field, path, permission, and budget before atomically publishing the
+plan; invalid input leaves no partial plan directory:
+
+```bash
+cd ~/.agents/skills/autoresearch-paper
+python3 references/scripts/harness-runtime.py prepare-codex-host-plan \
+  --brief /absolute/path/closed-brief.json \
+  --plan-dir /absolute/owned/plans/new-plan
+```
+
+The returned immutable planning request assigns exactly one initial stage to
+the strongest Codex Host policy. After one authenticated `authorize_contract`,
+`activate-codex-host-plan` binds the first-stage materials and generated
+dossier; CP-01 and `bootstrap-host-runtime` then close the review and L0/L1/L2
+runtime lineage. See the installed
+[`claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md)
+for the exact activation command.
+
 ## Architecture
 
-The target control plane is Claude Code, with a deterministic file-backed
-controller between model output and formal plan state. Legacy MAVIS resources
-are compatibility-only. The research flow is:
+The v1 target control plane is Codex, with a deterministic file-backed
+controller between both model runtimes and formal plan state. Claude Code is a
+physically separate MiniMax M3 execution host, not lifecycle authority. Legacy
+MAVIS resources are compatibility-only. The target flow is:
 
 ```
-Claude Code control plane
+Codex Host (bootstrap · plan · strong review · loop control)
         │
         ▼
 deterministic controller ── canonical staged/durable state ── evidence ledger
@@ -158,13 +192,35 @@ deterministic controller ── canonical staged/durable state ── evidence l
         ├── L1 launchd durable work trigger (leases + state advance)
         └── L2 controller Worker heartbeat receipts
                 │
-                ├── MiniMax/Claude Worker proposals
-                └── sparse Codex checkpoints + independent retry lineage
+                └── fixed Claude Code session
+                        └── MiniMax M3 Worker proposals
 ```
+
+T030 covers the fixed-session transport foundation. T031 moves the installed
+entry, Harness bootstrap, and first-stage plan compilation to Codex; T032 is the field gate for
+Stage 1 terminal → strongest review → automatic Stage 2 compilation → second
+Worker start in the same Claude session. Dashboard remains a read-only local
+operations view; Codex App task visibility complements it but does not replace
+canonical state.
 
 L0, L1, and L2 are bound by one immutable activation receipt but keep distinct
 scheduler/command identities. Legacy Mavis cron, `plan-l0-guard.py`, and
 `last_seen.jsonl` remain compatibility artifacts rather than activation proof.
+
+For a prepared and authorized Codex-hosted plan, compose and exercise the
+runtime layers in one idempotent transaction:
+
+```bash
+python3 references/scripts/harness-runtime.py bootstrap-host-runtime \
+  --plan-dir PLAN --graph PLAN/durable-plan.json \
+  --interval-seconds 300 --health-interval-seconds 1800 \
+  --worker-stale-seconds 7200 --frontier-stale-seconds 7200 \
+  --heartbeat-stale-seconds 3600
+```
+
+The command does not merely write plists. It runs a non-due L1 probe, removes
+the exact L1 service and requires L0 to restore it without model calls, freezes
+the L2 contract, and commits one READY receipt only after all bindings pass.
 
 **Research gate (T6.1/T6.2):** The controller binds evaluator, evidence,
 threshold, candidate, and measured verdict hashes. Bare PASS text is rejected.
@@ -210,7 +266,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.18.0 with a full bundle refresh so the
+Upgrade copied installations to v0.19.0 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -267,10 +323,10 @@ instructions if anything required is missing.
 
 | Dependency | Why it is needed |
 |---|---|
-| Claude Code | primary Harness host and MiniMax M3 dispatch |
+| Claude Code | physically separate persistent MiniMax M3 Worker session |
 | Mavis CLI | optional legacy team-plan/watchdog compatibility |
 | Python 3 | bundled guards, cleanup, tests |
-| Codex CLI | registered sparse frontier-advisor checkpoints |
+| Codex CLI/App | target Host for bootstrap, plan, review, and loop control |
 | Node.js / npx | GitHub skill installation |
 | Scientific Visualization skill | focused deterministic publication-figure guidance and helpers |
 | Scientific Schematics skill | optional proposal-only method-diagram generation; never acceptance authority |
@@ -312,8 +368,8 @@ During a run:
 | Tier | choose `arxiv`, `conference`, or `journal-q1` with fallback confirmation |
 | Plan | generate `plan.yaml` from tier templates and prompt assets |
 | Bootstrap | freeze model policy and create controller, evaluator, failure, and ownership state |
-| Run | dispatch bounded MiniMax M3 tasks through the Claude Code controller |
-| Frontier audit | reserve budget, send a registered checkpoint to Codex, validate, then record controller consumption |
+| Run | Codex Host dispatches bounded MiniMax M3 turns into the plan-bound Claude session |
+| Strong review | Codex reviews frozen stage evidence; the deterministic controller validates and records consumption |
 | Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
 | Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
 | Figure Gate | v0.16 freezes expected IDs only when the controller authorizes the figure-production stage; T6.4 binds exact manifests, outputs, and human reviews (legacy v0.15 CP-01 receipts retain their historical timing) |
@@ -421,6 +477,11 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.19.0** — adds the installed Codex Host closed-brief entry, atomic plan
+  preparation, one authenticated first-stage activation, a predeclared
+  persistent Claude session UUID/policy, and a READY receipt that binds the
+  complete entry → staged state → durable L0/L1/L2/Dashboard/cleanup lineage.
+  T032 field evidence is still required before the product claims Host cutover.
 - **v0.18.0** — adds the compiled, loopback-only Research Ledger Dashboard
   over fresh `inspect-plan-runtime` results, including typed absence,
   live/stale/empty/partial/mismatch/stopped/error presentation, bounded bound-log
@@ -539,7 +600,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.18.0}
+  version = {0.19.0}
 }
 ```
 
@@ -551,7 +612,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.18.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.19.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

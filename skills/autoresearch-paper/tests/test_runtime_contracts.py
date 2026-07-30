@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,51 @@ class RuntimeContracts(unittest.TestCase):
         )
         executable.chmod(0o755)
         return executable, log
+
+    def session_aware_fake_claude(
+        self, tmp: Path, *, sleep_seconds: int = 0, wrong_session: bool = False,
+    ) -> tuple[Path, Path]:
+        executable = tmp / f"fake-claude-session-{sleep_seconds}-{int(wrong_session)}"
+        log = tmp / f"claude-session-args-{sleep_seconds}-{int(wrong_session)}.jsonl"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys, time\n"
+            "args = sys.argv[1:]\n"
+            "with open(os.environ['CLAUDE_SESSION_TEST_LOG'], 'a') as handle:\n"
+            "  handle.write(json.dumps(args) + '\\n')\n"
+            f"time.sleep({sleep_seconds})\n"
+            "flag = '--session-id' if '--session-id' in args else '--resume'\n"
+            "session_id = args[args.index(flag) + 1]\n"
+            + ("session_id = '00000000-0000-4000-8000-000000000000'\n" if wrong_session else "")
+            + "json.dump({'session_id': session_id, 'model': 'MiniMax-M3-test', 'usage': {'input_tokens': 40, 'output_tokens': 9, 'cache_read_input_tokens': 31, 'cache_creation_input_tokens': 2}, 'structured_output': {'summary': 'bounded result', 'ok': True, 'artifacts': []}}, sys.stdout)\n"
+        )
+        executable.chmod(0o755)
+        return executable, log
+
+    def write_empty_worker_contract(
+        self, plan: Path, name: str, *, allowed_tools: list[str] | None = None,
+    ) -> Path:
+        contract = plan / f"{name}.json"
+        contract.write_text(json.dumps({
+            "schema_version": 1,
+            "task_id": name,
+            "instruction": f"Perform bounded task {name}.",
+            "inputs": [],
+            "allowed_tools": allowed_tools or [],
+            "allowed_write_paths": [],
+            "artifact_outputs": [],
+            "completion_check": {"type": "output_schema", "assertion": "valid"},
+            "output_schema": {
+                "type": "object", "additionalProperties": False,
+                "required": ["summary", "ok", "artifacts"],
+                "properties": {
+                    "summary": {"type": "string"},
+                    "ok": {"type": "boolean"},
+                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+        }))
+        return contract
 
     def fake_codex(self, tmp: Path) -> Path:
         executable = tmp / "fake-codex"
@@ -322,6 +368,399 @@ class RuntimeContracts(unittest.TestCase):
                 plan.resolve(),
             )
             self.assertNotIn("mavis", " ".join(argv).lower())
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
+            self.assertIsNone(receipt["transport_usage"]["input_tokens"])
+            self.assertIsNone(receipt["transport_usage"]["output_tokens"])
+            self.assertIsNone(receipt["transport_usage"]["cache_creation_input_tokens"])
+            self.assertIsNone(receipt["transport_usage"]["cache_read_input_tokens"])
+
+    def test_persistent_claude_worker_session_creates_then_resumes_exact_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp)
+            env = {"CLAUDE_SESSION_TEST_LOG": str(log)}
+            results = []
+            for name in ("stage-one", "stage-two"):
+                contract = self.write_empty_worker_contract(plan, name)
+                proc = run([
+                    sys.executable, "references/scripts/harness-runtime.py",
+                    "dispatch-worker", "--plan-dir", str(plan),
+                    "--task-contract", str(contract), "--claude-bin", str(claude),
+                ], env=env)
+                results.append(json.loads(proc.stdout))
+            argv = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertIn("--session-id", argv[0])
+            self.assertNotIn("--resume", argv[0])
+            session_id = argv[0][argv[0].index("--session-id") + 1]
+            self.assertIn("--resume", argv[1])
+            self.assertEqual(argv[1][argv[1].index("--resume") + 1], session_id)
+            self.assertNotIn("--no-session-persistence", argv[0])
+            self.assertNotIn("--no-session-persistence", argv[1])
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            self.assertEqual(session["session_id"], session_id)
+            self.assertEqual(session["state"], "READY")
+            self.assertEqual(session["turn_count"], 2)
+            binding_path = plan / "state" / "worker_session_binding.json"
+            self.assertEqual(binding_path.stat().st_mode & 0o777, 0o444)
+            binding = json.loads(binding_path.read_text())
+            self.assertEqual(binding["session_id"], session_id)
+            receipts = sorted((plan / "state" / "worker_session_turns").glob("*.json"))
+            self.assertEqual(len(receipts), 2)
+            second = json.loads(receipts[1].read_text())
+            self.assertEqual(second["invocation_mode"], "resumed")
+            self.assertEqual(second["expected_worker_model"], "MiniMax-M3-test")
+            self.assertEqual(second["transport_usage"]["reported_model"], "MiniMax-M3-test")
+            self.assertEqual(second["transport_usage"]["cache_read_input_tokens"], 31)
+            self.assertEqual(len(second["transport_stdout_sha256"]), 64)
+            self.assertEqual(len(second["result_sha256"]), 64)
+            self.assertEqual(results[0]["worker_session_id"], session_id)
+            self.assertEqual(results[1]["worker_session_turn"], 2)
+
+    def test_worker_session_rejects_policy_drift_before_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp)
+            env = {"CLAUDE_SESSION_TEST_LOG": str(log)}
+            first = self.write_empty_worker_contract(plan, "first")
+            run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(first), "--claude-bin", str(claude),
+            ], env=env)
+            drifted = self.write_empty_worker_contract(
+                plan, "drifted", allowed_tools=["Read"],
+            )
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(drifted), "--claude-bin", str(claude),
+            ], env=env, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("session binding drifted", rejected.stderr)
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+
+    def test_worker_session_rejects_binding_tamper_and_response_session_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp)
+            env = {"CLAUDE_SESSION_TEST_LOG": str(log)}
+            first = self.write_empty_worker_contract(plan, "first")
+            run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(first), "--claude-bin", str(claude),
+            ], env=env)
+            binding_path = plan / "state" / "worker_session.json"
+            binding = json.loads(binding_path.read_text())
+            binding["bound_policy"]["working_directory"] = str(tmp / "other")
+            binding_path.write_text(json.dumps(binding))
+            second = self.write_empty_worker_contract(plan, "second")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(second), "--claude-bin", str(claude),
+            ], env=env, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("session binding drifted", rejected.stderr)
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp, wrong_session=True)
+            contract = self.write_empty_worker_contract(plan, "wrong-session")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+            ], env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("different session_id", rejected.stderr)
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            self.assertEqual(session["state"], "PAUSED")
+
+    def test_worker_session_missing_binding_and_provider_quota_are_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp)
+            env = {"CLAUDE_SESSION_TEST_LOG": str(log)}
+            first = self.write_empty_worker_contract(plan, "first")
+            run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(first), "--claude-bin", str(claude),
+            ], env=env)
+            (plan / "state" / "worker_session.json").unlink()
+            second = self.write_empty_worker_contract(plan, "second")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(second), "--claude-bin", str(claude),
+            ], env=env, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("state/binding pair is incomplete", rejected.stderr)
+            self.assertIn("rotation is forbidden", rejected.stderr)
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude = tmp / "quota-claude"
+            claude.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "sys.stdin.read()\n"
+                "print('MiniMax 5-hour usage limit reached', file=sys.stderr)\n"
+                "raise SystemExit(9)\n"
+            )
+            claude.chmod(0o755)
+            contract = self.write_empty_worker_contract(plan, "quota")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+            ], check=False)
+            self.assertEqual(rejected.returncode, 2)
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            self.assertEqual(session["state"], "PAUSED")
+            receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
+            self.assertEqual(receipt["failure"], "provider_quota")
+
+    def test_worker_session_lease_rejects_concurrent_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp)
+            contract = self.write_empty_worker_contract(plan, "lease-test")
+            lock_path = plan / "state" / ".worker_session.delivery.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+") as lock:
+                import fcntl
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                rejected = run([
+                    sys.executable, "references/scripts/harness-runtime.py",
+                    "dispatch-worker", "--plan-dir", str(plan),
+                    "--task-contract", str(contract), "--claude-bin", str(claude),
+                ], env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("session is busy", rejected.stderr)
+            self.assertFalse(log.exists())
+            self.assertFalse((plan / "state" / "worker_session.json").exists())
+
+    def test_worker_session_rejects_session_id_and_turn_count_rollback(self) -> None:
+        for mutation, expected in (
+            ("session_id", "session_policy_drift"),
+            ("turn_count", "session_turn_rollback"),
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                plan = self.make_plan(tmp / "plan")
+                self.init_model_policy(plan)
+                self.approve_cp01(plan, tmp)
+                claude, log = self.session_aware_fake_claude(tmp)
+                env = {"CLAUDE_SESSION_TEST_LOG": str(log)}
+                first = self.write_empty_worker_contract(plan, "first")
+                run([
+                    sys.executable, "references/scripts/harness-runtime.py",
+                    "dispatch-worker", "--plan-dir", str(plan),
+                    "--task-contract", str(first), "--claude-bin", str(claude),
+                ], env=env)
+                state_path = plan / "state" / "worker_session.json"
+                state = json.loads(state_path.read_text())
+                if mutation == "session_id":
+                    state["session_id"] = "00000000-0000-4000-8000-000000000000"
+                else:
+                    state["turn_count"] = 0
+                state_path.write_text(json.dumps(state))
+                second = self.write_empty_worker_contract(plan, "second")
+                rejected = run([
+                    sys.executable, "references/scripts/harness-runtime.py",
+                    "dispatch-worker", "--plan-dir", str(plan),
+                    "--task-contract", str(second), "--claude-bin", str(claude),
+                ], env=env, check=False)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(expected, rejected.stderr)
+                self.assertEqual(len(log.read_text().splitlines()), 1)
+                failures = list((plan / "state" / "worker_session_failures").glob("*.json"))
+                self.assertTrue(failures)
+                self.assertIn(
+                    expected,
+                    {json.loads(path.read_text())["failure_class"] for path in failures},
+                )
+
+    def test_persistent_unattended_worker_requires_canonical_context_capsule(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            graph = plan / "state" / "durable_loop" / "canonical" / "graph.json"
+            graph.parent.mkdir(parents=True)
+            graph.write_text(json.dumps({"execution_mode": "unattended"}))
+            claude, log = self.session_aware_fake_claude(tmp)
+            contract = self.write_empty_worker_contract(plan, "capsule-required")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+            ], env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("context_capsule_missing", rejected.stderr)
+            self.assertFalse(log.exists())
+            failure = json.loads(next(
+                (plan / "state" / "worker_session_failures").glob("*.json")
+            ).read_text())
+            self.assertEqual(failure["failure_class"], "context_capsule_missing")
+
+    def test_prepared_worker_operation_reconciles_worker_and_session_together(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp, sleep_seconds=30)
+            contract = self.write_empty_worker_contract(plan, "prepared-uncertain")
+            operation_id = "op_" + "f" * 64
+            argv = [
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+                "--operation-id", operation_id,
+            ]
+            proc = subprocess.Popen(
+                argv, cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "CLAUDE_SESSION_TEST_LOG": str(log)},
+            )
+            run_id = "cwr_" + operation_id[3:35]
+            status_path = plan / "state" / "worker_runs" / run_id / "status.json"
+            deadline = time.monotonic() + 5
+            status = None
+            while time.monotonic() < deadline:
+                if status_path.is_file():
+                    status = json.loads(status_path.read_text())
+                    if status.get("pid"):
+                        break
+                time.sleep(0.05)
+            self.assertIsNotNone(status)
+            self.assertIsInstance(status.get("pid"), int)
+            proc.terminate()
+            proc.communicate(timeout=5)
+            # Deterministically model the exec-time identity race: the saved
+            # process identity no longer proves that the live PID is ours.
+            status["process_identity"]["os_command_sha256"] = "0" * 64
+            status_path.write_text(json.dumps(status))
+            first_reconcile = run(
+                argv, env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False,
+            )
+            self.assertEqual(first_reconcile.returncode, 2)
+            worker = json.loads(status_path.read_text())
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            first_outcome = worker["process_reconciliation"]["outcome"]
+            self.assertEqual(first_outcome, "identity_mismatch")
+            self.assertEqual(worker["status"], "RUNNING")
+            self.assertEqual(worker["failure"], "transport_outcome_unresolved")
+            self.assertEqual(session["state"], "BUSY")
+            self.assertEqual(session["active_run_id"], run_id)
+            self.assertIsNone(session.get("last_turn_receipt"))
+            failure = json.loads(sorted(
+                (plan / "state" / "worker_session_failures").glob("*.json")
+            )[-1].read_text())
+            self.assertEqual(failure["failure_class"], "delivery_uncertain")
+            try:
+                os.killpg(worker["process_group_id"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(worker["pid"], 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            second_reconcile = run(
+                argv, env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False,
+            )
+            self.assertEqual(second_reconcile.returncode, 2)
+            worker = json.loads(status_path.read_text())
+            session = json.loads(
+                (plan / "state" / "worker_session.json").read_text()
+            )
+            self.assertEqual(worker["status"], "PAUSED")
+            self.assertEqual(worker["failure"], "transport_outcome_uncertain")
+            self.assertIn(
+                worker["process_reconciliation"]["outcome"],
+                {"terminated", "already_absent"},
+            )
+            self.assertEqual(session["state"], "PAUSED")
+            self.assertIsNone(session["active_run_id"])
+            receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
+            self.assertEqual(receipt["outcome"], "PAUSED")
+            self.assertEqual(receipt["failure"], "transport_outcome_uncertain")
+            committed = run(
+                argv, env={"CLAUDE_SESSION_TEST_LOG": str(log)},
+            )
+            self.assertTrue(json.loads(committed.stdout)["operation_reconciled"])
+
+    def test_worker_timeout_pauses_persistent_session_with_terminal_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.session_aware_fake_claude(tmp, sleep_seconds=2)
+            contract = self.write_empty_worker_contract(plan, "timeout")
+            rejected = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+                "--timeout", "1",
+            ], env={"CLAUDE_SESSION_TEST_LOG": str(log)}, check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("timed out", rejected.stderr)
+            session = json.loads((plan / "state" / "worker_session.json").read_text())
+            self.assertEqual(session["state"], "PAUSED")
+            self.assertEqual(session["turn_count"], 1)
+            receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
+            self.assertEqual(receipt["outcome"], "PAUSED")
+            self.assertEqual(receipt["failure"], "worker_timeout")
+
+    def test_stateless_worker_session_is_explicit_compatibility_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            plan = self.make_plan(tmp / "plan")
+            self.init_model_policy(plan)
+            self.approve_cp01(plan, tmp)
+            claude, log = self.fake_claude(tmp)
+            contract = self.write_empty_worker_contract(plan, "stateless")
+            result = run([
+                sys.executable, "references/scripts/harness-runtime.py",
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract), "--claude-bin", str(claude),
+                "--stateless-worker-session",
+            ], env={"CLAUDE_TEST_LOG": str(log)})
+            self.assertEqual(json.loads(result.stdout)["worker_session_mode"], "stateless")
+            self.assertIn("--no-session-persistence", json.loads(log.read_text()))
+            self.assertFalse((plan / "state" / "worker_session.json").exists())
 
     def test_frontier_bridge_is_durable_bounded_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as td:

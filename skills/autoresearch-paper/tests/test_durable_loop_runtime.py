@@ -143,6 +143,29 @@ class DurableLoopRuntimeTests(unittest.TestCase):
             "--launchctl-bin", str(launchctl),
         ).stdout)
 
+    def bootstrap_host(
+        self, plan: Path, graph: Path, launchctl: Path,
+        *extra: str, check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return self.call(
+            "bootstrap-host-runtime",
+            "--plan-dir", str(plan),
+            "--graph", str(graph),
+            "--interval-seconds", "300",
+            "--jitter-seconds", "0",
+            "--session-budget-seconds", "600",
+            "--human-escalation-after-seconds", "300",
+            "--lease-seconds", "30",
+            "--health-interval-seconds", "300",
+            "--worker-stale-seconds", "1200",
+            "--frontier-stale-seconds", "1200",
+            "--heartbeat-stale-seconds", "600",
+            "--dashboard-port", "8765",
+            "--launchctl-bin", str(launchctl),
+            *extra,
+            check=check,
+        )
+
     @staticmethod
     def process_identity(pid: int) -> dict[str, object]:
         started = subprocess.run(
@@ -266,6 +289,153 @@ class DurableLoopRuntimeTests(unittest.TestCase):
                 check=False,
             )
             self.assertIn("no more than half", invalid.stderr)
+
+    def test_codex_host_bootstrap_exercises_watchdog_layers_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            graph = self.graph(plan)
+            launchctl, log = self.multi_service_launchctl(root)
+            result = json.loads(
+                self.bootstrap_host(plan, graph, launchctl).stdout
+            )
+            self.assertEqual(result["status"], "READY")
+            l0_probe = json.loads(Path(result["l0_recovery_probe_path"]).read_text())
+            l1_probe = json.loads(Path(result["l1_functional_probe_path"]).read_text())
+            l2_probe = json.loads(Path(result["l2_conformance_probe_path"]).read_text())
+            self.assertTrue(l0_probe["l1_was_removed"])
+            self.assertTrue(l0_probe["l1_restored"])
+            self.assertEqual(l0_probe["model_dispatches"], 0)
+            self.assertFalse(l1_probe["due"])
+            self.assertEqual(l1_probe["model_dispatches"], 0)
+            self.assertFalse(l2_probe["live_worker_evidence"])
+            self.assertEqual(l2_probe["live_worker_gate"], "T032")
+            services = root / "launchd-services"
+            self.assertTrue((services / result["l0_scheduler_label"]).is_file())
+            self.assertTrue((services / result["l1_scheduler_label"]).is_file())
+            mutations_before = [
+                line for line in log.read_text().splitlines()
+                if line.startswith(("bootstrap ", "bootout "))
+            ]
+            duplicate = json.loads(
+                self.bootstrap_host(plan, graph, launchctl).stdout
+            )
+            self.assertTrue(duplicate["idempotent"])
+            mutations_after = [
+                line for line in log.read_text().splitlines()
+                if line.startswith(("bootstrap ", "bootout "))
+            ]
+            self.assertEqual(mutations_before, mutations_after)
+            manifest = json.loads((plan / "resource_manifest.json").read_text())
+            resources = [
+                item for item in manifest["resources"]
+                if item.get("resource_id") == "codex_host_runtime_assurance_v1"
+            ]
+            self.assertEqual(len(resources), 1)
+            inspection = json.loads(self.call(
+                "inspect-plan-runtime", "--plan-dir", str(plan),
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+            self.assertEqual(inspection["host_bootstrap"]["status"], "READY")
+            self.assertEqual(
+                inspection["host_bootstrap"]["last_health_action"],
+                "l1_restored",
+            )
+            self.assertIsNone(
+                inspection["host_bootstrap"]["live_l2_worker_evidence"],
+            )
+            (services / result["l1_scheduler_label"]).unlink()
+            degraded = json.loads(self.call(
+                "inspect-plan-runtime", "--plan-dir", str(plan),
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+            self.assertIn(
+                "L1 durable trigger is not loaded",
+                degraded["host_bootstrap"]["validation_error"],
+            )
+            recovered_tick = json.loads(self.call(
+                "run-runtime-assurance-tick", "--plan-dir", str(plan),
+            ).stdout)
+            self.assertTrue(recovered_tick["recovered_l1"])
+            healed = json.loads(self.call(
+                "inspect-plan-runtime", "--plan-dir", str(plan),
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+            self.assertIsNone(healed["host_bootstrap"]["validation_error"])
+
+    def test_codex_host_bootstrap_recovers_crash_after_l1_loss(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            graph = self.graph(plan)
+            launchctl, _ = self.multi_service_launchctl(root)
+            crashed = self.bootstrap_host(
+                plan, graph, launchctl,
+                "--simulate-crash-after", "l1_bootout",
+                check=False,
+            )
+            self.assertEqual(crashed.returncode, 2)
+            current = plan / "state" / "host_bootstrap" / "v1" / "current.json"
+            self.assertFalse(current.exists())
+            journal = json.loads(
+                (plan / "state" / "host_bootstrap" / "v1" / "journal.json").read_text()
+            )
+            self.assertEqual(
+                journal["last_failure"]["failure_class"],
+                "bootstrap_interrupted",
+            )
+            self.assertTrue(journal["last_failure"]["recoverable"])
+            recovered = json.loads(
+                self.bootstrap_host(plan, graph, launchctl).stdout
+            )
+            self.assertEqual(recovered["status"], "READY")
+            services = root / "launchd-services"
+            self.assertTrue((services / recovered["l0_scheduler_label"]).is_file())
+            self.assertTrue((services / recovered["l1_scheduler_label"]).is_file())
+
+    def test_codex_host_bootstrap_binding_drift_is_visible_and_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.ready_plan(root)
+            graph = self.graph(plan)
+            launchctl, _ = self.multi_service_launchctl(root)
+            result = json.loads(
+                self.bootstrap_host(plan, graph, launchctl).stdout
+            )
+            probe = Path(result["l1_functional_probe_path"])
+            probe.chmod(0o644)
+            payload = json.loads(probe.read_text())
+            payload["due"] = True
+            probe.write_text(json.dumps(payload))
+            inspection = json.loads(self.call(
+                "inspect-plan-runtime", "--plan-dir", str(plan),
+                "--launchctl-bin", str(launchctl),
+            ).stdout)
+            self.assertIsNotNone(
+                inspection["host_bootstrap"]["validation_error"],
+            )
+            duplicate = self.bootstrap_host(
+                plan, graph, launchctl, check=False,
+            )
+            self.assertEqual(duplicate.returncode, 2)
+            self.assertIn("binding changed", duplicate.stderr)
+
+    def test_codex_host_bootstrap_rejects_missing_authority_before_runtime_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plan = self.base.make_plan(root / "plan")
+            self.base.write_manifest(plan)
+            self.base.init_model_policy(plan)
+            graph = self.graph(plan)
+            launchctl, log = self.multi_service_launchctl(root)
+            rejected = self.bootstrap_host(
+                plan, graph, launchctl, check=False,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("transition receipt", rejected.stderr)
+            self.assertFalse(log.exists())
+            self.assertFalse((plan / "state" / "host_bootstrap").exists())
+            self.assertFalse((plan / "state" / "durable_loop").exists())
 
     def test_read_only_inspection_and_exact_once_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as td:

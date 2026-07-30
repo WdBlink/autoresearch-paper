@@ -35,6 +35,10 @@ class DashboardServerContracts(unittest.TestCase):
         self.log = self.plan / "logs" / "retry.stdout"
         self.log.parent.mkdir()
         self.log.write_text("bounded log evidence\n")
+        self.bootstrap_receipt = self.plan / "state" / "host-bootstrap-receipt.json"
+        self.bootstrap_receipt.write_text('{"status":"READY"}\n')
+        self.health_tick = self.plan / "state" / "l0-health-tick.json"
+        self.health_tick.write_text('{"recovered_l1":true,"model_dispatches":0}\n')
         self.assets = ROOT / "references" / "dashboard"
         self.raw = self.snapshot()
         self.server = make_dashboard_server(
@@ -91,6 +95,26 @@ class DashboardServerContracts(unittest.TestCase):
                 "current": {"generation": 1, "secret": "must-not-escape"},
             }],
             "workers": [],
+            "host_bootstrap": {
+                "present": True,
+                "status": "READY",
+                "active": True,
+                "last_health_action": "l1_restored",
+                "live_l2_worker_evidence": None,
+                "validation_error": None,
+                "receipt": {
+                    "path": str(self.bootstrap_receipt), "exists": True,
+                    "size_bytes": self.bootstrap_receipt.stat().st_size,
+                    "sha256": hashlib.sha256(
+                        self.bootstrap_receipt.read_bytes()
+                    ).hexdigest(),
+                },
+                "last_health_tick": {
+                    "path": str(self.health_tick), "exists": True,
+                    "size_bytes": self.health_tick.stat().st_size,
+                    "sha256": hashlib.sha256(self.health_tick.read_bytes()).hexdigest(),
+                },
+            },
             "mismatches": [],
             "shutdown": None,
             "declared_resources": [{
@@ -123,6 +147,13 @@ class DashboardServerContracts(unittest.TestCase):
         value = json.loads(body)
         self.assertTrue(value["observation_only"])
         self.assertEqual(value["canonical"]["staged_status"], "CONTRACTED")
+        self.assertEqual(value["host_bootstrap"]["status"], "READY")
+        self.assertEqual(
+            value["host_bootstrap"]["last_health_action"], "l1_restored",
+        )
+        self.assertIsNone(value["host_bootstrap"]["live_l2_worker_evidence"])
+        self.assertTrue(value["host_bootstrap"]["receipt"]["present"])
+        self.assertTrue(value["host_bootstrap"]["last_health_tick"]["present"])
         self.assertEqual(value["canonical"]["staged_state"]["relative_path"], "state/staged_research/v1/state.json")
         serialized = body.decode()
         self.assertNotIn(str(self.root), serialized)
