@@ -5092,6 +5092,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             declarations,
         ),
         "artifact_contract": "return proposals only; the controller validates and promotes them",
+        "artifact_sha256_contract": (
+            "For every proposal, sha256 MUST be the lowercase SHA-256 of the "
+            "exact UTF-8 bytes in that proposal's content string. Compute it "
+            "from the returned string itself after final serialization. Do "
+            "not reuse a source-file or blueprint digest unless content is "
+            "byte-identical, including its final newline or lack thereof."
+        ),
         "writing_gate": writing_gate,
         "context_capsule": context_capsule,
     }, indent=2)
