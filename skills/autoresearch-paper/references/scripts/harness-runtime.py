@@ -49,6 +49,7 @@ from stage_report_validator import (
 from worker_artifact_lifecycle import (
     WorkerArtifactLifecycleError,
     controller_owned_digest,
+    exact_utf8_sha256,
     require_staged_transition,
     run_conformance_suite as run_worker_artifact_lifecycle_conformance,
     write_exact_utf8,
@@ -147,6 +148,10 @@ CHECKPOINT_EVIDENCE_PROFILES = {
         "optimization_contract", "stage_envelope", "stage_report",
         "stage_candidate", "stage_decision", "terminal_validation_receipt",
     },
+}
+STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE = {
+    "next_stage_envelope", "next_stage_preflight_inputs",
+    "next_stage_task_contract",
 }
 STAGED_CP01_EVIDENCE_PROFILE = {
     "optimization_contract", "first_stage_envelope",
@@ -4437,6 +4442,7 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
         ("staged_state_snapshot_path", "staged_state_snapshot_sha256"),
         ("research_dossier_path", "research_dossier_sha256"),
         ("worker_session_policy_path", "worker_session_policy_sha256"),
+        ("harness_runtime_implementation_path", "harness_runtime_implementation_sha256"),
         ("execution_lifecycle_implementation_path", "execution_lifecycle_implementation_sha256"),
         ("execution_lifecycle_conformance_path", "execution_lifecycle_conformance_sha256"),
     ):
@@ -4450,6 +4456,9 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
     implementation_path = Path(receipt["execution_lifecycle_implementation_path"])
     conformance_path = Path(receipt["execution_lifecycle_conformance_path"])
     if (
+        sha256_file(Path(receipt["harness_runtime_implementation_path"]))
+        != sha256_file(SCRIPT_DIR / "harness-runtime.py")
+        or
         sha256_file(implementation_path)
         != sha256_file(SCRIPT_DIR / "worker_artifact_lifecycle.py")
         or read_json(conformance_path)
@@ -4505,6 +4514,11 @@ def staged_cp01_execution_dependencies(
     graph = validate_durable_graph(plan_dir, read_json(graph_path))
     raw_items: list[dict[str, str]] = [
         {
+            "path": activation["authorization_receipt_path"],
+            "sha256": activation["authorization_receipt_sha256"],
+            "purpose": "execution_dependency:initial_authorization_receipt",
+        },
+        {
             "path": activation["prepared_receipt_path"],
             "sha256": activation["prepared_receipt_sha256"],
             "purpose": "execution_dependency:host_preparation_receipt",
@@ -4528,6 +4542,11 @@ def staged_cp01_execution_dependencies(
             "path": activation["worker_session_policy_path"],
             "sha256": activation["worker_session_policy_sha256"],
             "purpose": "execution_dependency:worker_session_policy",
+        },
+        {
+            "path": activation["harness_runtime_implementation_path"],
+            "sha256": activation["harness_runtime_implementation_sha256"],
+            "purpose": "execution_dependency:harness_runtime",
         },
         {
             "path": activation["execution_lifecycle_implementation_path"],
@@ -4632,6 +4651,11 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
     dossier_path = plan_dir / "state" / "research-dossier.md"
     dossier_snapshot_path = activation_root / "research-dossier-at-activation.md"
     atomic_write_bytes(dossier_snapshot_path, dossier_path.read_bytes(), immutable=True)
+    harness_runtime_path = activation_root / "harness-runtime.py"
+    atomic_write_bytes(
+        harness_runtime_path, (SCRIPT_DIR / "harness-runtime.py").read_bytes(),
+        immutable=True,
+    )
     lifecycle_implementation_path = (
         activation_root / "worker-artifact-lifecycle.py"
     )
@@ -4676,6 +4700,8 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
         "research_dossier_sha256": sha256_file(dossier_snapshot_path),
         "worker_session_policy_path": str(worker_policy_path),
         "worker_session_policy_sha256": sha256_file(worker_policy_path),
+        "harness_runtime_implementation_path": str(harness_runtime_path),
+        "harness_runtime_implementation_sha256": sha256_file(harness_runtime_path),
         "execution_lifecycle_implementation_path": str(lifecycle_implementation_path),
         "execution_lifecycle_implementation_sha256": sha256_file(lifecycle_implementation_path),
         "execution_lifecycle_conformance_path": str(lifecycle_conformance_path),
@@ -4765,7 +4791,8 @@ def enforce_artifact_byte_cap(
 
 
 def validate_worker_artifact_proposals(
-    result: dict[str, Any], declarations: list[dict[str, Any]],
+    result: dict[str, Any], declarations: list[dict[str, Any]], *,
+    require_controller_marker: bool = False,
 ) -> list[dict[str, Any]]:
     proposals = result.get("artifacts")
     if not isinstance(proposals, list):
@@ -4787,20 +4814,31 @@ def validate_worker_artifact_proposals(
             raise ContractError("worker artifact content must be a string")
         encoded = content.encode("utf-8")
         enforce_artifact_byte_cap(encoded, declaration)
-        try:
-            digest = controller_owned_digest(content, proposal.get("sha256"))
-        except WorkerArtifactLifecycleError as exc:
-            raise ContractError(str(exc)) from exc
+        if require_controller_marker:
+            try:
+                digest = controller_owned_digest(content, proposal.get("sha256"))
+            except WorkerArtifactLifecycleError as exc:
+                raise ContractError(str(exc)) from exc
+        else:
+            # Compatibility for pre-v0.19.2 task contracts. New Codex-Host
+            # continuation contracts are accepted only with the exact schema
+            # below and therefore can never delegate digest authority here.
+            digest = exact_utf8_sha256(content)
+            if proposal.get("sha256") != digest:
+                raise ContractError("worker artifact content hash mismatch")
         validator = declaration.get("content_validator")
         if validator is not None:
             validate_source_inventory_content(
                 content, validator["source_manifest"],
             )
-        # The Worker may explicitly delegate acceptance-critical hashing to
-        # the trusted Host.  In both forms the canonical proposal records the
-        # exact digest computed from the returned string.
+        # The canonical proposal always records the Host-computed digest of
+        # the exact returned string.
         proposal["sha256"] = digest
         checked.append(proposal)
+    if [item["artifact_id"] for item in checked] != [
+        item["artifact_id"] for item in declarations
+    ]:
+        raise ContractError("worker artifact proposal order changed")
     return checked
 
 
@@ -5379,7 +5417,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         validate_schema(result, output_schema)
         if not isinstance(result, dict):
             raise ContractError("worker structured output must be an object")
-        validate_worker_artifact_proposals(result, declarations)
+        validate_worker_artifact_proposals(
+            result, declarations,
+            require_controller_marker=(
+                output_schema == exact_worker_artifact_output_schema(declarations)
+            ),
+        )
         result_path = run_dir / "result.json"
         atomic_write_json(result_path, {"result": result, "artifact_outputs": declarations})
     except ContractError as exc:
@@ -6053,7 +6096,13 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
         raise ContractError("empty output contract cannot carry an output capability")
     enforce_output_capability(plan_dir, task_id, declarations, gate_path)
     envelope = read_json(result_path)
-    proposals = validate_worker_artifact_proposals(envelope["result"], declarations)
+    proposals = validate_worker_artifact_proposals(
+        envelope["result"], declarations,
+        require_controller_marker=(
+            contract.get("output_schema")
+            == exact_worker_artifact_output_schema(declarations)
+        ),
+    )
     run_dir = worker_run_dir(plan_dir, args.worker_run_id)
     status_path = run_dir / "status.json"
     journal_path = run_dir / "promotion-journal.json"
@@ -10365,6 +10414,139 @@ def release_frontier_prelaunch_reservation(
     )
 
 
+def exact_worker_artifact_output_schema(
+    declarations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compile declarations into the only accepted Worker proposal shape."""
+    item_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["artifact_id", "path", "content", "sha256"],
+        "properties": {
+            "artifact_id": {
+                "enum": [item["artifact_id"] for item in declarations],
+            },
+            "path": {"enum": [item["path"] for item in declarations]},
+            "content": {"type": "string"},
+            "sha256": {"const": "controller-compute"},
+        },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["artifacts"],
+        "properties": {
+            "artifacts": {
+                "type": "array", "items": item_schema,
+                "minItems": len(declarations), "maxItems": len(declarations),
+            },
+        },
+    }
+
+
+def validate_stage_review_continuation_materials(
+    plan_dir: Path,
+    state: dict[str, Any],
+    by_role: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Validate the exact Stage 2 draft before it enters the strong review."""
+    if set(by_role) != STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE:
+        raise ContractError("STAGE-REVIEW continuation evidence is incomplete")
+    paths = {role: Path(item["path"]).resolve() for role, item in by_role.items()}
+    for role, path in paths.items():
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(
+                f"STAGE-REVIEW {role} must be plan-owned"
+            ) from exc
+        validate_immutable_binding(path, by_role[role]["sha256"], role)
+    envelope_path = paths["next_stage_envelope"]
+    envelope = read_json(envelope_path)
+    source_stage_id = state["active_stage_id"]
+    source_decision = read_json(
+        staged_stage_dir(plan_dir, source_stage_id) / "decision.json"
+    )
+    initial = validate_applied_action_receipt(
+        plan_dir, Path(state["owner_authorization_path"]),
+        state["owner_authorization_action"],
+    )
+    bounded = initial.get("details", {}).get("bounded_continuation_authority")
+    if (
+        not isinstance(bounded, dict)
+        or bounded.get("max_automatic_crossings") != 1
+        or bounded.get("silence_is_approval") is not False
+        or bounded.get("allowed_stage_ids") != [envelope.get("stage_id")]
+        or envelope.get("source_cycle_id") != source_stage_id
+    ):
+        raise ContractError(
+            "next-stage draft is outside bounded initial continuation authority"
+        )
+    staged_validate_envelope(
+        envelope, state["contract_version"],
+        source_decision["resulting_incumbent_sha256"], first=False,
+        plan_dir=plan_dir, require_manifest=True,
+    )
+    staged_validate_profile_envelope_compatibility(
+        read_json(staged_root(plan_dir) / "evaluation-profile.json"), envelope,
+    )
+    raw_preflight = read_json(paths["next_stage_preflight_inputs"])
+    required_preflight = {
+        "verdict_truth_table", "statistical_design",
+        "training_evaluation_matrix", "conditional_state_machine",
+        "critical_path",
+    }
+    if envelope["stage_kind"] == "research" and envelope[
+        "stage_budget_and_stop"
+    ]["evaluation_calls"] == 0:
+        required_preflight.add("source_manifest")
+    if set(raw_preflight) != required_preflight:
+        raise ContractError("next-stage preflight draft has an invalid closed shape")
+    task = read_json(paths["next_stage_task_contract"])
+    if (
+        task.get("schema_version") != SCHEMA_VERSION
+        or not isinstance(task.get("task_id"), str)
+        or not task["task_id"]
+        or not isinstance(task.get("instruction"), str)
+        or not task["instruction"]
+        or task.get("allowed_write_paths") != []
+        or task.get("completion_check")
+        != {"type": "output_schema", "assertion": "valid"}
+    ):
+        raise ContractError("next-stage task contract has an invalid closed shape")
+    inputs = verify_manifest_items(task.get("inputs", []), base_dir=plan_dir)
+    declarations = [
+        normalize_declared_output(plan_dir, item)
+        for item in task.get("artifact_outputs", [])
+    ]
+    allowed_tools = task.get("allowed_tools")
+    if (
+        not isinstance(allowed_tools, list)
+        or any(not isinstance(value, str) for value in allowed_tools)
+        or set(allowed_tools) - READ_ONLY_CLAUDE_TOOLS
+    ):
+        raise ContractError("next-stage task tools exceed the read-only Worker route")
+    entry_policy_path = codex_host_entry_root(plan_dir) / "worker-session-policy.json"
+    if entry_policy_path.is_file():
+        entry_policy = read_json(entry_policy_path)
+        if not set(allowed_tools).issubset(
+            set(entry_policy["allowed_tool_ceiling"])
+        ):
+            raise ContractError(
+                "next-stage task tools exceed the frozen session ceiling"
+            )
+    if task.get("output_schema") != exact_worker_artifact_output_schema(declarations):
+        raise ContractError(
+            "next-stage output schema must bind artifact IDs, paths, count, "
+            "and literal controller-compute; Runtime binds declaration order"
+        )
+    if [item["path"] for item in inputs] != [
+        item["path"] for item in task.get("inputs", [])
+    ]:
+        raise ContractError("next-stage task input order changed")
+    return by_role
+
+
 def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     policy = load_policy(plan_dir)
@@ -10439,10 +10621,16 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
     roles = [item["purpose"] for item in manifest]
     if len(roles) != len(set(roles)):
         raise ContractError("frontier checkpoint evidence roles must be unique")
-    if set(roles) != required_roles:
+    accepted_role_sets = [required_roles]
+    if args.checkpoint == "STAGE-REVIEW":
+        accepted_role_sets.append(
+            required_roles | STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE
+        )
+    if set(roles) not in accepted_role_sets:
         raise ContractError(
-            f"frontier checkpoint evidence profile mismatch; missing={sorted(required_roles - set(roles))}, "
-            f"extra={sorted(set(roles) - required_roles)}"
+            "frontier checkpoint evidence profile mismatch; "
+            f"accepted={sorted(sorted(value) for value in accepted_role_sets)}, "
+            f"actual={sorted(set(roles))}"
         )
     if args.checkpoint == "CP-01" and not staged_cp01:
         requirements_item = next(
@@ -10528,12 +10716,22 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             **terminal_paths,
         }
         for item in manifest:
+            if item["purpose"] in STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE:
+                continue
             expected_path = expected_paths[item["purpose"]].resolve()
             if Path(item["path"]).resolve() != expected_path:
                 raise ContractError(
                     f"STAGE-REVIEW {item['purpose']} must be canonical; "
                     "use CP-01 approve_execution for an initial stage"
                 )
+        if STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE <= set(roles):
+            continuation_items = {
+                item["purpose"]: item for item in manifest
+                if item["purpose"] in STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE
+            }
+            validate_stage_review_continuation_materials(
+                plan_dir, staged_review_state, continuation_items,
+            )
     if args.checkpoint == "CP-02":
         promotion_item = next(item for item in manifest if item["purpose"] == "promotion_receipt")
         promotion_path = Path(promotion_item["path"])
@@ -13373,9 +13571,24 @@ def staged_derive_continuation_receipt(
     report_path = source_dir / "stage-report.json"
     review_path = source_dir / "strong-review.json"
     decision = read_json(decision_path)
-    staged_validate_accepted_strong_review(
+    strong_review = staged_validate_accepted_strong_review(
         plan_dir, source_stage_id, state["contract_version"],
     )
+    reviewed = strong_review.get("continuation_review")
+    reviewed_envelope = (
+        reviewed.get("next_stage_envelope")
+        if isinstance(reviewed, dict) else None
+    )
+    if (
+        not isinstance(reviewed_envelope, dict)
+        or Path(reviewed_envelope.get("path", "")).resolve()
+        != next_envelope_path.resolve()
+        or reviewed_envelope.get("sha256") != sha256_file(next_envelope_path)
+    ):
+        raise ContractError(
+            "bounded continuation requires the accepted strong review to bind "
+            "the exact next-stage envelope"
+        )
     if (
         decision.get("decision") not in STAGED_TERMINAL_DECISIONS
     ):
@@ -16941,12 +17154,33 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         ),
     }
     by_role = {item["purpose"]: item for item in request["context_manifest"]}
-    if set(by_role) != set(required_paths) or any(
+    continuation_roles = set(by_role) & STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE
+    accepted_roles = set(required_paths) | continuation_roles
+    if (
+        continuation_roles not in (
+            set(), STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE,
+        )
+        or set(by_role) != accepted_roles
+        or any(
         Path(by_role[role]["path"]).resolve() != path.resolve()
         or by_role[role]["sha256"] != sha256_file(path)
         for role, path in required_paths.items()
+        )
     ):
         raise ContractError("strong stage review request does not bind canonical stage evidence")
+    continuation_review = None
+    if continuation_roles:
+        continuation_review = {
+            role: {
+                "path": by_role[role]["path"],
+                "sha256": by_role[role]["sha256"],
+            }
+            for role in sorted(continuation_roles)
+        }
+        validate_stage_review_continuation_materials(
+            plan_dir, state,
+            {role: by_role[role] for role in continuation_roles},
+        )
     policy = load_policy(plan_dir)
     expected_model = policy["top_level_plan_audit"]["reviewer_model"]
     expected_effort = policy["top_level_plan_audit"]["reasoning_effort"]
@@ -16982,6 +17216,7 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         "role_visible_state_sha256": sha256_file(visible_path),
         "recommendation": response["recommendation"],
         "findings_sha256": sha256_json(response["findings"]),
+        "continuation_review": continuation_review,
         "frontier_request_id": args.request_id,
         "frontier_request_sha256": sha256_file(request_path_value),
         "frontier_response_sha256": sha256_file(response_path),
@@ -16991,7 +17226,7 @@ def command_record_strong_stage_review(args: argparse.Namespace) -> dict[str, An
         "schema_version", "review_receipt_id", "review_kind",
         "contract_version", "stage_cycle_id", "stage_report_sha256",
         "stage_envelope_sha256", "reviewer", "role_visible_state_sha256",
-        "recommendation", "findings_sha256",
+        "recommendation", "findings_sha256", "continuation_review",
     }
     if not required <= set(review):
         raise ContractError("strong-review receipt is incomplete")
@@ -17056,7 +17291,9 @@ def staged_validate_accepted_strong_review(
         "reasoning_effort": expected_effort, "policy_sha256": policy_sha,
     }
     if (
-        set(review) != required_fields
+        set(review) not in (
+            required_fields, required_fields | {"continuation_review"},
+        )
         or review.get("schema_version") != 1
         or review.get("review_kind") != "terminal_stage_report"
         or review.get("contract_version") != contract_version
@@ -17089,11 +17326,26 @@ def staged_validate_accepted_strong_review(
         **staged_terminal_review_evidence_paths(plan_dir, stage_id),
     }
     by_role = {item["purpose"]: item for item in request["context_manifest"]}
+    continuation_roles = set(by_role) & STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE
+    expected_roles = set(expected_paths) | continuation_roles
+    expected_continuation = (
+        {
+            role: {
+                "path": by_role[role]["path"],
+                "sha256": by_role[role]["sha256"],
+            }
+            for role in sorted(continuation_roles)
+        }
+        if continuation_roles else None
+    )
     reviewer_profile = status.get("reviewer_profile")
     if (
         request.get("checkpoint") != "STAGE-REVIEW"
         or request.get("decision_required") != "record_stage_review"
-        or set(by_role) != set(expected_paths)
+        or continuation_roles not in (
+            set(), STAGE_REVIEW_CONTINUATION_EVIDENCE_PROFILE,
+        )
+        or set(by_role) != expected_roles
         or any(
             Path(by_role[role]["path"]).resolve() != path.resolve()
             or by_role[role]["sha256"] != sha256_file(path)
@@ -17108,6 +17360,7 @@ def staged_validate_accepted_strong_review(
         or status.get("model_policy_sha256") != policy_sha
         or response.get("model_id") != expected_model
         or response.get("recommendation") != "accept"
+        or review.get("continuation_review") != expected_continuation
         or review.get("findings_sha256") != sha256_json(response["findings"])
         or review.get("frontier_request_sha256") != sha256_file(request_path_value)
         or review.get("frontier_response_sha256") != sha256_file(response_path)
@@ -17825,7 +18078,7 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     source_decision = read_json(
         staged_stage_dir(plan_dir, source_cycle_id) / "decision.json"
     )
-    staged_validate_accepted_strong_review(
+    strong_review = staged_validate_accepted_strong_review(
         plan_dir, source_cycle_id, state["contract_version"],
     )
     staged_validate_envelope(
@@ -17842,6 +18095,23 @@ def command_compile_next_stage(args: argparse.Namespace) -> dict[str, Any]:
     if authorization_path.parent == (
         staged_root(plan_dir) / "continuation-receipts"
     ).resolve():
+        reviewed_envelope = (
+            strong_review.get("continuation_review", {}).get(
+                "next_stage_envelope"
+            )
+            if isinstance(strong_review.get("continuation_review"), dict)
+            else None
+        )
+        if (
+            not isinstance(reviewed_envelope, dict)
+            or Path(reviewed_envelope.get("path", "")).resolve()
+            != incoming_source
+            or reviewed_envelope.get("sha256") != sha256_file(incoming_source)
+        ):
+            raise ContractError(
+                "automatic next-stage compilation requires the exact accepted "
+                "continuation draft"
+            )
         authorization = validate_staged_continuation_receipt_source(
             plan_dir, authorization_path, incoming_source,
         )
@@ -18113,18 +18383,33 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("staged advance operation identity conflict")
     else:
         state = staged_load_state(plan_dir)
-        if state["active_stage_id"] != source_stage_id or state["state"] not in {
-            "RECORDED", "PAUSED",
-        }:
+        if state["active_stage_id"] != source_stage_id or state["state"] != "RECORDED":
             raise ContractError("staged advance requires the active terminal source stage")
         source_dir = staged_stage_dir(plan_dir, source_stage_id)
         decision = read_json(source_dir / "decision.json")
         report_path = source_dir / "stage-report.json"
         review_path = source_dir / "strong-review.json"
         review = read_json(review_path)
-        staged_validate_accepted_strong_review(
+        strong_review = staged_validate_accepted_strong_review(
             plan_dir, source_stage_id, state["contract_version"],
         )
+        reviewed = strong_review.get("continuation_review")
+        expected_review_bindings = {
+            "next_stage_envelope": {
+                "path": str(envelope_path), "sha256": sha256_file(envelope_path),
+            },
+            "next_stage_preflight_inputs": {
+                "path": str(preflight_path), "sha256": sha256_file(preflight_path),
+            },
+            "next_stage_task_contract": {
+                "path": str(task_contract_path),
+                "sha256": sha256_file(task_contract_path),
+            },
+        }
+        if reviewed != expected_review_bindings:
+            raise ContractError(
+                "staged advance inputs are not the exact accepted continuation draft"
+            )
         if (
             decision.get("decision") not in STAGED_TERMINAL_DECISIONS
             or not report_path.is_file()

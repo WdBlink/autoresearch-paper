@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.19.1
+- **Current version:** v0.19.2
 - **Stability:** Experimental; Codex Host T032 field-lineage acceptance pending
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** The v1 target reverses the host boundary: Codex owns bootstrap,
@@ -266,7 +266,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.19.1 with a full bundle refresh so the
+Upgrade copied installations to v0.19.2 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -477,6 +477,11 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.19.2** — makes automatic Stage 2 a reviewed continuation: the terminal
+  strongest-model review binds the exact next envelope, preflight inputs, and
+  Worker task contract before compilation and dispatch. CP-01 also carries the
+  actual Runtime and initial authorization directly. T032 field lineage remains
+  pending, so Host cutover is still not claimed.
 - **v0.19.1** — closes the first T032 CP-01 audit failure by directly binding
   every first-Worker executable dependency and a Runtime-used exact-byte/order
   conformance module. Read-only Workers now delegate proposal hashing to the

@@ -322,13 +322,13 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.19.1"' in read("SKILL.md"), "SKILL.md version must be 0.19.1", errors)
+    require('version: "0.19.2"' in read("SKILL.md"), "SKILL.md version must be 0.19.2", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.19.1" in repository_readme_text,
-            "README version must be 0.19.1",
+            "Current version:** v0.19.2" in repository_readme_text,
+            "README version must be 0.19.2",
             errors,
         )
         require(

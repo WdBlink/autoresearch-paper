@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.19.1"
+  version: "0.19.2"
 ---
 
 # Autoresearch Paper
@@ -181,8 +181,10 @@ bootstrap slice. T032 remains the explicit field gate for end-to-end staged cont
   dispatches, `STAGE-REVIEW`, and named CP slots, with no Worker capacity from
   frontier top-ups;
 - exactly one initial-contract-pre-authorized crossing, gated on a terminal
-  decision, MiniMax report, and fresh strongest-policy review, ending at one
-  next-stage Worker start;
+  decision, MiniMax report, and fresh strongest-policy review that binds the
+  exact next-stage envelope, raw preflight inputs, task contract, tool
+  intersection, output identities, paths, order, and Host-owned hashing marker,
+  ending at one next-stage Worker start;
 - a mandatory independent CP-01 top-level-plan audit pinned to
   `gpt-5.6-sol` at `ultra`, with reviewer identity and policy hash carried into
   the durable `approve_execution` receipt;
@@ -615,6 +617,15 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.19.2 (2026-07-30)** — T032 reviewed-continuation closure: automatic
+  Stage 1 → Stage 2 crossing now requires one accepted strongest-policy
+  `STAGE-REVIEW` to bind both canonical Stage 1 terminal evidence and the exact
+  immutable Stage 2 envelope, raw preflight inputs, and Worker task contract.
+  The Runtime rejects `PAUSED` automatic crossings, requires literal
+  `controller-compute` for new exact Worker schemas, enforces declaration order,
+  and puts the actual Host Runtime plus initial authorization directly in CP-01.
+  Legacy human-reauthorized compilation remains replayable. T032 real field
+  lineage is still required before claiming the Host cutover.
 - **v0.19.1 (2026-07-30)** — T032 CP-01 execution closure: the immutable
   frontier manifest now expands the activation-derived durable graph into the
   first Worker task contract and every otherwise-unseen executable input, and

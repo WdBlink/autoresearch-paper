@@ -1208,7 +1208,22 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--stage-report", str(report_path),
                 "--worker-run-id", worker_run_id,
             ).stdout)
-            self.apply_strong_review(plan, Path(report["path"]))
+            stage2_value = self.envelope(
+                "stage_2", source="stage_1",
+                incumbent=cycle["candidate_sha256"],
+            )
+            stage2_value["stage_budget_and_stop"]["evaluation_calls"] = 0
+            stage2_value["authorized_evidence_refs"] = []
+            stage2 = self.write(plan / "inputs" / "stage-2.json", stage2_value)
+            preflight2 = self.write(
+                plan / "inputs" / "stage-2-preflight.json",
+                self.raw_observation_preflight(plan),
+            )
+            task = self.empty_worker_contract(plan, "stage_2")
+            self.apply_strong_review(
+                plan, Path(report["path"]),
+                continuation=(stage2, preflight2, task),
+            )
 
             root = plan / "state" / "staged_research" / "v1"
             decision_path = root / "stages" / "stage_1" / "decision.json"
@@ -1235,9 +1250,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     plan / "inputs" / "forged-stage-2-preflight.json",
                     self.raw_observation_preflight(plan),
                 )),
-                "--task-contract", str(self.empty_worker_contract(
-                    plan, "stage_2",
-                )),
+                "--task-contract", str(task),
                 "--claude-bin", str(self.fake_claude(plan)), ok=False,
             )
             self.assertIn("hash mismatch", rejected.stderr)
@@ -1245,18 +1258,6 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             decision_path.write_bytes(canonical_decision)
             decision_path.chmod(0o444)
 
-            stage2_value = self.envelope(
-                "stage_2", source="stage_1",
-                incumbent=cycle["candidate_sha256"],
-            )
-            stage2_value["stage_budget_and_stop"]["evaluation_calls"] = 0
-            stage2_value["authorized_evidence_refs"] = []
-            stage2 = self.write(plan / "inputs" / "stage-2.json", stage2_value)
-            preflight2 = self.write(
-                plan / "inputs" / "stage-2-preflight.json",
-                self.raw_observation_preflight(plan),
-            )
-            task = self.empty_worker_contract(plan, "stage_2")
             advanced = json.loads(self.invoke(
                 "advance-staged-research", "--plan-dir", str(plan),
                 "--stage-envelope", str(stage2),
@@ -1914,6 +1915,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
     def apply_strong_review(
         self, plan: Path, report_path: Path, *,
         crash_record: bool = False, recommendation: str = "accept",
+        continuation: tuple[Path, Path, Path] | None = None,
     ) -> str:
         root = plan / "state" / "staged_research" / "v1"
         state = json.loads((root / "state.json").read_text())
@@ -1936,6 +1938,14 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             if decision.get("decision_kind") == "observation_validation"
             else Path(decision["evaluator_execution_receipt_path"])
         )
+        if continuation is not None:
+            for path in continuation:
+                path.chmod(0o444)
+            artifacts.update({
+                "next_stage_envelope": continuation[0],
+                "next_stage_preflight_inputs": continuation[1],
+                "next_stage_task_contract": continuation[2],
+            })
         args = [
             "create-frontier-request", "--plan-dir", str(plan),
             "--plan-id", "plan_staged", "--checkpoint", "STAGE-REVIEW",
@@ -2156,7 +2166,22 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "type": "object", "additionalProperties": False,
                 "required": ["artifacts"],
                 "properties": {
-                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                    "artifacts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object", "additionalProperties": False,
+                            "required": [
+                                "artifact_id", "path", "content", "sha256",
+                            ],
+                            "properties": {
+                                "artifact_id": {"enum": []},
+                                "path": {"enum": []},
+                                "content": {"type": "string"},
+                                "sha256": {"const": "controller-compute"},
+                            },
+                        },
+                        "minItems": 0, "maxItems": 0,
+                    },
                 },
             },
             "completion_check": {"type": "output_schema", "assertion": "valid"},
@@ -4845,7 +4870,6 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     "record-stage-report", "--plan-dir", str(plan),
                     "--stage-report", str(report_path), "--worker-run-id", worker_run_id,
                 ).stdout)
-                self.apply_strong_review(plan, Path(report["path"]))
                 stage2 = self.write(
                     plan / "inputs" / "stage-2.json",
                     self.envelope(
@@ -4857,6 +4881,10 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     plan / "inputs" / "stage-2-preflight.json", self.raw_preflight(),
                 )
                 task = self.empty_worker_contract(plan, "stage_2")
+                self.apply_strong_review(
+                    plan, Path(report["path"]),
+                    continuation=(stage2, preflight2, task),
+                )
                 args = (
                     "advance-staged-research", "--plan-dir", str(plan),
                     "--stage-envelope", str(stage2),
