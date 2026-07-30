@@ -13,7 +13,10 @@ authority between both model runtimes and canonical state.
 
 T030 implements the persistent Claude Worker-session transport. T031 adds the
 installed closed-brief entry, authenticated first-stage activation, and the
-transactional `bootstrap-host-runtime` closure. v0.19.3 additionally makes the
+transactional `bootstrap-host-runtime` closure. v0.19.4 additionally keeps
+large execution dependencies hash-bound without duplicating them into the
+frontier prompt and enforces the exact Codex turn-start character ceiling
+before transport. v0.19.3 makes the
 terminal strongest-model review bind the exact continuation envelope, raw
 preflight inputs, and Worker task contract before automatic compilation. T032 must
 prove a complete Stage 1 terminal → strong review → Stage 2 compile → same

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.19.3"
+  version: "0.19.4"
 ---
 
 # Autoresearch Paper
@@ -618,6 +618,14 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.19.4 (2026-07-30)** — closes the transport defect exposed by the first
+  installed T032 field attempt. Large immutable execution dependencies remain
+  directly bound by path, SHA-256, and byte size but are no longer duplicated
+  in the tool-free frontier prompt; bounded review evidence remains inline.
+  The Runtime also checks the exact Codex turn-start character ceiling before
+  launch and releases the prelaunch reservation on deterministic overflow.
+  Plan035 remains immutable negative evidence. T032 real field lineage remains
+  required before claiming the Host cutover.
 - **v0.19.3 (2026-07-30)** — closes the first real T032 audit findings without
   weakening the Gate. Exact-schema Worker results now persist a replayable
   literal-marker-to-controller-digest authority record, so promotion never

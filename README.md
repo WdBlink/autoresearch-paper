@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.19.3
+- **Current version:** v0.19.4
 - **Stability:** Experimental; Codex Host T032 field-lineage acceptance pending
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** The v1 target reverses the host boundary: Codex owns bootstrap,
@@ -266,7 +266,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.19.3 with a full bundle refresh so the
+Upgrade copied installations to v0.19.4 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -477,6 +477,11 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.19.4** — prevents oversized execution dependencies from overflowing
+  the Codex turn-start character ceiling: their immutable path, SHA-256, and
+  size remain bound while only bounded review evidence is embedded. A second
+  exact character preflight releases capacity before transport on overflow.
+  T032 field lineage remains pending, so Host cutover is still not claimed.
 - **v0.19.3** — fixes the first live T032 audit findings: exact Worker digest
   delegation survives persistence/promotion, `PAUSED` can no longer compile a
   continuation, CP-01 closes evaluator/Dashboard/durable execution authority,

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.19.4 — 2026-07-30
+
+- Bound large frontier evidence by immutable path, SHA-256, and byte size
+  without duplicating its full body into the Codex prompt. Small review
+  evidence remains embedded directly.
+- Enforce the Codex turn-start character ceiling before transport and release
+  the prelaunch reservation on a deterministic overflow. The first installed
+  T032 field attempt is preserved as the negative plan035 sample that exposed
+  this failure.
+- Keep the product status at T032 pending until a new installed task proves
+  Stage 1 terminal → strong reviewed continuation → Stage 2 Worker start.
+
 ## v0.19.3 — 2026-07-30
 
 - Persist a controller-owned digest-authority record when an exact-schema
