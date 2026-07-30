@@ -64,6 +64,11 @@ do not claim that the complete staged loop has completed the Codex Host cutover.
   tools. Claude grants that read authority at directory granularity: the input
   parent must contain no sibling secret that the Worker is not authorized to
   read. Accepted evidence still cites only the frozen manifest.
+- Never reuse a source-file or blueprint SHA as a Worker proposal SHA by
+  assumption. The proposal `sha256` is computed from the exact UTF-8 bytes of
+  its returned `content` string after final serialization, including whether a
+  terminal newline is present. A mismatch is a real fail-closed Worker failure,
+  not a formatting exception or a controller repair opportunity.
 - Never treat `usage: {0,0}` as free or refund a launched frontier call.
   Preserve valid negative advice; reject `accept` with blockers/critical
   findings. Extra capacity requires a signed future-only

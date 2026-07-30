@@ -111,6 +111,9 @@ class RuntimeContracts(unittest.TestCase):
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
             "json.dump(sys.argv[1:], open(os.environ['CLAUDE_TEST_LOG'], 'w'))\n"
+            "prompt = sys.stdin.read()\n"
+            "if os.environ.get('CLAUDE_TEST_PROMPT_LOG'):\n"
+            "  open(os.environ['CLAUDE_TEST_PROMPT_LOG'], 'w').write(prompt)\n"
             "json.dump({'structured_output': {'summary': 'bounded result', 'ok': True, 'artifacts': []}}, sys.stdout)\n"
         )
         executable.chmod(0o755)
@@ -341,6 +344,7 @@ class RuntimeContracts(unittest.TestCase):
             self.assertIn("Claude Code executable is unavailable", missing.stderr)
             self.assertFalse((plan / "state" / "worker_runs").exists())
             claude, log = self.fake_claude(tmp)
+            prompt_log = tmp / "claude-prompt.json"
             proc = run([
                 sys.executable,
                 "references/scripts/harness-runtime.py",
@@ -348,7 +352,10 @@ class RuntimeContracts(unittest.TestCase):
                 "--plan-dir", str(plan),
                 "--task-contract", str(contract),
                 "--claude-bin", str(claude),
-            ], env={"CLAUDE_TEST_LOG": str(log)})
+            ], env={
+                "CLAUDE_TEST_LOG": str(log),
+                "CLAUDE_TEST_PROMPT_LOG": str(prompt_log),
+            })
             result = json.loads(proc.stdout)
             self.assertEqual(result["status"], "COMPLETED")
             self.assertIsInstance(result["pid"], int)
@@ -368,6 +375,16 @@ class RuntimeContracts(unittest.TestCase):
                 plan.resolve(),
             )
             self.assertNotIn("mavis", " ".join(argv).lower())
+            prompt = json.loads(prompt_log.read_text())
+            self.assertEqual(
+                prompt["artifact_sha256_contract"],
+                "For every proposal, sha256 MUST be the lowercase SHA-256 of "
+                "the exact UTF-8 bytes in that proposal's content string. "
+                "Compute it from the returned string itself after final "
+                "serialization. Do not reuse a source-file or blueprint "
+                "digest unless content is byte-identical, including its final "
+                "newline or lack thereof.",
+            )
             session = json.loads((plan / "state" / "worker_session.json").read_text())
             receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
             self.assertIsNone(receipt["transport_usage"]["input_tokens"])

@@ -40,6 +40,11 @@
   preflight, durable graph, generated dossier, and predeclared Claude session
   UUID. Host READY receipts now include the preparation and activation lineage;
   retry revalidates the same immutable bindings without duplicate schedulers.
+- Close the first T032 field failure exposed by plan 031: the Worker prompt now
+  requires each proposal SHA to be computed from the exact returned UTF-8
+  `content` bytes after final serialization. It explicitly forbids copying a
+  newline-inclusive blueprint digest onto content that omits that newline; the
+  controller remains fail-closed on any mismatch.
 
 ## v0.18.0 — 2026-07-28
 
