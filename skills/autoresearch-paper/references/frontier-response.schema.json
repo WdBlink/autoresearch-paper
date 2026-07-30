@@ -34,31 +34,33 @@
     "recommendation": {"type": "string", "minLength": 1},
     "findings": {
       "type": "array",
+      "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["severity", "claim", "evidence"],
         "properties": {
           "severity": {"type": "string", "enum": ["info", "warn", "critical"]},
-          "claim": {"type": "string"},
+          "claim": {"type": "string", "maxLength": 1600},
           "evidence": {"type": "array", "items": {"type": "string"}}
         }
       }
     },
     "proposed_actions": {
       "type": "array",
+      "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["action", "rationale"],
         "properties": {
-          "action": {"type": "string"},
-          "rationale": {"type": "string"}
+          "action": {"type": "string", "maxLength": 800},
+          "rationale": {"type": "string", "maxLength": 1600}
         }
       }
     },
-    "assumptions": {"type": "array", "items": {"type": "string"}},
-    "blockers": {"type": "array", "items": {"type": "string"}},
+    "assumptions": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 1200}},
+    "blockers": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 1200}},
     "model_id": {"type": "string"},
     "usage": {
       "type": "object",

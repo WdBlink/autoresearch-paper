@@ -344,6 +344,19 @@ class CodexHostEntryTests(unittest.TestCase):
             self.assertIn(
                 "execution_dependency:lifecycle_conformance", roles,
             )
+            self.assertIn("execution_dependency:durable_objective", roles)
+            self.assertIn("execution_dependency:durable_constraints", roles)
+            self.assertIn("execution_dependency:durable_evaluator", roles)
+            # This fixture is arXiv-tier; conference/journal unattended plans
+            # additionally require evaluator-admission authority here.
+            self.assertNotIn(
+                "execution_dependency:evaluator_admission_receipt", roles,
+            )
+            self.assertIn(
+                "execution_dependency:dashboard_runtime_manifest", roles,
+            )
+            self.assertIn("execution_dependency:dashboard_server", roles)
+            self.assertIn("execution_dependency:dashboard_asset:index.html", roles)
             self.assertTrue(any(
                 role.startswith("execution_dependency:task_contract:")
                 for role in roles
@@ -385,6 +398,27 @@ class CodexHostEntryTests(unittest.TestCase):
             )
             self.assertEqual(
                 bootstrapped["closed_brief_sha256"], entry["closed_brief_sha256"]
+            )
+            bootstrap_request = json.loads(
+                (plan / "state" / "host_bootstrap" / "v1" / "request.json").read_text()
+            )
+            activation = json.loads(
+                (plan / "state" / "codex_host_entry" / "v1"
+                 / "activation-receipt.json").read_text()
+            )
+            dashboard_manifest = json.loads(
+                Path(activation["dashboard_runtime_manifest_path"]).read_text()
+            )
+            dashboard_by_purpose = {
+                item["purpose"]: item for item in dashboard_manifest["artifacts"]
+            }
+            self.assertEqual(
+                bootstrap_request["dashboard_index_sha256"],
+                dashboard_by_purpose["dashboard_asset:index.html"]["sha256"],
+            )
+            self.assertEqual(
+                bootstrap_request["dashboard_server_sha256"],
+                dashboard_by_purpose["dashboard_server"]["sha256"],
             )
             retry = json.loads(self.call(
                 RUNTIME, "bootstrap-host-runtime", "--plan-dir", str(plan),

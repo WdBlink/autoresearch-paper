@@ -2204,6 +2204,31 @@ class StagedResearchGovernanceTests(unittest.TestCase):
         self.apply_strong_review(plan, Path(report["path"]))
         return cycle
 
+    def test_exact_worker_digest_authority_survives_dispatch_and_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            self.initialize(plan)
+            self.preflight(plan)
+            self.authorize_fixture(plan)
+            self.apply_cp01(plan)
+            contract = self.empty_worker_contract(plan, "stage_1")
+            dispatched = json.loads(self.invoke(
+                "dispatch-worker", "--plan-dir", str(plan),
+                "--task-contract", str(contract),
+                "--claude-bin", str(self.fake_claude(plan)),
+                "--stateless-worker-session",
+            ).stdout)
+            result = json.loads(Path(dispatched["result_path"]).read_text())
+            self.assertEqual(
+                result["digest_authority"]["kind"],
+                "controller_computed_from_literal_worker_markers",
+            )
+            promoted = json.loads(self.invoke(
+                "promote-worker-artifacts", "--plan-dir", str(plan),
+                "--worker-run-id", dispatched["run_id"],
+            ).stdout)
+            self.assertTrue(promoted["ok"])
+
     def test_forged_gate_resulting_incumbent_cannot_compile_empty_evidence_stage(
         self,
     ) -> None:
@@ -2236,6 +2261,30 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertFalse(
                 (root / "stages" / "stage_1" / "next-stage.json").exists()
             )
+
+    def test_paused_cycle_cannot_compile_next_stage_even_with_reauthorization(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "plan"
+            cycle = self.prepare_compilable_stage(plan, "d")
+            root = plan / "state" / "staged_research" / "v1"
+            state_path = root / "state.json"
+            state = json.loads(state_path.read_text())
+            state["state"] = "PAUSED"
+            state_path.write_text(json.dumps(state, sort_keys=True, indent=2) + "\n")
+            envelope = self.envelope(
+                "stage_2", source="stage_1",
+                incumbent=cycle["resulting_incumbent_sha256"],
+            )
+            path = self.write(plan / "inputs" / "paused-stage-2.json", envelope)
+            authorization = self.authorize_next_stage(plan, path)
+            rejected = self.invoke(
+                "compile-next-stage", "--plan-dir", str(plan),
+                "--stage-envelope", str(path),
+                "--authorized-evidence", "evidence_stage_1",
+                "--authorization-receipt", authorization, ok=False,
+            )
+            self.assertIn("PAUSED is not scientific completion authority", rejected.stderr)
+            self.assertFalse((root / "stages" / "stage_1" / "next-stage.json").exists())
 
     def test_forged_gate_semantics_fail_before_stage_report_review(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -3257,12 +3306,20 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     plan, envelope_path,
                     negative_evidence_id="evidence_stage_1",
                 )
-                compiled = json.loads(self.invoke(
+                compile_args = (
                     "compile-next-stage", "--plan-dir", str(plan),
                     "--stage-envelope", str(envelope_path),
                     "--authorized-evidence", "evidence_stage_1",
                     "--authorization-receipt", authorization,
-                ).stdout)
+                )
+                if decision == "escalate":
+                    rejected = self.invoke(*compile_args, ok=False)
+                    self.assertIn(
+                        "PAUSED is not scientific completion authority",
+                        rejected.stderr,
+                    )
+                    continue
+                compiled = json.loads(self.invoke(*compile_args).stdout)
                 self.assertEqual(compiled["next_stage_id"], "stage_2")
                 root = plan / "state" / "staged_research" / "v1"
                 journal = json.loads(

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-IMPLEMENTATION_ID = "worker-artifact-lifecycle/1"
+IMPLEMENTATION_ID = "worker-artifact-lifecycle/2"
 
 
 class WorkerArtifactLifecycleError(ValueError):
@@ -35,6 +35,36 @@ def controller_owned_digest(content: str, declared: Any) -> str:
             "worker artifact sha256 must be literal controller-compute"
         )
     return exact_utf8_sha256(content)
+
+
+def controller_digest_authority_record(
+    artifact_id: str, path: str, content: str, declared: Any,
+) -> dict[str, str]:
+    """Persist proof that a literal Worker delegation produced one digest."""
+    digest = controller_owned_digest(content, declared)
+    return {
+        "artifact_id": artifact_id,
+        "path": path,
+        "delegation_literal": "controller-compute",
+        "sha256": digest,
+    }
+
+
+def validate_controller_digest_authority_record(
+    artifact_id: str, path: str, content: str, canonical_digest: Any,
+    record: Any,
+) -> None:
+    """Replay persisted marker-to-digest authority without accepting a digest as delegation."""
+    expected = {
+        "artifact_id": artifact_id,
+        "path": path,
+        "delegation_literal": "controller-compute",
+        "sha256": exact_utf8_sha256(content),
+    }
+    if record != expected or canonical_digest != expected["sha256"]:
+        raise WorkerArtifactLifecycleError(
+            "persisted controller digest authority binding mismatch"
+        )
 
 
 def write_exact_utf8(path: Path, content: str, expected_sha256: str) -> None:
@@ -102,6 +132,19 @@ def run_conformance_suite() -> dict[str, Any]:
         record("worker_declared_digest_rejected", True)
     else:
         record("worker_declared_digest_rejected", False)
+    canonical_digest = controller_owned_digest(no_newline, "controller-compute")
+    authority = controller_digest_authority_record(
+        "artifact_1", "artifact.json", no_newline, "controller-compute",
+    )
+    try:
+        validate_controller_digest_authority_record(
+            "artifact_1", "artifact.json", no_newline,
+            canonical_digest, authority,
+        )
+    except WorkerArtifactLifecycleError:
+        record("persisted_digest_authority_replays", False)
+    else:
+        record("persisted_digest_authority_replays", True)
     with tempfile.TemporaryDirectory() as temp_dir:
         target = Path(temp_dir) / "artifact.json"
         digest = exact_utf8_sha256(no_newline)

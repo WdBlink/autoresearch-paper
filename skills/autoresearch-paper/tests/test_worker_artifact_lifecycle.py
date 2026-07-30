@@ -19,7 +19,7 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
     def test_conformance_suite_closes_exact_bytes_and_order(self) -> None:
         result = MODULE.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 7)
+        self.assertEqual(result["case_count"], 8)
         self.assertTrue(all(case["passed"] for case in result["cases"]))
 
     def test_controller_compute_owns_digest(self) -> None:
@@ -36,6 +36,23 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
         ):
             MODULE.controller_owned_digest(
                 content, MODULE.exact_utf8_sha256(content),
+            )
+
+    def test_persisted_controller_authority_replays_canonical_digest(self) -> None:
+        content = '{"value":1}'
+        authority = MODULE.controller_digest_authority_record(
+            "artifact_1", "artifact.json", content, "controller-compute",
+        )
+        MODULE.validate_controller_digest_authority_record(
+            "artifact_1", "artifact.json", content,
+            MODULE.exact_utf8_sha256(content), authority,
+        )
+        with self.assertRaisesRegex(
+            MODULE.WorkerArtifactLifecycleError, "authority binding mismatch",
+        ):
+            MODULE.validate_controller_digest_authority_record(
+                "artifact_1", "artifact.json", content + "\n",
+                MODULE.exact_utf8_sha256(content), authority,
             )
 
 

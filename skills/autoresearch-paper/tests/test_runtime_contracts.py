@@ -182,7 +182,9 @@ class RuntimeContracts(unittest.TestCase):
             "prompt = sys.stdin.read()\n"
             "if os.environ.get('CODEX_TEST_PROMPT_LOG'):\n"
             "  open(os.environ['CODEX_TEST_PROMPT_LOG'], 'w').write(prompt)\n"
-            "request = json.loads(prompt[prompt.index('{'):])\n"
+            "start = prompt.index('REQUEST_JSON_BEGIN') + len('REQUEST_JSON_BEGIN')\n"
+            "end = prompt.index('REQUEST_JSON_END')\n"
+            "request = json.loads(prompt[start:end])\n"
             "import hashlib\n"
             "canonical = json.dumps(request['context_manifest'], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()\n"
             "critical = os.environ.get('CODEX_TEST_CRITICAL') == '1'\n"
@@ -1057,8 +1059,8 @@ class RuntimeContracts(unittest.TestCase):
             )
             prompt = prompt_log.read_text()
             self.assertIn(
-                "mandatory independent CP-01 review of the exact top-level "
-                "execution plan declared as MiniMax M3 output",
+                "mandatory independent CP-01 review of the exact "
+                "MiniMax-M3-authored top-level first-stage execution plan",
                 prompt,
             )
             self.assertIn(

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.19.3 — 2026-07-30
+
+- Persist a controller-owned digest-authority record when an exact-schema
+  Worker delegates hashing with literal `controller-compute`, and replay that
+  record before promotion of canonical digest-bearing results.
+- Require `RECORDED` for every next-stage compilation. Human reauthorization
+  may resume a paused stage but cannot redefine `PAUSED` as scientific
+  completion.
+- Expand installed Codex Host CP-01 evidence to the durable objective,
+  constraints, evaluator, applicable unattended evaluator admission, and a
+  plan-local immutable snapshot of every Dashboard runtime asset.
+- Compile the bounded frontier evidence into one tool-free prompt, estimate
+  that exact serialization before transport, and bound response cardinality
+  and string size. This removes the repeated tool-read amplification observed
+  in immutable plan034.
+- Keep the product status at T032 pending until a fresh installed task proves
+  Stage 1 terminal → strong reviewed continuation → Stage 2 Worker start.
+
 ## v0.19.2 — 2026-07-30
 
 - Make the terminal strongest-model `STAGE-REVIEW` review two inseparable

@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.19.2"
+  version: "0.19.3"
 ---
 
 # Autoresearch Paper
@@ -152,7 +152,8 @@ for an observation-only first stage (research + evaluation_calls=0):
 after a recorded stage decision: persist MiniMax report; create terminal STAGE-REVIEW -> send -> validate -> apply -> record-strong-stage-review
 if the initial signed contract explicitly pre-authorized the named next stage:
     advance-staged-research -> derive bound receipt -> compile -> preflight -> authorize -> start exactly one next-stage Worker
-else: require a fresh signed reauthorize_stage receipt before compile-next-stage
+else: require a fresh signed reauthorize_stage receipt; if PAUSED, resume and
+  complete the active stage to RECORDED before compile-next-stage
 rebuild progress.json and research-dossier.md from canonical staged state with rebuild-staged-projections when needed
 at the first authorized figure-production stage, freeze the exact inventory
 after KEEP/waiver and before writing: build figures -> validate every figure manifest
@@ -617,6 +618,17 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.19.3 (2026-07-30)** — closes the first real T032 audit findings without
+  weakening the Gate. Exact-schema Worker results now persist a replayable
+  literal-marker-to-controller-digest authority record, so promotion never
+  mistakes a canonical digest for Worker authority. `compile-next-stage`
+  requires `RECORDED` even with human reauthorization; `PAUSED` must resume and
+  reach a scientific terminal record first. CP-01 now closes durable
+  objective/constraints/evaluator, unattended evaluator admission, and frozen
+  Dashboard runtime assets. Frontier reviews consume one embedded immutable
+  evidence envelope with an exact pre-send estimate and bounded response size,
+  avoiding repeated tool reads that caused the plan034 budget overrun. T032
+  real field lineage remains required before claiming the Host cutover.
 - **v0.19.2 (2026-07-30)** — T032 reviewed-continuation closure: automatic
   Stage 1 → Stage 2 crossing now requires one accepted strongest-policy
   `STAGE-REVIEW` to bind both canonical Stage 1 terminal evidence and the exact
@@ -624,7 +636,8 @@ this file.
   The Runtime rejects `PAUSED` automatic crossings, requires literal
   `controller-compute` for new exact Worker schemas, enforces declaration order,
   and puts the actual Host Runtime plus initial authorization directly in CP-01.
-  Legacy human-reauthorized compilation remains replayable. T032 real field
+  Human reauthorization can resume a paused stage, but compilation still
+  requires a completed `RECORDED` cycle. T032 real field
   lineage is still required before claiming the Host cutover.
 - **v0.19.1 (2026-07-30)** — T032 CP-01 execution closure: the immutable
   frontier manifest now expands the activation-derived durable graph into the

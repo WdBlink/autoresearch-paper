@@ -13,7 +13,7 @@ authority between both model runtimes and canonical state.
 
 T030 implements the persistent Claude Worker-session transport. T031 adds the
 installed closed-brief entry, authenticated first-stage activation, and the
-transactional `bootstrap-host-runtime` closure. v0.19.2 additionally makes the
+transactional `bootstrap-host-runtime` closure. v0.19.3 additionally makes the
 terminal strongest-model review bind the exact continuation envelope, raw
 preflight inputs, and Worker task contract before automatic compilation. T032 must
 prove a complete Stage 1 terminal → strong review → Stage 2 compile → same
@@ -204,10 +204,14 @@ Workers return content/hash proposals only; the controller revalidates and
 atomically materializes them with `promote-worker-artifacts`.
 For read-only turns, every proposal sets `sha256` to `controller-compute`.
 The Host computes the digest from the exact returned UTF-8 string—including
-terminal-newline state—and stages those exact bytes. CP-01 directly receives
-the task contract, otherwise-unseen task inputs, Host preparation/activation,
-and the Runtime-used lifecycle implementation plus its adversarial conformance
-receipt; transitive path/hash mentions are not execution evidence.
+terminal-newline state—and persists a separate authority record proving that
+the literal marker, not a Worker-supplied digest, produced the canonical result.
+Promotion replays that record before staging exact bytes. CP-01 directly
+receives the task contract, otherwise-unseen task inputs, Host
+preparation/activation, durable objective/constraints/evaluator, applicable
+unattended evaluator admission, frozen Dashboard runtime assets, and the
+Runtime-used lifecycle implementation plus its adversarial conformance receipt;
+transitive path/hash mentions are not execution evidence.
 Without a writing gate, the only capability class is `research-intermediate`
 and the exact destination root is
 `artifacts/intermediate/<normalized-task-id>/`. With the exact frozen gate,
@@ -924,8 +928,9 @@ next envelope. Its recoverable journal then performs compile → preflight →
 authorize → start exactly one Stage 2 Worker. Replay returns the same run; it
 does not start a second Worker. The bounded outcome stops at Worker start—it
 does not establish Stage 2 completion or scientific success. Without that
-initial explicit pre-authorization, use the existing signed
-`reauthorize_stage` plus `compile-next-stage` path.
+initial explicit pre-authorization, use signed `reauthorize_stage` authority.
+A `PAUSED` stage must first resume and reach a new `RECORDED` terminal cycle;
+reauthorization alone can never authorize `compile-next-stage` from `PAUSED`.
 
 Each checkpoint enforces its exact evidence-role profile. Responses require
 `status=completed` and evidence citations bound to the frozen manifest.
