@@ -4963,13 +4963,13 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     context_capsule_path_arg = getattr(args, "context_capsule", None)
     context_capsule: dict[str, Any] | None = None
     if context_capsule_path_arg:
-        context_capsule, _, _, durable_task = validate_context_capsule(
+        context_capsule, capsule_task = validate_worker_context_capsule(
             plan_dir, Path(context_capsule_path_arg).resolve(),
         )
         if (
             context_capsule["task_id"] != task_id
-            or Path(durable_task["task_contract"]["path"]).resolve() != contract_path
-            or durable_task["task_contract"]["sha256"] != sha256_file(contract_path)
+            or Path(capsule_task["task_contract"]["path"]).resolve() != contract_path
+            or capsule_task["task_contract"]["sha256"] != sha256_file(contract_path)
         ):
             raise ContractError("worker task contract is not bound to the current context capsule")
         capsule_inputs = [
@@ -5893,7 +5893,7 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
         raise ContractError("only COMPLETED worker runs can be promoted")
     bound_capsule: dict[str, Any] | None = None
     if status.get("context_capsule_path"):
-        bound_capsule, _, _, _ = validate_context_capsule(
+        bound_capsule, _ = validate_worker_context_capsule(
             plan_dir, Path(status["context_capsule_path"]),
         )
         if (
@@ -12994,6 +12994,224 @@ def validate_staged_continuation_receipt(
     return receipt
 
 
+def staged_continuation_capsule_path(
+    plan_dir: Path, capsule_id: str,
+) -> Path:
+    if not re.fullmatch(r"capsule_[a-f0-9]{64}", capsule_id):
+        raise ContractError("invalid staged continuation capsule identity")
+    return (
+        staged_root(plan_dir) / "continuation-capsules" / f"{capsule_id}.json"
+    )
+
+
+def make_staged_continuation_capsule(
+    plan_dir: Path,
+    continuation_path: Path,
+    task_contract_path: Path,
+    preflight_path: Path,
+) -> tuple[dict[str, Any], Path]:
+    """Freeze the exact context for a persistent Worker after one stage crossing."""
+    receipt = validate_staged_continuation_receipt(
+        plan_dir, continuation_path.resolve(),
+    )
+    state = staged_load_state(plan_dir)
+    if (
+        state["active_stage_id"] != receipt["next_stage_id"]
+        or state["state"] not in {"STAGE_AUTHORIZED", "DEVELOPING"}
+        or state["active_stage_authorization_action"] != "derived_continuation"
+        or Path(state["active_stage_authorization_path"]).resolve()
+        != continuation_path.resolve()
+    ):
+        raise ContractError(
+            "staged continuation capsule requires the authorized next stage"
+        )
+    contract_path = task_contract_path.resolve()
+    preflight_path = preflight_path.resolve()
+    contract = read_json(contract_path)
+    task_id = staged_require_id(contract.get("task_id"), "task_id")
+    input_manifest = verify_manifest_items(
+        contract.get("inputs", []), base_dir=plan_dir,
+    )
+    stage_envelope_path = (
+        staged_stage_dir(plan_dir, receipt["next_stage_id"]) / "envelope.json"
+    )
+    identity = {
+        "plan_id": plan_identity(plan_dir),
+        "task_id": task_id,
+        "continuation_id": receipt["continuation_id"],
+        "continuation_receipt_sha256": sha256_file(continuation_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "input_manifest_sha256": sha256_json(input_manifest),
+        "stage_envelope_sha256": sha256_file(stage_envelope_path),
+        "preflight_sha256": sha256_file(preflight_path),
+    }
+    capsule_id = f"capsule_{sha256_json(identity)}"
+    target = staged_continuation_capsule_path(plan_dir, capsule_id)
+    if target.exists():
+        capsule, _ = validate_staged_continuation_capsule(plan_dir, target)
+        return capsule, target
+    if state["state"] != "STAGE_AUTHORIZED":
+        raise ContractError(
+            "missing staged continuation capsule after Worker dispatch"
+        )
+    source_stage_dir = staged_stage_dir(plan_dir, receipt["source_stage_id"])
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "capsule_kind": "staged_continuation",
+        "capsule_id": capsule_id,
+        "plan_id": plan_identity(plan_dir),
+        "task_id": task_id,
+        "state_revision": state["audit_revision"],
+        "task_contract": {
+            "path": str(contract_path),
+            "sha256": sha256_file(contract_path),
+        },
+        "input_manifest": input_manifest,
+        "input_manifest_sha256": sha256_json(input_manifest),
+        "continuation_receipt": {
+            "path": str(continuation_path.resolve()),
+            "sha256": sha256_file(continuation_path),
+            "continuation_id": receipt["continuation_id"],
+        },
+        "stage_envelope": {
+            "path": str(stage_envelope_path),
+            "sha256": sha256_file(stage_envelope_path),
+        },
+        "preflight": {
+            "path": str(preflight_path),
+            "sha256": sha256_file(preflight_path),
+        },
+        "prior_direction_refs": [{
+            "path": str(source_stage_dir / "strong-review.json"),
+            "sha256": sha256_file(source_stage_dir / "strong-review.json"),
+        }],
+        "evidence_refs": [{
+            "path": str(source_stage_dir / name),
+            "sha256": sha256_file(source_stage_dir / name),
+        } for name in ("decision.json", "stage-report.json")],
+        "created_at": utc_now(),
+    }
+    capsule = {**body, "capsule_sha256": sha256_json(body)}
+    atomic_write_json(target, capsule, immutable=True)
+    return capsule, target
+
+
+def validate_staged_continuation_capsule(
+    plan_dir: Path, capsule_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    capsule_path = capsule_path.resolve()
+    root = (staged_root(plan_dir) / "continuation-capsules").resolve()
+    try:
+        capsule_path.relative_to(root)
+    except ValueError as exc:
+        raise ContractError(
+            "staged continuation capsule is outside canonical state"
+        ) from exc
+    capsule = read_json(capsule_path)
+    required = {
+        "schema_version", "capsule_kind", "capsule_id", "plan_id",
+        "task_id", "state_revision", "task_contract", "input_manifest",
+        "input_manifest_sha256", "continuation_receipt", "stage_envelope",
+        "preflight", "prior_direction_refs", "evidence_refs", "created_at",
+        "capsule_sha256",
+    }
+    if (
+        set(capsule) != required
+        or capsule.get("schema_version") != SCHEMA_VERSION
+        or capsule.get("capsule_kind") != "staged_continuation"
+        or capsule_path
+        != staged_continuation_capsule_path(
+            plan_dir, capsule.get("capsule_id", ""),
+        ).resolve()
+        or capsule_path.stat().st_mode & 0o777 != 0o444
+    ):
+        raise ContractError("staged continuation capsule has an invalid closed shape")
+    body = {key: value for key, value in capsule.items() if key != "capsule_sha256"}
+    if capsule["capsule_sha256"] != sha256_json(body):
+        raise ContractError("staged continuation capsule hash mismatch")
+    if capsule["plan_id"] != plan_identity(plan_dir):
+        raise ContractError("staged continuation capsule belongs to another plan")
+    continuation = capsule["continuation_receipt"]
+    if not isinstance(continuation, dict) or set(continuation) != {
+        "path", "sha256", "continuation_id",
+    }:
+        raise ContractError("staged continuation receipt binding is malformed")
+    continuation_path = Path(continuation["path"])
+    if (
+        not continuation_path.is_file()
+        or sha256_file(continuation_path) != continuation["sha256"]
+    ):
+        raise ContractError("staged continuation receipt binding changed")
+    receipt = validate_staged_continuation_receipt(plan_dir, continuation_path)
+    if receipt["continuation_id"] != continuation["continuation_id"]:
+        raise ContractError("staged continuation receipt identity changed")
+    state = staged_load_state(plan_dir)
+    if (
+        state["active_stage_id"] != receipt["next_stage_id"]
+        or state["state"] not in {"STAGE_AUTHORIZED", "DEVELOPING", "RECORDED"}
+        or state["active_stage_authorization_action"] != "derived_continuation"
+        or Path(state["active_stage_authorization_path"]).resolve()
+        != continuation_path.resolve()
+    ):
+        raise ContractError("staged continuation capsule is not current")
+    task = capsule["task_contract"]
+    if not isinstance(task, dict) or set(task) != {"path", "sha256"}:
+        raise ContractError("staged continuation task binding is malformed")
+    task_path = Path(task["path"])
+    if not task_path.is_file() or sha256_file(task_path) != task["sha256"]:
+        raise ContractError("staged continuation task contract changed")
+    contract = read_json(task_path)
+    if contract.get("task_id") != capsule["task_id"]:
+        raise ContractError("staged continuation task identity changed")
+    manifest = verify_manifest_items(contract.get("inputs", []), base_dir=plan_dir)
+    if (
+        manifest != capsule["input_manifest"]
+        or sha256_json(manifest) != capsule["input_manifest_sha256"]
+    ):
+        raise ContractError("staged continuation input manifest changed")
+    bindings = (
+        (capsule["stage_envelope"], "stage envelope"),
+        (capsule["preflight"], "preflight"),
+    )
+    for binding, label in bindings:
+        if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
+            raise ContractError(f"staged continuation {label} binding is malformed")
+        path = Path(binding["path"])
+        if not path.is_file() or sha256_file(path) != binding["sha256"]:
+            raise ContractError(f"staged continuation {label} changed")
+    if capsule["stage_envelope"]["sha256"] != receipt["next_stage_envelope_sha256"]:
+        raise ContractError("staged continuation envelope authority changed")
+    for refs, label in (
+        (capsule["prior_direction_refs"], "prior direction"),
+        (capsule["evidence_refs"], "evidence"),
+    ):
+        if not isinstance(refs, list) or not refs:
+            raise ContractError(f"staged continuation {label} refs are missing")
+        for ref in refs:
+            if not isinstance(ref, dict) or set(ref) != {"path", "sha256"}:
+                raise ContractError(f"staged continuation {label} ref is malformed")
+            path = Path(ref["path"])
+            if not path.is_file() or sha256_file(path) != ref["sha256"]:
+                raise ContractError(f"staged continuation {label} ref changed")
+    return capsule, {"task_contract": task}
+
+
+def validate_worker_context_capsule(
+    plan_dir: Path, capsule_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate either an initial durable capsule or a bounded stage-crossing capsule."""
+    resolved = capsule_path.resolve()
+    staged_capsule_root = (
+        staged_root(plan_dir) / "continuation-capsules"
+    ).resolve()
+    try:
+        resolved.relative_to(staged_capsule_root)
+    except ValueError:
+        capsule, _, _, task = validate_context_capsule(plan_dir, resolved)
+        return capsule, task
+    return validate_staged_continuation_capsule(plan_dir, resolved)
+
+
 def staged_derive_continuation_receipt(
     plan_dir: Path, next_envelope_path: Path,
 ) -> Path:
@@ -17858,13 +18076,30 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         _staged_advance_fault("authorize")
 
     if phases[journal["phase"]] < phases["WORKER_STARTED"]:
+        context_capsule, context_capsule_path = make_staged_continuation_capsule(
+            plan_dir,
+            continuation_path,
+            task_contract_path,
+            preflight_path,
+        )
+        prior_capsule = journal.get("context_capsule")
+        capsule_binding = {
+            "path": str(context_capsule_path),
+            "sha256": sha256_file(context_capsule_path),
+            "capsule_id": context_capsule["capsule_id"],
+            "capsule_sha256": context_capsule["capsule_sha256"],
+        }
+        if prior_capsule is not None and prior_capsule != capsule_binding:
+            raise ContractError("staged continuation capsule binding changed")
+        journal["context_capsule"] = capsule_binding
+        atomic_write_json(journal_path, journal)
         worker_result = command_dispatch_worker(argparse.Namespace(
             plan_dir=str(plan_dir),
             task_contract=str(task_contract_path),
             claude_bin=args.claude_bin,
             timeout=args.timeout,
             writing_gate_receipt=None,
-            context_capsule=None,
+            context_capsule=str(context_capsule_path),
             operation_id=journal["worker_operation_id"],
         ))
         # The Worker handler has committed its deterministic run and capacity

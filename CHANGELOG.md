@@ -45,6 +45,11 @@
   `content` bytes after final serialization. It explicitly forbids copying a
   newline-inclusive blueprint digest onto content that omits that newline; the
   controller remains fail-closed on any mismatch.
+- Close the pre-plan T032 continuation defect found by a fresh installed Codex
+  task: automatic Stage 2 dispatch now freezes an immutable staged-continuation
+  context capsule bound to the one continuation receipt, next-stage envelope,
+  preflight, task contract, exact input manifest, and prior terminal evidence.
+  Persistent Workers may not cross the stage boundary with an empty capsule.
 
 ## v0.18.0 — 2026-07-28
 
