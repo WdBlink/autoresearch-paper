@@ -46,6 +46,11 @@ do not claim that the complete staged loop has completed the Codex Host cutover.
 - Never infer continuation authority from silence. The initial signed
   `authorize_contract` may pre-authorize exactly one explicitly named next
   stage, with `max_automatic_crossings=1` and `silence_is_approval=false`.
+- Never dispatch the pre-authorized next-stage persistent Worker without the
+  canonical staged-continuation context capsule. It must bind the exact derived
+  continuation receipt, envelope, preflight, task contract, input manifest,
+  and prior terminal report/review evidence; an empty durable capsule is not a
+  compatibility path.
 - Never transfer capacity between a stage's Worker quota, the global Worker
   capacity, `STAGE-REVIEW`, or CP-01/CP-02/CP-04 (and optional CP-03). A signed
   frontier top-up does not increase any Worker allowance.

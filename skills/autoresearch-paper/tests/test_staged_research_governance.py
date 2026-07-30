@@ -4882,6 +4882,26 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     if path.name == advanced["worker_run_id"]
                 ]
                 self.assertEqual(len(runs), 1)
+                worker_status = json.loads((runs[0] / "status.json").read_text())
+                capsules = list((root / "continuation-capsules").glob("*.json"))
+                self.assertEqual(len(capsules), 1)
+                capsule = json.loads(capsules[0].read_text())
+                self.assertEqual(capsule["capsule_kind"], "staged_continuation")
+                self.assertEqual(
+                    capsule["task_id"], json.loads(task.read_text())["task_id"],
+                )
+                self.assertEqual(
+                    Path(worker_status["context_capsule_path"]).resolve(),
+                    capsules[0].resolve(),
+                )
+                self.assertEqual(
+                    worker_status["context_capsule_sha256"],
+                    capsule["capsule_sha256"],
+                )
+                self.assertEqual(
+                    capsule["task_contract"]["sha256"],
+                    hashlib.sha256(task.read_bytes()).hexdigest(),
+                )
                 reservations = list((root / "dispatch-reservations").glob(
                     f"{advanced['worker_run_id']}.json"
                 ))
