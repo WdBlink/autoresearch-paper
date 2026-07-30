@@ -200,6 +200,12 @@ closed `artifact_outputs` declarations (`artifact_id`, normalized `path`,
 `completion_check: {"type":"output_schema","assertion":"valid"}`.
 Workers return content/hash proposals only; the controller revalidates and
 atomically materializes them with `promote-worker-artifacts`.
+For read-only turns, every proposal sets `sha256` to `controller-compute`.
+The Host computes the digest from the exact returned UTF-8 string—including
+terminal-newline state—and stages those exact bytes. CP-01 directly receives
+the task contract, otherwise-unseen task inputs, Host preparation/activation,
+and the Runtime-used lifecycle implementation plus its adversarial conformance
+receipt; transitive path/hash mentions are not execution evidence.
 Without a writing gate, the only capability class is `research-intermediate`
 and the exact destination root is
 `artifacts/intermediate/<normalized-task-id>/`. With the exact frozen gate,

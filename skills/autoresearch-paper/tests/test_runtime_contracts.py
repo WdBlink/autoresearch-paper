@@ -378,12 +378,12 @@ class RuntimeContracts(unittest.TestCase):
             prompt = json.loads(prompt_log.read_text())
             self.assertEqual(
                 prompt["artifact_sha256_contract"],
-                "For every proposal, sha256 MUST be the lowercase SHA-256 of "
-                "the exact UTF-8 bytes in that proposal's content string. "
-                "Compute it from the returned string itself after final "
-                "serialization. Do not reuse a source-file or blueprint "
-                "digest unless content is byte-identical, including its final "
-                "newline or lack thereof.",
+                "For every proposal set sha256 to controller-compute. The "
+                "trusted Host computes the lowercase SHA-256 from the exact "
+                "UTF-8 bytes in the returned content string after final "
+                "serialization, including its final newline or lack thereof, "
+                "and rejects any declared digest that does not match those "
+                "exact bytes.",
             )
             session = json.loads((plan / "state" / "worker_session.json").read_text())
             receipt = json.loads(Path(session["last_turn_receipt"]).read_text())
