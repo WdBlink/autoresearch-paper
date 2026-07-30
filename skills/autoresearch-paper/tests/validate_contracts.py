@@ -322,13 +322,19 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.19.4"' in read("SKILL.md"), "SKILL.md version must be 0.19.4", errors)
+    require('version: "0.20.0"' in read("SKILL.md"), "SKILL.md version must be 0.20.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.19.4" in repository_readme_text,
-            "README version must be 0.19.4",
+            "Current version:** v0.20.0" in repository_readme_text,
+            "README version must be 0.20.0",
+            errors,
+        )
+        require(
+            "Codex Host 已切换" in repository_readme_text
+            and "full production cutover" in repository_readme_text,
+            "README must state the bounded Codex Host switch without a full-production claim",
             errors,
         )
         require(

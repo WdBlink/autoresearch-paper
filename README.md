@@ -20,8 +20,9 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.19.4
-- **Stability:** Experimental; Codex Host T032 field-lineage acceptance pending
+- **Current version:** v0.20.0
+- **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
+  bounded T032 field-lineage acceptance
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
 - **Direction:** The v1 target reverses the host boundary: Codex owns bootstrap,
   top-level planning, strong review, and loop control; one physically separate,
@@ -32,12 +33,16 @@ start writing.
   and explicit cache-usage observations. An identity-uncertain live process
   remains unresolved with the session `BUSY`; only proven termination or
   absence permits terminal receipt publication.
-  T031 now provides the installed closed-brief entry, authenticated activation,
+  T031 provides the installed closed-brief entry, authenticated activation,
   and a transactional runtime bootstrap that exercises L0 recovery and the
-  non-due L1 command path before reporting READY. Real L2
-  Worker heartbeat evidence and the full staged lineage remain T032 gates, so
-  the complete Codex Host cutover is not yet claimed.
-  The released v0.18 entry flow remains Claude-hosted. MiniMax M3
+  non-due L1 command path before reporting READY. T032 then passed on a fresh
+  installed task: Stage 1 reached canonical `RECORDED`, a real strongest-model
+  review accepted the frozen continuation, and Stage 2 resumed the exact same
+  Claude session as turn 2 with real L2 heartbeats and a terminal receipt.
+  v0.20.0 therefore switches the product Host role to Codex. This bounded
+  result is not Stage 2 scientific completion, SOTA, 24h or 7×24 stability,
+  production readiness, or full production cutover.
+  MiniMax M3
   workers, authenticated lifecycle authority, evidence gates, typed patrol,
   owned cleanup, the launchd-backed durable state loop, evaluator admission,
   capsule-bound MiniMax/Codex production transport, replayed scientific
@@ -197,11 +202,13 @@ deterministic controller ── canonical staged/durable state ── evidence l
 ```
 
 T030 covers the fixed-session transport foundation. T031 moves the installed
-entry, Harness bootstrap, and first-stage plan compilation to Codex; T032 is the field gate for
-Stage 1 terminal → strongest review → automatic Stage 2 compilation → second
-Worker start in the same Claude session. Dashboard remains a read-only local
-operations view; Codex App task visibility complements it but does not replace
-canonical state.
+entry, Harness bootstrap, and first-stage plan compilation to Codex; T032 has
+now passed the bounded field lineage from Stage 1 terminal → strongest review
+→ automatic Stage 2 compilation → second Worker turn in the same Claude
+session. The evidence and claim boundary are recorded in
+[`docs/evolution/codex-host-t032-acceptance-2026-07-30.md`](docs/evolution/codex-host-t032-acceptance-2026-07-30.md).
+Dashboard remains a read-only local operations view; Codex App task visibility
+complements it but does not replace canonical state.
 
 L0, L1, and L2 are bound by one immutable activation receipt but keep distinct
 scheduler/command identities. Legacy Mavis cron, `plan-l0-guard.py`, and
@@ -266,7 +273,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.19.4 with a full bundle refresh so the
+Upgrade copied installations to v0.20.0 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -477,6 +484,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.20.0** — switches the product Host role to Codex after the fresh
+  installed plan039 T032 lineage completed Stage 1 `RECORDED` → accepted
+  strongest review → automatic Stage 2 compile → same-session turn 2 with
+  real L2 heartbeat and terminal receipt evidence. The frozen acceptance
+  report rehashed 70 evidence objects with zero mismatch. This is not a 24h,
+  7×24, SOTA, production-readiness, or full-production-cutover claim.
 - **v0.19.4** — prevents oversized execution dependencies from overflowing
   the Codex turn-start character ceiling: their immutable path, SHA-256, and
   size remain bound while only bounded review evidence is embedded. A second
@@ -620,7 +633,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.19.0}
+  version = {0.20.0}
 }
 ```
 
@@ -632,7 +645,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.19.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.20.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

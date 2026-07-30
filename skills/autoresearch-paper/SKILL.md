@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.19.4"
+  version: "0.20.0"
 ---
 
 # Autoresearch Paper
@@ -15,11 +15,14 @@ blocks writing until research evidence passes or is explicitly waived,
 and manages watchdog, resume, stop, and cleanup resources through
 file-backed state.
 
-The target architecture is Codex as Host and a physically separate Claude
+The active architecture is Codex as Host and a physically separate Claude
 Code session as the low-cost MiniMax M3 Worker. T030 implements the persistent
-Worker-session transport and T031 implements the installed closed-brief entry,
-authenticated activation, and transactional Host bootstrap. Until T032 closes,
-do not claim that the complete staged loop has completed the Codex Host cutover.
+Worker-session transport, T031 implements the installed closed-brief entry,
+authenticated activation, and transactional Host bootstrap, and T032 has now
+passed a fresh installed two-stage field lineage. The product Host role is
+therefore switched to Codex. This bounded acceptance does not claim Stage 2
+scientific completion, 24h or 7x24 stability, production readiness, or full
+production cutover.
 
 ## Safety Rules
 
@@ -173,7 +176,9 @@ on finish or user stop:
 
 Read `references/claude-code-runtime.md` before dispatch. T030 provides the
 cross-platform Worker-session transport and T031 closes the installed entry and
-bootstrap slice. T032 remains the explicit field gate for end-to-end staged control:
+bootstrap slice. T032 closed the bounded field gate for end-to-end staged
+control with a fresh installed run; every new plan must still produce its own
+live receipts:
 
 - frozen per-plan MiniMax M3 and Codex model/budget policy;
 - sole-authority `state/staged_research/v1/` state plus deterministic
@@ -618,6 +623,15 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.20.0 (2026-07-30)** — marks the bounded Codex Host switch after a fresh
+  installed task completed T032 on plan039: Stage 1 reached canonical
+  `RECORDED`, a real `gpt-5.6-sol`/`ultra` strong review accepted the frozen
+  continuation, and Stage 2 resumed the exact same Claude Code session as turn
+  2 with real L2 heartbeats and a terminal receipt. The frozen field report
+  binds 70 evidence objects with zero hash mismatch. This release does not
+  claim Stage 2 scientific completion, SOTA, 24h or 7x24 stability, production
+  readiness, or full production cutover. See
+  `docs/evolution/codex-host-t032-acceptance-2026-07-30.md`.
 - **v0.19.4 (2026-07-30)** — closes the transport defect exposed by the first
   installed T032 field attempt. Large immutable execution dependencies remain
   directly bound by path, SHA-256, and byte size but are no longer duplicated

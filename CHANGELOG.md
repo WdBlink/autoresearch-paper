@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.20.0 — 2026-07-30
+
+- Switch the product Host role to Codex after a fresh installed v0.19.4 task
+  passed the bounded T032 lineage on plan039: Stage 1 reached canonical
+  `RECORDED`, the frozen Stage 2 continuation received an accepted real
+  `gpt-5.6-sol`/`ultra` review, and Stage 2 resumed the exact Stage 1 Claude
+  session as turn 2 with real L2 heartbeats and a terminal receipt.
+- Freeze a field acceptance report that binds 70 evidence objects and passes
+  post-freeze path/SHA-256 verification with zero mismatch. Preserve plan035
+  through plan038 as immutable negative evidence for prompt overflow,
+  artifact-identity, report-binding, and deadline-boundary failures.
+- Keep the claim boundary explicit: this release does not establish Stage 2
+  scientific completion, SOTA, 24h or 7x24 stability, production readiness,
+  or full production cutover.
+
 ## v0.19.4 — 2026-07-30
 
 - Bound large frontier evidence by immutable path, SHA-256, and byte size

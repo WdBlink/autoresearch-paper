@@ -13,15 +13,21 @@ authority between both model runtimes and canonical state.
 
 T030 implements the persistent Claude Worker-session transport. T031 adds the
 installed closed-brief entry, authenticated first-stage activation, and the
-transactional `bootstrap-host-runtime` closure. v0.19.4 additionally keeps
+transactional `bootstrap-host-runtime` closure. T032 passed on a fresh
+installed v0.19.4 task: Stage 1 reached canonical `RECORDED`, the strongest
+review accepted the frozen continuation, and Stage 2 resumed the exact same
+Claude session as turn 2 with real L2 heartbeats and a terminal receipt. The
+product Host role is therefore switched to Codex in v0.20.0. This is bounded
+lineage evidence, not Stage 2 scientific completion, SOTA, 24h or 7x24
+stability, production readiness, or full production cutover.
+
+v0.19.4 additionally keeps
 large execution dependencies hash-bound without duplicating them into the
 frontier prompt and enforces the exact Codex turn-start character ceiling
 before transport. v0.19.3 makes the
 terminal strongest-model review bind the exact continuation envelope, raw
-preflight inputs, and Worker task contract before automatic compilation. T032 must
-prove a complete Stage 1 terminal → strong review → Stage 2 compile → same
-Claude session Worker-start lineage. Therefore this branch is not yet a full
-Codex Host cutover. The primary path has no `mavis` dependency; MAVIS appears
+preflight inputs, and Worker task contract before automatic compilation. The
+primary path has no `mavis` dependency; MAVIS appears
 only behind explicit `--legacy-mavis` compatibility flags.
 
 PREPARED-operation recovery is fail closed. The controller publishes a
@@ -93,8 +99,10 @@ and owned runtime resources. A crash before READY resumes through the same
 request and component journals.
 
 The L2 conformance probe is intentionally not a fake live Worker. Its receipt
-sets `live_worker_evidence=false` and names T032 as the field Gate. Only real
-`dispatch-worker` heartbeat receipts can close that field requirement.
+sets `live_worker_evidence=false` and names T032 as the field Gate. Global T032
+acceptance does not make that per-plan probe sufficient: only real
+`dispatch-worker` heartbeat receipts can close a new plan's live Worker
+requirement.
 
 ## Authority
 
