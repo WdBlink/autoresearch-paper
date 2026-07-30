@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.19.2 — 2026-07-30
+
+- Make the terminal strongest-model `STAGE-REVIEW` review two inseparable
+  things: canonical Stage 1 terminal evidence and the exact immutable Stage 2
+  envelope, raw preflight inputs, and Worker task contract. Automatic compile,
+  authorization, capsule creation, and dispatch reject any hash or path drift.
+- Treat initial human continuation authorization as a bounded authority ceiling,
+  never as approval of Stage 2 content. `PAUSED` stages cannot consume the
+  automatic crossing; a human-explicit reauthorization path remains replayable.
+- Require new continuation Worker schemas to bind exact artifact identities,
+  paths, count, literal `controller-compute`, and Runtime-enforced declaration
+  order. The Host alone computes the accepted exact-byte digest; legacy task
+  contracts retain their prior verified-digest compatibility behavior.
+- Put the actual `harness-runtime.py` implementation and the applied initial
+  authorization receipt directly in the CP-01 evidence manifest, alongside the
+  lifecycle implementation and seven-case conformance receipt.
+- Keep the product status at T032 pending until a fresh installed task proves
+  Stage 1 terminal → strong reviewed continuation → Stage 2 Worker start.
+
 ## v0.19.1 — 2026-07-30
 
 - Expand installed Codex Host CP-01 requests with direct preparation,

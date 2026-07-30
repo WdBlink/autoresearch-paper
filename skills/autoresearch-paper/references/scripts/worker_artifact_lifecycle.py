@@ -29,13 +29,12 @@ def exact_utf8_sha256(content: str) -> str:
 
 
 def controller_owned_digest(content: str, declared: Any) -> str:
-    """Return the authoritative digest or reject a false Worker declaration."""
-    digest = exact_utf8_sha256(content)
-    if declared == "controller-compute":
-        return digest
-    if declared != digest:
-        raise WorkerArtifactLifecycleError("worker artifact content hash mismatch")
-    return digest
+    """Compute the digest only when the Worker delegates that authority."""
+    if declared != "controller-compute":
+        raise WorkerArtifactLifecycleError(
+            "worker artifact sha256 must be literal controller-compute"
+        )
+    return exact_utf8_sha256(content)
 
 
 def write_exact_utf8(path: Path, content: str, expected_sha256: str) -> None:
@@ -58,7 +57,7 @@ STAGED_TRANSITIONS = {
         "to": "RECORDED",
     },
     "compile_continuation": {
-        "from": {"RECORDED", "PAUSED"},
+        "from": {"RECORDED"},
         "to": "CONTRACTED",
     },
     "authorize_continuation": {
@@ -98,11 +97,11 @@ def run_conformance_suite() -> dict[str, Any]:
         == exact_utf8_sha256(no_newline),
     )
     try:
-        controller_owned_digest(no_newline, exact_utf8_sha256(with_newline))
+        controller_owned_digest(no_newline, exact_utf8_sha256(no_newline))
     except WorkerArtifactLifecycleError:
-        record("declared_digest_mismatch_rejected", True)
+        record("worker_declared_digest_rejected", True)
     else:
-        record("declared_digest_mismatch_rejected", False)
+        record("worker_declared_digest_rejected", False)
     with tempfile.TemporaryDirectory() as temp_dir:
         target = Path(temp_dir) / "artifact.json"
         digest = exact_utf8_sha256(no_newline)
@@ -132,6 +131,12 @@ def run_conformance_suite() -> dict[str, Any]:
         record("premature_continuation_rejected", True)
     else:
         record("premature_continuation_rejected", False)
+    try:
+        require_staged_transition("compile_continuation", "PAUSED", "CONTRACTED")
+    except WorkerArtifactLifecycleError:
+        record("paused_continuation_rejected", True)
+    else:
+        record("paused_continuation_rejected", False)
     return {
         "schema_version": 1,
         "implementation_id": IMPLEMENTATION_ID,

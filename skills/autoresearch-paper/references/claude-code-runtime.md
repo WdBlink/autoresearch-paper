@@ -13,7 +13,9 @@ authority between both model runtimes and canonical state.
 
 T030 implements the persistent Claude Worker-session transport. T031 adds the
 installed closed-brief entry, authenticated first-stage activation, and the
-transactional `bootstrap-host-runtime` closure. T032 must
+transactional `bootstrap-host-runtime` closure. v0.19.2 additionally makes the
+terminal strongest-model review bind the exact continuation envelope, raw
+preflight inputs, and Worker task contract before automatic compilation. T032 must
 prove a complete Stage 1 terminal → strong review → Stage 2 compile → same
 Claude session Worker-start lineage. Therefore this branch is not yet a full
 Codex Host cutover. The primary path has no `mavis` dependency; MAVIS appears

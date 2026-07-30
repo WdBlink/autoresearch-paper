@@ -19,7 +19,7 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
     def test_conformance_suite_closes_exact_bytes_and_order(self) -> None:
         result = MODULE.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 6)
+        self.assertEqual(result["case_count"], 7)
         self.assertTrue(all(case["passed"] for case in result["cases"]))
 
     def test_controller_compute_owns_digest(self) -> None:
@@ -28,6 +28,15 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
             MODULE.controller_owned_digest(content, "controller-compute"),
             MODULE.exact_utf8_sha256(content),
         )
+
+    def test_worker_declared_digest_is_never_authority(self) -> None:
+        content = '{"value":1}'
+        with self.assertRaisesRegex(
+            MODULE.WorkerArtifactLifecycleError, "literal controller-compute",
+        ):
+            MODULE.controller_owned_digest(
+                content, MODULE.exact_utf8_sha256(content),
+            )
 
 
 if __name__ == "__main__":

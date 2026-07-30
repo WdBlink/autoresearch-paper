@@ -315,7 +315,7 @@ class CodexHostEntryTests(unittest.TestCase):
                 "--plan-id", plan_id, "--checkpoint", "CP-01",
                 "--objective", "audit Codex-authored first stage",
                 "--decision-required", "approve_execution",
-                "--max-input-tokens", "150000", "--max-output-tokens", "5000",
+                "--max-input-tokens", "500000", "--max-output-tokens", "5000",
                 "--request-id", "far_t031_activation",
             ]
             for role, path in {
@@ -334,6 +334,10 @@ class CodexHostEntryTests(unittest.TestCase):
             self.assertIn(
                 "execution_dependency:host_activation_receipt", roles,
             )
+            self.assertIn(
+                "execution_dependency:initial_authorization_receipt", roles,
+            )
+            self.assertIn("execution_dependency:harness_runtime", roles)
             self.assertIn(
                 "execution_dependency:lifecycle_implementation", roles,
             )
