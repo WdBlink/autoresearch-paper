@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WdBlink/autoresearch-paper/schemas/codex-host-brief-v1.json",
+  "title": "Autoresearch Paper Codex Host Closed Brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "objective",
+    "target_tier",
+    "target_venue",
+    "candidate_ideas",
+    "code_roots",
+    "material_roots",
+    "initial_direction",
+    "strongest_comparable_baseline",
+    "evaluator_metric_context",
+    "resource_bounds",
+    "permissions",
+    "stop_conditions"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "objective": {"type": "string", "minLength": 1},
+    "target_tier": {"enum": ["arxiv", "conference", "journal-q1"]},
+    "target_venue": {"type": "string", "minLength": 1},
+    "candidate_ideas": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "code_roots": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "material_roots": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "initial_direction": {"type": "string", "minLength": 1},
+    "strongest_comparable_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "evidence_paths", "comparison_scope"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "evidence_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "comparison_scope": {"type": "string", "minLength": 1}
+      }
+    },
+    "evaluator_metric_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_metric",
+        "optimization_direction",
+        "improvement_margin",
+        "uncertainty_rule",
+        "evaluator_paths"
+      ],
+      "properties": {
+        "primary_metric": {"type": "string", "minLength": 1},
+        "optimization_direction": {"enum": ["maximize", "minimize"]},
+        "improvement_margin": {"type": "number", "minimum": 0},
+        "uncertainty_rule": {"type": "string", "minLength": 1},
+        "evaluator_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "resource_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_clock_seconds",
+        "worker_dispatches",
+        "worker_max_budget_usd",
+        "frontier_calls",
+        "frontier_input_tokens",
+        "frontier_output_tokens"
+      ],
+      "properties": {
+        "wall_clock_seconds": {"type": "integer", "minimum": 60},
+        "worker_dispatches": {"type": "integer", "minimum": 2},
+        "worker_max_budget_usd": {"type": "number", "exclusiveMinimum": 0},
+        "frontier_calls": {"type": "integer", "minimum": 2},
+        "frontier_input_tokens": {"type": "integer", "minimum": 1},
+        "frontier_output_tokens": {"type": "integer", "minimum": 1}
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_id",
+        "owned_write_roots",
+        "allowed_read_roots",
+        "network_access",
+        "external_model_calls",
+        "unattended_execution"
+      ],
+      "properties": {
+        "owner_id": {"type": "string", "minLength": 1},
+        "owned_write_roots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "allowed_read_roots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "network_access": {"type": "boolean"},
+        "external_model_calls": {"type": "boolean"},
+        "unattended_execution": {"type": "boolean"}
+      }
+    },
+    "stop_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

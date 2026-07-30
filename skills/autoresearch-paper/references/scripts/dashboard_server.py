@@ -224,6 +224,30 @@ def public_snapshot(raw: dict[str, Any], plan_dir: Path) -> dict[str, Any]:
             for key in ("status", "completed_at", "residuals", "artifacts_deleted")
             if shutdown_raw.get(key) is not None
         }
+    bootstrap_raw = raw.get("host_bootstrap")
+    bootstrap = {
+        "present": False,
+        "status": "ABSENT",
+        "active": False,
+        "last_health_action": None,
+        "live_l2_worker_evidence": None,
+        "validation_error": None,
+        "receipt": _safe_plan_file(None, plan_dir),
+        "last_health_tick": _safe_plan_file(None, plan_dir),
+    }
+    if isinstance(bootstrap_raw, dict):
+        bootstrap = {
+            "present": bool(bootstrap_raw.get("present")),
+            "status": bootstrap_raw.get("status"),
+            "active": bool(bootstrap_raw.get("active")),
+            "last_health_action": bootstrap_raw.get("last_health_action"),
+            "live_l2_worker_evidence": bootstrap_raw.get("live_l2_worker_evidence"),
+            "validation_error": bootstrap_raw.get("validation_error"),
+            "receipt": _safe_plan_file(bootstrap_raw.get("receipt"), plan_dir),
+            "last_health_tick": _safe_plan_file(
+                bootstrap_raw.get("last_health_tick"), plan_dir,
+            ),
+        }
     return {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
         "ok": raw.get("ok") is True,
@@ -242,6 +266,7 @@ def public_snapshot(raw: dict[str, Any], plan_dir: Path) -> dict[str, Any]:
         },
         "schedulers": schedulers,
         "workers": workers,
+        "host_bootstrap": bootstrap,
         "mismatches": mismatches,
         "shutdown": shutdown,
         "declared_resources": resources,
