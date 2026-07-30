@@ -46,6 +46,13 @@ from stage_report_validator import (
     run_conformance_suite as run_stage_report_conformance_suite,
     validate_stage_report,
 )
+from worker_artifact_lifecycle import (
+    WorkerArtifactLifecycleError,
+    controller_owned_digest,
+    require_staged_transition,
+    run_conformance_suite as run_worker_artifact_lifecycle_conformance,
+    write_exact_utf8,
+)
 from dashboard_server import DashboardError, make_dashboard_server
 
 
@@ -4430,6 +4437,8 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
         ("staged_state_snapshot_path", "staged_state_snapshot_sha256"),
         ("research_dossier_path", "research_dossier_sha256"),
         ("worker_session_policy_path", "worker_session_policy_sha256"),
+        ("execution_lifecycle_implementation_path", "execution_lifecycle_implementation_sha256"),
+        ("execution_lifecycle_conformance_path", "execution_lifecycle_conformance_sha256"),
     ):
         validate_immutable_binding(
             Path(receipt.get(path_field, "")), receipt.get(hash_field),
@@ -4438,6 +4447,18 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
     validate_applied_action_receipt(
         plan_dir, Path(receipt["authorization_receipt_path"]), "authorize_contract",
     )
+    implementation_path = Path(receipt["execution_lifecycle_implementation_path"])
+    conformance_path = Path(receipt["execution_lifecycle_conformance_path"])
+    if (
+        sha256_file(implementation_path)
+        != sha256_file(SCRIPT_DIR / "worker_artifact_lifecycle.py")
+        or read_json(conformance_path)
+        != run_worker_artifact_lifecycle_conformance()
+        or read_json(conformance_path).get("status") != "PASS"
+    ):
+        raise ContractError(
+            "Codex host execution lifecycle implementation/conformance changed"
+        )
     return receipt
 
 
@@ -4467,6 +4488,84 @@ def ensure_codex_host_activation_manifest(plan_dir: Path, receipt_path: Path) ->
     if prior is None:
         resources.append(activation_resource)
     atomic_write_json(manifest_path, manifest)
+
+
+def staged_cp01_execution_dependencies(
+    plan_dir: Path, existing_manifest: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Expand CP-01 to every directly executable first-stage dependency.
+
+    Review-material manifests close the scientific plan boundary.  This
+    activation-derived manifest separately closes the executable Host/Worker
+    boundary without creating a circular pre-authorization hash dependency.
+    """
+    activation_path = codex_host_activation_root(plan_dir) / "activation-receipt.json"
+    activation = validate_codex_host_activation(plan_dir)
+    graph_path = Path(activation["durable_graph_path"])
+    graph = validate_durable_graph(plan_dir, read_json(graph_path))
+    raw_items: list[dict[str, str]] = [
+        {
+            "path": activation["prepared_receipt_path"],
+            "sha256": activation["prepared_receipt_sha256"],
+            "purpose": "execution_dependency:host_preparation_receipt",
+        },
+        {
+            "path": str(activation_path),
+            "sha256": sha256_file(activation_path),
+            "purpose": "execution_dependency:host_activation_receipt",
+        },
+        {
+            "path": activation["preflight_inputs_path"],
+            "sha256": activation["preflight_inputs_sha256"],
+            "purpose": "execution_dependency:preflight_inputs",
+        },
+        {
+            "path": str(graph_path),
+            "sha256": activation["durable_graph_sha256"],
+            "purpose": "execution_dependency:durable_graph",
+        },
+        {
+            "path": activation["worker_session_policy_path"],
+            "sha256": activation["worker_session_policy_sha256"],
+            "purpose": "execution_dependency:worker_session_policy",
+        },
+        {
+            "path": activation["execution_lifecycle_implementation_path"],
+            "sha256": activation["execution_lifecycle_implementation_sha256"],
+            "purpose": "execution_dependency:lifecycle_implementation",
+        },
+        {
+            "path": activation["execution_lifecycle_conformance_path"],
+            "sha256": activation["execution_lifecycle_conformance_sha256"],
+            "purpose": "execution_dependency:lifecycle_conformance",
+        },
+    ]
+    for task in graph.get("tasks", []):
+        task_id = task["task_id"]
+        contract = task["task_contract"]
+        raw_items.append({
+            "path": contract["path"],
+            "sha256": contract["sha256"],
+            "purpose": f"execution_dependency:task_contract:{task_id}",
+        })
+        for index, item in enumerate(task.get("inputs", [])):
+            raw_items.append({
+                "path": item["path"],
+                "sha256": item["sha256"],
+                "purpose": (
+                    f"execution_dependency:task_input:{task_id}:"
+                    f"{index}:{item.get('purpose', 'input')}"
+                ),
+            })
+    seen_paths = {str(Path(item["path"]).resolve()) for item in existing_manifest}
+    additions = []
+    for item in raw_items:
+        resolved = str(Path(item["path"]).resolve())
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        additions.append(item)
+    return verify_manifest_items(additions, base_dir=plan_dir)
 
 
 def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]:
@@ -4533,6 +4632,23 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
     dossier_path = plan_dir / "state" / "research-dossier.md"
     dossier_snapshot_path = activation_root / "research-dossier-at-activation.md"
     atomic_write_bytes(dossier_snapshot_path, dossier_path.read_bytes(), immutable=True)
+    lifecycle_implementation_path = (
+        activation_root / "worker-artifact-lifecycle.py"
+    )
+    atomic_write_bytes(
+        lifecycle_implementation_path,
+        (SCRIPT_DIR / "worker_artifact_lifecycle.py").read_bytes(),
+        immutable=True,
+    )
+    lifecycle_conformance_path = (
+        activation_root / "worker-artifact-lifecycle-conformance.json"
+    )
+    lifecycle_conformance = run_worker_artifact_lifecycle_conformance()
+    if lifecycle_conformance.get("status") != "PASS":
+        raise ContractError("Worker artifact lifecycle conformance failed")
+    atomic_write_json(
+        lifecycle_conformance_path, lifecycle_conformance, immutable=True,
+    )
     worker_policy_path = Path(prepared["worker_session_policy_path"])
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -4560,6 +4676,10 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
         "research_dossier_sha256": sha256_file(dossier_snapshot_path),
         "worker_session_policy_path": str(worker_policy_path),
         "worker_session_policy_sha256": sha256_file(worker_policy_path),
+        "execution_lifecycle_implementation_path": str(lifecycle_implementation_path),
+        "execution_lifecycle_implementation_sha256": sha256_file(lifecycle_implementation_path),
+        "execution_lifecycle_conformance_path": str(lifecycle_conformance_path),
+        "execution_lifecycle_conformance_sha256": sha256_file(lifecycle_conformance_path),
         "staged_state": staged["state"],
         "preflight_status": preflight.get("status", "passed"),
         "projection_revision": projections.get("audit_revision"),
@@ -4667,18 +4787,19 @@ def validate_worker_artifact_proposals(
             raise ContractError("worker artifact content must be a string")
         encoded = content.encode("utf-8")
         enforce_artifact_byte_cap(encoded, declaration)
-        digest = hashlib.sha256(encoded).hexdigest()
+        try:
+            digest = controller_owned_digest(content, proposal.get("sha256"))
+        except WorkerArtifactLifecycleError as exc:
+            raise ContractError(str(exc)) from exc
         validator = declaration.get("content_validator")
         if validator is not None:
             validate_source_inventory_content(
                 content, validator["source_manifest"],
             )
-        if proposal.get("sha256") == "controller-compute":
-            # The worker proposes UTF-8 content; the trusted controller owns
-            # byte canonicalization and the acceptance-critical digest.
-            proposal["sha256"] = digest
-        elif proposal.get("sha256") != digest:
-            raise ContractError("worker artifact content hash mismatch")
+        # The Worker may explicitly delegate acceptance-critical hashing to
+        # the trusted Host.  In both forms the canonical proposal records the
+        # exact digest computed from the returned string.
+        proposal["sha256"] = digest
         checked.append(proposal)
     return checked
 
@@ -5093,11 +5214,11 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "artifact_contract": "return proposals only; the controller validates and promotes them",
         "artifact_sha256_contract": (
-            "For every proposal, sha256 MUST be the lowercase SHA-256 of the "
-            "exact UTF-8 bytes in that proposal's content string. Compute it "
-            "from the returned string itself after final serialization. Do "
-            "not reuse a source-file or blueprint digest unless content is "
-            "byte-identical, including its final newline or lack thereof."
+            "For every proposal set sha256 to controller-compute. The trusted "
+            "Host computes the lowercase SHA-256 from the exact UTF-8 bytes "
+            "in the returned content string after final serialization, "
+            "including its final newline or lack thereof, and rejects any "
+            "declared digest that does not match those exact bytes."
         ),
         "writing_gate": writing_gate,
         "context_capsule": context_capsule,
@@ -5999,9 +6120,12 @@ def command_promote_worker_artifacts(args: argparse.Namespace) -> dict[str, Any]
         staged: list[dict[str, Any]] = []
         for index, proposal in enumerate(proposals):
             staged_path = stage_dir / f"{index:04d}.stage"
-            staged_path.write_text(proposal["content"])
-            if sha256_file(staged_path) != proposal["sha256"]:
-                raise ContractError("staged artifact hash mismatch")
+            try:
+                write_exact_utf8(
+                    staged_path, proposal["content"], proposal["sha256"],
+                )
+            except WorkerArtifactLifecycleError as exc:
+                raise ContractError(str(exc)) from exc
             staged.append({
                 "artifact_id": proposal["artifact_id"], "path": proposal["path"],
                 "sha256": proposal["sha256"], "staged_path": str(staged_path),
@@ -10382,6 +10506,10 @@ def command_create_request(args: argparse.Namespace) -> dict[str, Any]:
             base_dir=plan_dir,
         )
         manifest.extend(review_materials)
+        if (
+            codex_host_activation_root(plan_dir) / "activation-receipt.json"
+        ).is_file():
+            manifest.extend(staged_cp01_execution_dependencies(plan_dir, manifest))
     if args.checkpoint == "STAGE-REVIEW":
         assert staged_review_state is not None
         stage_dir = staged_stage_dir(
@@ -15541,6 +15669,12 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
         "STAGE_AUTHORIZED", "DEVELOPING", "CANDIDATE_FROZEN",
     }:
         raise ContractError("candidate freeze requires a controller-authorized stage")
+    try:
+        require_staged_transition(
+            "freeze_candidate", state["state"], "CANDIDATE_FROZEN",
+        )
+    except WorkerArtifactLifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     stage_dir = staged_stage_dir(plan_dir, state["active_stage_id"])
     target = stage_dir / "candidate.json"
     candidate_path = Path(args.candidate).resolve()
@@ -15690,6 +15824,12 @@ def command_complete_observation_stage(args: argparse.Namespace) -> dict[str, An
     preflight_path = stage_dir / "preflight.json"
     preflight = read_json(preflight_path)
     budget = envelope["stage_budget_and_stop"]
+    try:
+        require_staged_transition(
+            "complete_observation", state["state"], "RECORDED",
+        )
+    except WorkerArtifactLifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     if not (
         envelope.get("stage_kind") == "research"
         and budget.get("evaluation_calls") == 0
@@ -18026,6 +18166,13 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         raise ContractError("staged advance continuation receipt changed")
 
     if phases[journal["phase"]] < phases["COMPILED"]:
+        current_state = staged_load_state(plan_dir)["state"]
+        try:
+            require_staged_transition(
+                "compile_continuation", current_state, "CONTRACTED",
+            )
+        except WorkerArtifactLifecycleError as exc:
+            raise ContractError(str(exc)) from exc
         compile_result = command_compile_next_stage(argparse.Namespace(
             plan_dir=str(plan_dir),
             stage_envelope=str(envelope_path),
@@ -18057,6 +18204,12 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
                 or receipt["next_stage_id"] != next_stage_id
             ):
                 raise ContractError("compiled continuation is not authorizable")
+            try:
+                require_staged_transition(
+                    "authorize_continuation", state["state"], "STAGE_AUTHORIZED",
+                )
+            except WorkerArtifactLifecycleError as exc:
+                raise ContractError(str(exc)) from exc
             staged_require_preflight(plan_dir)
             state["state"] = "STAGE_AUTHORIZED"
             atomic_write_json(staged_state_path(plan_dir), state)
@@ -18076,6 +18229,14 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         _staged_advance_fault("authorize")
 
     if phases[journal["phase"]] < phases["WORKER_STARTED"]:
+        try:
+            require_staged_transition(
+                "start_continuation_worker",
+                staged_load_state(plan_dir)["state"],
+                "DEVELOPING",
+            )
+        except WorkerArtifactLifecycleError as exc:
+            raise ContractError(str(exc)) from exc
         context_capsule, context_capsule_path = make_staged_continuation_capsule(
             plan_dir,
             continuation_path,

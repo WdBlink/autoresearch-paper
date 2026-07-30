@@ -325,7 +325,25 @@ class CodexHostEntryTests(unittest.TestCase):
                 "checkpoint_capacity": staged_root / "checkpoint-capacity.json",
             }.items():
                 cp01_args += ["--artifact", f"{path}::{role}"]
-            self.call(RUNTIME, *cp01_args)
+            created_cp01 = json.loads(self.call(RUNTIME, *cp01_args).stdout)
+            cp01 = json.loads(Path(created_cp01["request_path"]).read_text())
+            roles = {item["purpose"] for item in cp01["context_manifest"]}
+            self.assertIn(
+                "execution_dependency:host_preparation_receipt", roles,
+            )
+            self.assertIn(
+                "execution_dependency:host_activation_receipt", roles,
+            )
+            self.assertIn(
+                "execution_dependency:lifecycle_implementation", roles,
+            )
+            self.assertIn(
+                "execution_dependency:lifecycle_conformance", roles,
+            )
+            self.assertTrue(any(
+                role.startswith("execution_dependency:task_contract:")
+                for role in roles
+            ))
             self.call(
                 RUNTIME, "send-frontier-request", "--plan-dir", str(plan),
                 "--request-id", "far_t031_activation",

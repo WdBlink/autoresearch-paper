@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.19.0"
+  version: "0.19.1"
 ---
 
 # Autoresearch Paper
@@ -70,10 +70,12 @@ do not claim that the complete staged loop has completed the Codex Host cutover.
   parent must contain no sibling secret that the Worker is not authorized to
   read. Accepted evidence still cites only the frozen manifest.
 - Never reuse a source-file or blueprint SHA as a Worker proposal SHA by
-  assumption. The proposal `sha256` is computed from the exact UTF-8 bytes of
-  its returned `content` string after final serialization, including whether a
-  terminal newline is present. A mismatch is a real fail-closed Worker failure,
-  not a formatting exception or a controller repair opportunity.
+  assumption. A read-only Worker sets `sha256` to `controller-compute`; the
+  trusted Host computes it from the exact UTF-8 bytes of the returned `content`
+  string after final serialization, including whether a terminal newline is
+  present. A Worker-supplied digest is accepted only when it matches those exact
+  bytes. A mismatch is a real fail-closed Worker failure, not a formatting
+  exception or a controller repair opportunity.
 - Never treat `usage: {0,0}` as free or refund a launched frontier call.
   Preserve valid negative advice; reject `accept` with blockers/critical
   findings. Extra capacity requires a signed future-only
@@ -196,6 +198,10 @@ bootstrap slice. T032 remains the explicit field gate for end-to-end staged cont
   unattended durable turns, and joint Worker/session PREPARED recovery that
   refuses terminal receipts while process termination remains unproven;
 - immutable, hash-bound requests for CP-01 through CP-04;
+- CP-01 directly includes the activation/preparation receipts, durable graph,
+  first Worker task contract and otherwise-unseen task inputs, plus the exact
+  Host byte/order implementation and its adversarial conformance receipt; a
+  transitive path/hash mention is not treated as inspected execution evidence;
 - fail-closed frontier preflight before budget reservation, including Codex
   executable/auth, strict response-schema, model, and transport checks;
 - authenticated, expiring, replay-protected human actions;
@@ -609,6 +615,15 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.19.1 (2026-07-30)** — T032 CP-01 execution closure: the immutable
+  frontier manifest now expands the activation-derived durable graph into the
+  first Worker task contract and every otherwise-unseen executable input, and
+  binds Host preparation/activation plus a small Runtime-used byte/order
+  implementation and six-case conformance receipt. Read-only Workers delegate
+  proposal hashing with `controller-compute`; the Host owns exact UTF-8/newline
+  hashing, exact-byte staging, and ordered first-stage-to-continuation guards.
+  The blocked plan032 request remains immutable negative evidence; a fresh plan
+  is required for acceptance.
 - **v0.19.0 (2026-07-30)** — T030/T031 reverse the target Host boundary:
   Codex owns installed brief validation, initial single-stage planning, strong
   review, and runtime bootstrap, while one UUID-bound Claude Code/MiniMax M3

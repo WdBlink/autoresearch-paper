@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased — Codex Host migration T030/T031 runtime bootstrap
+## v0.19.1 — 2026-07-30
+
+- Expand installed Codex Host CP-01 requests with direct preparation,
+  activation, durable-graph, first task-contract, otherwise-unseen task-input,
+  and Worker-session-policy evidence instead of relying on transitive digests.
+- Add a small Runtime-used lifecycle module and six-case conformance receipt
+  for exact returned UTF-8 hashing, terminal-newline sensitivity, exact-byte
+  staging, mismatch rejection, and ordered Stage 1 → Stage 2 transitions.
+- Move acceptance-critical proposal hashing from read-only Workers to the
+  trusted Host via `controller-compute`. A supplied digest is still accepted
+  only when it matches the exact returned bytes.
+- Preserve plan032 and its blocked CP-01 as immutable negative evidence. A
+  fresh two-stage field lineage remains required before claiming Host cutover.
+
+## v0.19.0 — 2026-07-30
 
 - Reverse the v1 target boundary: Codex becomes the intended bootstrap,
   planning, strong-review, and loop-control Host while MiniMax M3 remains in a
