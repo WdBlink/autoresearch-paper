@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — Codex Host migration T030/T031 runtime bootstrap
+
+- Reverse the v1 target boundary: Codex becomes the intended bootstrap,
+  planning, strong-review, and loop-control Host while MiniMax M3 remains in a
+  physically separate Claude Code runtime.
+- Bind each plan to one controller-generated Claude session UUID. The first
+  Worker turn uses `--session-id`; later turns use exact `--resume`. An
+  exclusive non-blocking lease rejects concurrent senders before Worker
+  capacity is consumed.
+- Persist immutable instruction bindings and per-turn terminal receipts with
+  explicit token/cache observations. Missing usage is recorded as unknown;
+  resumed context and cache telemetry never become transition authority.
+- Freeze the session UUID and policy in a separate immutable binding, reconcile
+  mutable turn state against the immutable receipt chain, require canonical
+  capsules for unattended durable dispatch, and converge Worker/session state
+  together after a PREPARED-operation crash. If exact process termination
+  cannot be proven, keep the Worker nonterminal and the session `BUSY`, record
+  `delivery_uncertain`, and do not freeze a terminal transport receipt.
+- Keep `--stateless-worker-session` only as an explicit compatibility/testing
+  path. T031/T032 remain required for bootstrap cutover and the complete
+  first-stage-to-second-stage field lineage.
+- Add the T031 `bootstrap-host-runtime` transaction over the existing durable
+  controller and runtime-assurance primitives. READY now requires an L1
+  non-due probe, an actual L1 removal followed by zero-model L0 recovery, an
+  immutable L2 conformance contract, Dashboard evidence bindings, and one
+  cleanup-owned runtime-resource record. Crash/retry converges without
+  duplicate launchd resources.
+- Expose Host bootstrap readiness, the last L0 action, its bound health tick,
+  and explicit absence of real L2 Worker evidence through read-only Runtime
+  inspection and the compiled Dashboard. T032 remains the real Worker-heartbeat
+  and two-stage field Gate.
+- Add the installed T031 `prepare-codex-host-plan` entry with a closed,
+  versioned brief schema. It validates missing fields, path ownership, read
+  authority, and complete model budgets before atomically publishing a plan;
+  invalid input leaves no target plan directory.
+- Add `activate-codex-host-plan` so one applied `authorize_contract` binds the
+  exact first-stage contract, envelope, evaluator profile, isolated capacity,
+  preflight, durable graph, generated dossier, and predeclared Claude session
+  UUID. Host READY receipts now include the preparation and activation lineage;
+  retry revalidates the same immutable bindings without duplicate schedulers.
+
 ## v0.18.0 — 2026-07-28
 
 - Add the compiled Research Ledger Dashboard for one explicitly selected plan.

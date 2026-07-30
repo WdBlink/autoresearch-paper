@@ -49,6 +49,7 @@ def main() -> int:
         "references/declarative-evaluator.schema.json",
         "references/durable-plan.schema.json",
         "references/context-capsule.schema.json",
+        "references/codex-host-brief.schema.json",
         "references/guardian-observation.schema.json",
         "references/evaluator-admission.schema.json",
         "references/figure-artifact.schema.json",
@@ -71,6 +72,7 @@ def main() -> int:
         "tests/test_fault_soak_acceptance.py",
         "tests/test_scientific_figure_pipeline.py",
         "tests/test_staged_research_governance.py",
+        "tests/test_codex_host_entry.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -80,8 +82,13 @@ def main() -> int:
         errors,
     )
     require(
-        contains("SKILL.md", "Target Runtime: Claude Code", "MiniMax M3", "CP-01", "CP-04", "harness-runtime.py"),
-        "SKILL.md must expose the Claude Code target runtime and sparse frontier path",
+        contains(
+            "SKILL.md", "Target Runtime: Codex Host + Claude Code Worker",
+            "MiniMax M3", "prepare-codex-host-plan", "activate-codex-host-plan",
+            "--session-id", "--resume", "CP-01", "CP-04",
+            "harness-runtime.py",
+        ),
+        "SKILL.md must expose the Codex Host and persistent Claude Worker route",
         errors,
     )
     dashboard_index = read("references/dashboard/index.html")
@@ -101,10 +108,12 @@ def main() -> int:
         contains(
             "references/claude-code-runtime.md", "init-policy", "create-human-action",
             "prepare-staged-research",
+            "prepare-codex-host-plan", "activate-codex-host-plan",
             "freeze-evaluator", "record-failure", "dispatch-worker", "inspect-worker",
             "schedule-patrol", "remove-resource", "create-frontier-request",
             "assert-transition", "reconcile-frontier-request", "promote-worker-artifacts",
             "run-evaluator", "register-durable-trigger", "init-durable-plan",
+            "bootstrap-host-runtime",
             "activate-runtime-assurance", "run-runtime-assurance-tick",
             "unregister-runtime-assurance", "record-worker-heartbeat",
             "inspect-plan-runtime", "shutdown-plan",
@@ -313,13 +322,13 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.18.0"' in read("SKILL.md"), "SKILL.md version must be 0.18.0", errors)
+    require('version: "0.19.0"' in read("SKILL.md"), "SKILL.md version must be 0.19.0", errors)
     repository_readme = ROOT.parents[1] / "README.md"
     if repository_readme.is_file():
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.18.0" in repository_readme_text,
-            "README version must be 0.18.0",
+            "Current version:** v0.19.0" in repository_readme_text,
+            "README version must be 0.19.0",
             errors,
         )
         require(
