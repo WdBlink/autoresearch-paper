@@ -37,6 +37,7 @@ def main() -> int:
         "references/scripts/resolve-plan-dir.py",
         "references/scripts/register-plan-id.py",
         "references/scripts/harness-runtime.py",
+        "references/scripts/plan_execution_boundaries.py",
         "references/scripts/dashboard_server.py",
         "references/dashboard/index.html",
         "references/dashboard/THIRD_PARTY_NOTICES.md",
@@ -323,7 +324,7 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.20.0"' in read("SKILL.md"), "SKILL.md version must be 0.20.0", errors)
+    require('version: "0.20.1"' in read("SKILL.md"), "SKILL.md version must be 0.20.1", errors)
     repository_root = ROOT.parents[1]
     repository_readme = repository_root / "README.md"
     source_layout = any(
@@ -340,8 +341,8 @@ def main() -> int:
     if repository_readme.is_file() and source_layout:
         repository_readme_text = repository_readme.read_text()
         require(
-            "Current version:** v0.20.0" in repository_readme_text,
-            "README version must be 0.20.0",
+            "Current version:** v0.20.1" in repository_readme_text,
+            "README version must be 0.20.1",
             errors,
         )
         require(

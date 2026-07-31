@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.1 — 2026-07-31
+
+- Replace planner-authored Worker conformance JSON with
+  `attest-worker-output-conformance`: Runtime first validates one genuine
+  positive response through the live content validators, then mechanically
+  derives wrong-count, digest-authority, ID/path, order, duplicate, and
+  placeholder-content rejection cases.
+- Add optional immutable source-inventory construction contracts that bind
+  hypotheses, questions, and the exact UTF-8 candidate digest in addition to
+  existing source identity and line grounding.
+- Align lifecycle conformance with the real continuation path by requiring a
+  terminal decision, stage report, accepted strongest-model review, and exact
+  continuation-draft binding before `RECORDED -> CONTRACTED`.
+- Generate continuation authority from the applied `authorize_contract`
+  receipt instead of accepting a hand-authored assurance, and bind a
+  Runtime-used plan-wide deadline plus aggregate frontier boundary conformance
+  into activation and CP-01.
+- Preserve plan040 and plan043 as immutable negative evidence. They exposed a
+  generic real-brief compiler gap after the earlier fixed T032 lineage passed;
+  they are not rewritten or retroactively accepted.
+
 ## v0.20.0 — 2026-07-30
 
 - Switch the product Host role to Codex after a fresh installed v0.19.4 task

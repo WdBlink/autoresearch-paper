@@ -20,7 +20,7 @@ start writing.
 
 ## Status
 
-- **Current version:** v0.20.0
+- **Current version:** v0.20.1
 - **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
   bounded T032 field-lineage acceptance
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
@@ -273,7 +273,7 @@ Primary install path:
 npx skills add WdBlink/autoresearch-paper -g
 ```
 
-Upgrade copied installations to v0.20.0 with a full bundle refresh so the
+Upgrade copied installations to v0.20.1 with a full bundle refresh so the
 runtime and response schema move together:
 
 ```bash
@@ -484,6 +484,12 @@ Per-version notes live in
 [`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
 Quick highlights:
 
+- **v0.20.1** — turns the generic real-brief bootstrap failures from plan040
+  and plan043 into deterministic Runtime checks: real-positive Worker
+  conformance, exact source-inventory construction binding, lifecycle proof
+  aligned with strong-review reality, Runtime-derived continuation authority,
+  and plan-wide deadline/frontier boundary evidence. The failed plans remain
+  immutable; a fresh plan must pass CP-01.
 - **v0.20.0** — switches the product Host role to Codex after the fresh
   installed plan039 T032 lineage completed Stage 1 `RECORDED` → accepted
   strongest review → automatic Stage 2 compile → same-session turn 2 with
@@ -633,7 +639,7 @@ release as:
   author = {WdBlink},
   year   = {2026},
   url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.20.0}
+  version = {0.20.1}
 }
 ```
 
@@ -645,7 +651,7 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.20.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.20.1-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

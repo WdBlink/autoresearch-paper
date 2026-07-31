@@ -4,7 +4,7 @@ description: Turn a paragraph-level research brief into a research-first autonom
 license: MIT
 metadata:
   short-description: Research-first brief-to-paper pipeline with heartbeat and cleanup
-  version: "0.20.0"
+  version: "0.20.1"
 ---
 
 # Autoresearch Paper
@@ -49,6 +49,8 @@ production cutover.
 - Never infer continuation authority from silence. The initial signed
   `authorize_contract` may pre-authorize exactly one explicitly named next
   stage, with `max_automatic_crossings=1` and `silence_is_approval=false`.
+  Never hand-author a second policy or assurance file: activation derives the
+  canonical `continuation-authority.json` from that applied receipt.
 - Never dispatch the pre-authorized next-stage persistent Worker without the
   canonical staged-continuation context capsule. It must bind the exact derived
   continuation receipt, envelope, preflight, task contract, input manifest,
@@ -72,6 +74,16 @@ production cutover.
   tools. Claude grants that read authority at directory granularity: the input
   parent must contain no sibling secret that the Worker is not authorized to
   read. Accepted evidence still cites only the frozen manifest.
+- Never claim Worker-output conformance from an ad hoc fixture generator.
+  Freeze one exact positive response containing content that passes every
+  declared content validator, then run `attest-worker-output-conformance`.
+  Runtime must derive the negative cases; placeholder `{}` content is not a
+  positive fixture.
+- When source-inventory hypotheses or questions are decided before dispatch,
+  bind them in an immutable construction contract and include its path,
+  SHA-256, and expected exact UTF-8 content SHA-256 in
+  `content_validator.construction_contract`. Source grounding alone does not
+  prove that the planned hypotheses/questions were delivered.
 - Never reuse a source-file or blueprint SHA as a Worker proposal SHA by
   assumption. A read-only Worker sets `sha256` to `controller-compute`; the
   trusted Host computes it from the exact UTF-8 bytes of the returned `content`
@@ -129,7 +141,11 @@ choose one stable RECORD_ID before hashing the contract, store the same value in
   contract.authorization_receipt_id, and pass it as create-human-action --record-id
 freeze the human-owned contract and exactly one first stage with init-staged-research
 run activate-codex-host-plan to publish staged state, deterministic preflight,
-  generated dossier, fixed Claude session policy, and the authenticated activation receipt
+  generated dossier, fixed Claude session policy, plan-wide deadline,
+  Runtime-derived continuation authority, and the authenticated activation receipt
+for every first Worker task, freeze one genuine exact-schema positive response
+  and run attest-worker-output-conformance; bind its PASS receipt to CP-01
+  instead of hand-writing adversarial-conformance JSON
 bind contract + stage + preflight + named capacity to CP-01
 run a fresh strongest-policy Codex review task; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
@@ -623,6 +639,17 @@ Harness contract (major = breaking orchestrator contract, minor = new
 feature, patch = fixes). The full per-commit history is in the git log of
 this file.
 
+- **v0.20.1 (2026-07-31)** — closes the first generic real-brief bootstrap
+  failures observed in immutable plan040 and plan043 without weakening CP-01.
+  Runtime now attests one genuine positive Worker response and derives the
+  adversarial cases, so `{}` cannot masquerade as source-inventory
+  conformance. Source-inventory construction contracts can freeze hypotheses,
+  questions, and exact content bytes. Lifecycle conformance now requires the
+  same terminal decision/report/accepted-review/exact-continuation guards as
+  the real advance path. Activation derives one non-contradictory continuation
+  authority receipt and binds an executable plan-wide deadline plus aggregate
+  frontier-budget edge conformance. The failed plans remain immutable negative
+  evidence; a fresh plan is required for CP-01 acceptance.
 - **v0.20.0 (2026-07-30)** — marks the bounded Codex Host switch after a fresh
   installed task completed T032 on plan039: Stage 1 reached canonical
   `RECORDED`, a real `gpt-5.6-sol`/`ultra` strong review accepted the frozen

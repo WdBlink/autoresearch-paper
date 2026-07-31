@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-IMPLEMENTATION_ID = "worker-artifact-lifecycle/2"
+IMPLEMENTATION_ID = "worker-artifact-lifecycle/3"
 
 
 class WorkerArtifactLifecycleError(ValueError):
@@ -101,12 +101,33 @@ STAGED_TRANSITIONS = {
 }
 
 
-def require_staged_transition(event: str, current: str, target: str) -> None:
+CONTINUATION_COMPILE_GUARDS = {
+    "terminal_decision_recorded",
+    "stage_report_recorded",
+    "strong_review_accepted",
+    "exact_continuation_reviewed",
+}
+
+
+def require_staged_transition(
+    event: str, current: str, target: str,
+    evidence: dict[str, Any] | None = None,
+) -> None:
     rule = STAGED_TRANSITIONS.get(event)
     if rule is None or current not in rule["from"] or target != rule["to"]:
         raise WorkerArtifactLifecycleError(
             f"invalid staged transition: {event} {current}->{target}"
         )
+    if event == "compile_continuation":
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != CONTINUATION_COMPILE_GUARDS
+            or any(evidence[guard] is not True for guard in CONTINUATION_COMPILE_GUARDS)
+        ):
+            raise WorkerArtifactLifecycleError(
+                "continuation compilation requires terminal decision, stage report, "
+                "accepted strong review, and exact continuation-review binding"
+            )
 
 
 def run_conformance_suite() -> dict[str, Any]:
@@ -163,7 +184,13 @@ def run_conformance_suite() -> dict[str, Any]:
     ]
     try:
         for event, current, target in ordered:
-            require_staged_transition(event, current, target)
+            require_staged_transition(
+                event, current, target,
+                (
+                    {guard: True for guard in CONTINUATION_COMPILE_GUARDS}
+                    if event == "compile_continuation" else None
+                ),
+            )
     except WorkerArtifactLifecycleError:
         record("two_stage_transition_order_accepts", False)
     else:
@@ -180,6 +207,17 @@ def run_conformance_suite() -> dict[str, Any]:
         record("paused_continuation_rejected", True)
     else:
         record("paused_continuation_rejected", False)
+    for missing_guard in sorted(CONTINUATION_COMPILE_GUARDS):
+        evidence = {guard: True for guard in CONTINUATION_COMPILE_GUARDS}
+        evidence[missing_guard] = False
+        try:
+            require_staged_transition(
+                "compile_continuation", "RECORDED", "CONTRACTED", evidence,
+            )
+        except WorkerArtifactLifecycleError:
+            record(f"continuation_missing_{missing_guard}_rejected", True)
+        else:
+            record(f"continuation_missing_{missing_guard}_rejected", False)
     return {
         "schema_version": 1,
         "implementation_id": IMPLEMENTATION_ID,

@@ -74,6 +74,29 @@ Codex-authored first stage; only a validated deterministic `approve_execution`
 transition permits Host bootstrap. Routine recoverable work after activation
 does not request another human confirmation.
 
+Activation also freezes a plan-wide wall-clock deadline, snapshots the exact
+deadline/frontier-capacity implementation and its edge-case conformance, and
+derives `continuation-authority.json` from the applied human action. Do not
+author a second manual/automatic continuation policy in review materials.
+
+Before CP-01, prove each first-stage exact Worker output contract with a real
+positive fixture:
+
+```bash
+python3 references/scripts/harness-runtime.py \
+  attest-worker-output-conformance \
+  --plan-dir PLAN \
+  --task-contract PLAN/control/staged-inputs/task-contract.json \
+  --valid-response PLAN/control/review-materials/valid-worker-response.json \
+  --output PLAN/control/review-materials/worker-output-conformance.json
+```
+
+The Runtime validates the positive fixture with the live content validators
+and derives adversarial mutations itself. A placeholder `{}` source inventory
+therefore fails before a PASS receipt exists. When a construction contract is
+declared, the same path also freezes the planned hypotheses, questions, and
+exact candidate bytes.
+
 For an already prepared, authorized plan, use one transaction instead of
 calling the runtime layers independently:
 

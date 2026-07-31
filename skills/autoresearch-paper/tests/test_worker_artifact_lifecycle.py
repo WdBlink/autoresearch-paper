@@ -19,8 +19,27 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
     def test_conformance_suite_closes_exact_bytes_and_order(self) -> None:
         result = MODULE.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 8)
+        self.assertEqual(result["case_count"], 12)
         self.assertTrue(all(case["passed"] for case in result["cases"]))
+
+    def test_continuation_requires_real_terminal_review_evidence(self) -> None:
+        complete = {
+            guard: True for guard in MODULE.CONTINUATION_COMPILE_GUARDS
+        }
+        MODULE.require_staged_transition(
+            "compile_continuation", "RECORDED", "CONTRACTED", complete,
+        )
+        for missing in MODULE.CONTINUATION_COMPILE_GUARDS:
+            incomplete = dict(complete)
+            incomplete[missing] = False
+            with self.assertRaisesRegex(
+                MODULE.WorkerArtifactLifecycleError,
+                "continuation compilation requires",
+            ):
+                MODULE.require_staged_transition(
+                    "compile_continuation", "RECORDED", "CONTRACTED",
+                    incomplete,
+                )
 
     def test_controller_compute_owns_digest(self) -> None:
         content = '{"value":1}'
