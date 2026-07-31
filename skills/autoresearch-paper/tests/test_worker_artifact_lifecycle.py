@@ -19,7 +19,7 @@ class WorkerArtifactLifecycleTests(unittest.TestCase):
     def test_conformance_suite_closes_exact_bytes_and_order(self) -> None:
         result = MODULE.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 12)
+        self.assertEqual(result["case_count"], 16)
         self.assertTrue(all(case["passed"] for case in result["cases"]))
 
     def test_continuation_requires_real_terminal_review_evidence(self) -> None:

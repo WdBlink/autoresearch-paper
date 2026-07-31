@@ -179,6 +179,11 @@ STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
     "evaluator_implementation", "evaluator_conformance",
     "acceptance_profile", "source_manifest", "citation_universe",
     "evaluation_profile", "evaluator_loader_parameters",
+    "worker_task_contract", "worker_output_conformance",
+    "worker_tool_intersection_assurance",
+    "worker_identity_attestation_assurance",
+    "worker_positive_fixture", "snapshot_manifest",
+    "origin_verification_receipt", "official_capture_bundle",
 }
 STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {
@@ -4594,6 +4599,197 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
     return receipt
 
 
+def validate_cp01_worker_assurances(
+    plan_dir: Path, envelope: dict[str, Any], graph: dict[str, Any],
+    prepared: dict[str, Any],
+) -> None:
+    """Reject stale or partial first-Worker assurances before state mutation."""
+    selected = {
+        item.get("purpose"): item
+        for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") in {
+            "worker_task_contract",
+            "worker_output_conformance",
+            "worker_tool_intersection_assurance",
+            "worker_identity_attestation_assurance",
+        }
+    }
+    if not selected:
+        return
+    required = {
+        "worker_task_contract",
+        "worker_output_conformance",
+        "worker_tool_intersection_assurance",
+        "worker_identity_attestation_assurance",
+    }
+    if set(selected) != required:
+        raise ContractError(
+            "CP-01 Worker assurances must separately bind task contract, "
+            "output conformance, tool intersection, and identity attestation"
+        )
+    bound_paths: dict[str, Path] = {}
+    for purpose, item in selected.items():
+        path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["path"]),
+        )
+        validate_immutable_binding(path, item["sha256"], purpose)
+        bound_paths[purpose] = path
+    contract_path = bound_paths["worker_task_contract"]
+    if not any(
+        task["task_contract"] == {
+            "path": str(contract_path),
+            "sha256": sha256_file(contract_path),
+        }
+        for task in graph["tasks"]
+    ):
+        raise ContractError(
+            "CP-01 Worker task contract is not the executable durable task"
+        )
+    current_runtime_sha = sha256_file(Path(__file__).resolve())
+    session_policy_path = Path(prepared["worker_session_policy_path"]).resolve()
+    session_policy = read_json(session_policy_path)
+    expected_common = {
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "runtime_sha256": current_runtime_sha,
+    }
+    output_receipt = read_json(bound_paths["worker_output_conformance"])
+    tool_receipt = read_json(
+        bound_paths["worker_tool_intersection_assurance"],
+    )
+    identity_receipt = read_json(
+        bound_paths["worker_identity_attestation_assurance"],
+    )
+    if (
+        output_receipt.get("status") != "PASS"
+        or any(output_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or output_receipt.get("case_count", 0) < 2
+        or not all(
+            item.get("passed") is True
+            for item in output_receipt.get("cases", [])
+        )
+        or tool_receipt.get("status") != "PASS"
+        or tool_receipt.get("assurance_kind")
+        != "runtime_bound_worker_tool_intersection"
+        or any(tool_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or tool_receipt.get("worker_session_policy_path")
+        != str(session_policy_path)
+        or tool_receipt.get("worker_session_policy_sha256")
+        != sha256_file(session_policy_path)
+        or identity_receipt.get("status") != "PASS"
+        or identity_receipt.get("assurance_kind")
+        != "runtime_bound_worker_identity_attestation"
+        or any(identity_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or identity_receipt.get("worker_session_policy_path")
+        != str(session_policy_path)
+        or identity_receipt.get("worker_session_policy_sha256")
+        != sha256_file(session_policy_path)
+        or identity_receipt.get("expected_worker_identity") != {
+            "model": session_policy.get("worker_model"),
+            "agent": "claude-code-worker",
+            "provider": "MiniMax",
+        }
+    ):
+        raise ContractError(
+            "CP-01 Worker assurances do not bind the activated Runtime bytes"
+        )
+
+
+def validate_cp01_origin_provenance(
+    plan_dir: Path, envelope: dict[str, Any],
+) -> None:
+    """Require every declared snapshot origin criterion to be machine-true."""
+    selected = {
+        item.get("purpose"): item
+        for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") in {
+            "snapshot_manifest", "origin_verification_receipt",
+        }
+    }
+    if not selected:
+        return
+    if set(selected) != {
+        "snapshot_manifest", "origin_verification_receipt",
+    }:
+        raise ContractError(
+            "CP-01 origin provenance requires manifest and verification receipt"
+        )
+    paths: dict[str, Path] = {}
+    for purpose, item in selected.items():
+        path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["path"]),
+        )
+        validate_immutable_binding(path, item["sha256"], purpose)
+        paths[purpose] = path
+    manifest = read_json(paths["snapshot_manifest"])
+    receipt = read_json(paths["origin_verification_receipt"])
+    entries = manifest.get("entries")
+    verified = receipt.get("entries")
+    if (
+        receipt.get("snapshot_manifest_path")
+        != str(paths["snapshot_manifest"])
+        or receipt.get("snapshot_manifest_sha256")
+        != sha256_file(paths["snapshot_manifest"])
+        or not isinstance(entries, list)
+        or not isinstance(verified, list)
+        or len(entries) != len(verified)
+    ):
+        raise ContractError("CP-01 origin provenance receipt is incomplete")
+    by_snapshot = {
+        item.get("snapshot_path"): item for item in verified
+        if isinstance(item, dict)
+    }
+    for item in entries:
+        snapshot_path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["snapshot_path"]),
+        )
+        record = by_snapshot.get(str(snapshot_path))
+        if (
+            record is None
+            or record.get("origin") != item.get("origin")
+            or record.get("snapshot_sha256") != item.get("sha256")
+            or sha256_file(snapshot_path) != item.get("sha256")
+        ):
+            raise ContractError("CP-01 snapshot provenance binding changed")
+        if record.get("origin_kind") == "local_file":
+            if (
+                record.get("origin_exists") is not True
+                or record.get("origin_matches_snapshot") is not True
+                or record.get("origin_sha256") != item.get("sha256")
+            ):
+                raise ContractError(
+                    "CP-01 local origin does not match its frozen snapshot"
+                )
+        elif record.get("origin_kind") == "url_frozen_primary_source":
+            capture_value = record.get("official_capture_path")
+            if not isinstance(capture_value, str) or not capture_value:
+                raise ContractError(
+                    "CP-01 official-source capture path is missing"
+                )
+            capture_path = normalize_owned_path(
+                plan_dir, capture_value,
+            )
+            if (
+                record.get("canonical_url") != item.get("origin")
+                or record.get("metadata_matches_snapshot_summary") is not True
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(record.get("official_capture_sha256", "")),
+                )
+                or sha256_file(capture_path)
+                != record["official_capture_sha256"]
+            ):
+                raise ContractError(
+                    "CP-01 official-source metadata provenance is unverified"
+                )
+        else:
+            raise ContractError("CP-01 snapshot origin kind is invalid")
+
+
 def enforce_codex_host_plan_deadline(
     plan_dir: Path, *, observed_at: str | None = None,
 ) -> None:
@@ -4888,6 +5084,10 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
     graph = validate_durable_graph(plan_dir, read_json(graph_path))
     if graph.get("plan_id") != plan_identity(plan_dir):
         raise ContractError("durable graph belongs to another plan")
+    validate_cp01_worker_assurances(
+        plan_dir, declared_envelope, graph, prepared,
+    )
+    validate_cp01_origin_provenance(plan_dir, declared_envelope)
     bounded_continuation = authorization.get("details", {}).get(
         "bounded_continuation_authority",
     )
@@ -5326,6 +5526,63 @@ def command_attest_worker_output_conformance(
         "observed": "accept",
         "passed": True,
     }]
+    terminal_bindings = [
+        item for item in contract.get("inputs", [])
+        if item.get("purpose")
+        == "controller_known_terminal_report_bindings"
+    ]
+    terminal_proposals = [
+        item for item in response.get("artifacts", [])
+        if item.get("artifact_id") == "stage_report_source"
+    ]
+    if terminal_bindings or terminal_proposals:
+        if len(terminal_bindings) != 1 or len(terminal_proposals) != 1:
+            raise ContractError(
+                "terminal report conformance requires one binding and proposal"
+            )
+        binding_path = Path(terminal_bindings[0]["path"]).resolve()
+        validate_immutable_binding(
+            binding_path, terminal_bindings[0]["sha256"],
+            "terminal report binding contract",
+        )
+        binding = read_json(binding_path)
+        fixed = binding.get("worker_report_fixed_bindings")
+        if not isinstance(fixed, dict):
+            raise ContractError(
+                "terminal report binding contract is invalid"
+            )
+        def validate_terminal_proposal(candidate: dict[str, Any]) -> None:
+            try:
+                proposal = next(
+                    item for item in candidate.get("artifacts", [])
+                    if item.get("artifact_id") == "stage_report_source"
+                )
+                report_fixture = json.loads(proposal["content"])
+                validate_stage_report(
+                    report_fixture,
+                    stage_cycle_id=fixed["stage_cycle_id"],
+                    expected_worker_identity=fixed["worker_identity"],
+                    candidate_sha256=fixed["candidate_sha256"],
+                    authorized_evidence_refs=fixed["evidence_refs"],
+                    expected_validator_receipts=(
+                        fixed["development_validator_receipts"]
+                    ),
+                )
+            except (
+                StopIteration, json.JSONDecodeError, KeyError,
+                StageReportValidationError,
+            ) as exc:
+                raise ContractError(
+                    f"terminal stage report is invalid: {exc}"
+                ) from exc
+
+        validate_terminal_proposal(response)
+        cases.append({
+            "case_id": "valid_terminal_stage_report_source",
+            "expected": "accept",
+            "observed": "accept",
+            "passed": True,
+        })
 
     def require_rejection(case_id: str, candidate: dict[str, Any]) -> None:
         try:
@@ -5333,6 +5590,8 @@ def command_attest_worker_output_conformance(
                 copy.deepcopy(candidate), declarations,
                 require_controller_marker=True,
             )
+            if terminal_proposals:
+                validate_terminal_proposal(candidate)
         except ContractError as exc:
             cases.append({
                 "case_id": case_id,
@@ -5389,6 +5648,18 @@ def command_attest_worker_output_conformance(
         invalid_content["artifacts"][index]["content"] = "{}"
         require_rejection("content_validator_rejects_placeholder", invalid_content)
 
+    if terminal_proposals:
+        malformed_report = copy.deepcopy(response)
+        report_index = next(
+            i for i, item in enumerate(malformed_report["artifacts"])
+            if item["artifact_id"] == "stage_report_source"
+        )
+        malformed_report["artifacts"][report_index]["content"] = "{}"
+        require_rejection(
+            "terminal_stage_report_rejects_invalid_closed_shape",
+            malformed_report,
+        )
+
     receipt = {
         "schema_version": 1,
         "status": "PASS",
@@ -5401,6 +5672,140 @@ def command_attest_worker_output_conformance(
         "runtime_sha256": sha256_file(Path(__file__).resolve()),
         "case_count": len(cases),
         "cases": cases,
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(output_path, receipt, immutable=True)
+    return {"ok": True, "path": str(output_path), **receipt}
+
+
+def command_attest_worker_tool_intersection(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Bind the exact read-only Claude tool intersection to Runtime bytes."""
+    plan_dir = Path(args.plan_dir).resolve()
+    contract_path = Path(args.task_contract).resolve()
+    session_policy_path = Path(args.worker_session_policy).resolve()
+    output_path = Path(args.output).absolute()
+    for label, path in (
+        ("task contract", contract_path),
+        ("Worker session policy", session_policy_path),
+    ):
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(f"{label} must be plan-owned") from exc
+        validate_immutable_binding(
+            path, sha256_file(path) if path.is_file() else None, label,
+        )
+    try:
+        output_path.resolve().relative_to(plan_dir)
+    except ValueError as exc:
+        raise ContractError(
+            "Worker tool-intersection receipt must be plan-owned"
+        ) from exc
+    if output_path.exists() or output_path.is_symlink():
+        raise ContractError("Worker tool-intersection receipt is immutable")
+    contract = read_json(contract_path)
+    policy = read_json(session_policy_path)
+    tools = contract.get("allowed_tools")
+    ceiling = policy.get("allowed_tool_ceiling")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or len(tools) != len(set(tools))
+        or any(not isinstance(item, str) or not item for item in tools)
+        or set(tools) - READ_ONLY_CLAUDE_TOOLS
+        or not isinstance(ceiling, list)
+        or not set(tools).issubset(set(ceiling))
+        or policy.get("runtime") != "claude-code"
+        or policy.get("permission_mode") != "dontAsk"
+    ):
+        raise ContractError(
+            "Worker tool declaration is not an authorized read-only intersection"
+        )
+    runtime_path = Path(__file__).resolve()
+    receipt = {
+        "schema_version": 1,
+        "status": "PASS",
+        "assurance_kind": "runtime_bound_worker_tool_intersection",
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "worker_session_policy_path": str(session_policy_path),
+        "worker_session_policy_sha256": sha256_file(session_policy_path),
+        "runtime_path": str(runtime_path),
+        "runtime_sha256": sha256_file(runtime_path),
+        "task_declared_tools": tools,
+        "effective_claude_tools_argument": ",".join(tools),
+        "denied_tools": sorted(
+            set(ceiling) - set(tools)
+        ),
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(output_path, receipt, immutable=True)
+    return {"ok": True, "path": str(output_path), **receipt}
+
+
+def command_attest_worker_identity_boundary(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Bind the post-transport Worker identity receipt boundary to Runtime."""
+    plan_dir = Path(args.plan_dir).resolve()
+    contract_path = Path(args.task_contract).resolve()
+    session_policy_path = Path(args.worker_session_policy).resolve()
+    output_path = Path(args.output).absolute()
+    for label, path in (
+        ("task contract", contract_path),
+        ("Worker session policy", session_policy_path),
+    ):
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(f"{label} must be plan-owned") from exc
+        validate_immutable_binding(
+            path, sha256_file(path) if path.is_file() else None, label,
+        )
+    try:
+        output_path.resolve().relative_to(plan_dir)
+    except ValueError as exc:
+        raise ContractError(
+            "Worker identity-attestation assurance must be plan-owned"
+        ) from exc
+    if output_path.exists() or output_path.is_symlink():
+        raise ContractError(
+            "Worker identity-attestation assurance is immutable"
+        )
+    policy = load_policy(plan_dir)
+    session_policy = read_json(session_policy_path)
+    if (
+        session_policy.get("runtime") != "claude-code"
+        or session_policy.get("worker_model") != policy["worker_model"]
+        or session_policy.get("session_mode") != "persistent_exact_resume"
+        or not isinstance(session_policy.get("session_id"), str)
+    ):
+        raise ContractError("Worker identity policy is not exact")
+    runtime_path = Path(__file__).resolve()
+    receipt = {
+        "schema_version": 1,
+        "status": "PASS",
+        "assurance_kind": "runtime_bound_worker_identity_attestation",
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "worker_session_policy_path": str(session_policy_path),
+        "worker_session_policy_sha256": sha256_file(session_policy_path),
+        "runtime_path": str(runtime_path),
+        "runtime_sha256": sha256_file(runtime_path),
+        "expected_worker_identity": {
+            "model": policy["worker_model"],
+            "agent": "claude-code-worker",
+            "provider": "MiniMax",
+        },
+        "required_runtime_receipt_fields": [
+            "resolved_executable", "model_argument", "provider",
+            "agent", "session_id", "turn_index", "command_sha256",
+            "transport_metadata_sha256", "result_sha256",
+        ],
         "attested_at": utc_now(),
     }
     atomic_write_json(output_path, receipt, immutable=True)
@@ -5629,13 +6034,15 @@ def command_record_worker_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
 def run_worker_with_heartbeats(
     cmd: list[str], prompt: str, plan_dir: Path, run_id: str,
     timeout: int, heartbeat_interval: int | None,
+    worker_cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     run_dir = worker_run_dir(plan_dir, run_id)
     stdout_path = run_dir / "transport.stdout"
     stderr_path = run_dir / "transport.stderr"
     with stdout_path.open("w") as stdout_handle, stderr_path.open("w") as stderr_handle:
         proc = subprocess.Popen(
-            cmd, cwd=plan_dir, stdin=subprocess.PIPE, stdout=stdout_handle,
+            cmd, cwd=worker_cwd or plan_dir, stdin=subprocess.PIPE,
+            stdout=stdout_handle,
             stderr=stderr_handle, text=True, start_new_session=os.name == "posix",
         )
         try:
@@ -5855,12 +6262,51 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     else:
         staged_reserve_dispatch(plan_dir, dispatch_id=run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
+    sandbox_dir = run_dir / "declared-input-sandbox"
+    sandbox_dir.mkdir()
+    worker_inputs: list[dict[str, Any]] = []
+    input_access_receipt: list[dict[str, Any]] = []
+    for index, item in enumerate(inputs):
+        source = Path(item["path"])
+        target = sandbox_dir / f"{index:03d}-{source.name}"
+        shutil.copyfile(source, target)
+        target.chmod(0o444)
+        copied_sha = sha256_file(target)
+        if copied_sha != item["sha256"]:
+            raise ContractError("declared Worker input sandbox copy changed")
+        worker_inputs.append({
+            **item,
+            "access_path": str(target),
+        })
+        input_access_receipt.append({
+            "declared_path": item["path"],
+            "declared_sha256": item["sha256"],
+            "sandbox_path": str(target),
+            "sandbox_sha256": copied_sha,
+        })
+    atomic_write_json(
+        run_dir / "input-access-receipt.json",
+        {
+            "schema_version": 1,
+            "worker_run_id": run_id,
+            "policy": (
+                "clean cwd plus only declared immutable copies exposed "
+                "through Claude --add-dir"
+            ),
+            "inputs": input_access_receipt,
+        },
+        immutable=True,
+    )
     prompt = json.dumps({
         "role": "bounded research worker",
         "authority": "artifact producer only; do not change plan lifecycle state",
         "task_id": task_id,
         "instruction": instruction,
-        "inputs": inputs,
+        "inputs": worker_inputs,
+        "input_access_rule": (
+            "Read only access_path. Preserve declared path and sha256 in "
+            "the proposed scientific artifact."
+        ),
         "artifact_outputs": declarations,
         "artifact_content_contracts": worker_visible_content_contracts(
             declarations,
@@ -5919,12 +6365,11 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         cmd.extend(["--session-id", worker_session["session_id"]])
     else:
         cmd.extend(["--resume", worker_session["session_id"]])
-    input_dirs = sorted({str(Path(item["path"]).parent) for item in inputs})
-    if input_dirs:
+    if worker_inputs:
         # Claude Code treats files outside cwd as permission-denied even when
         # Read is the only exposed tool.  Grant directory visibility for the
         # already hash-verified input manifest; this does not grant write tools.
-        cmd.extend(["--add-dir", *input_dirs])
+        cmd.extend(["--add-dir", str(sandbox_dir)])
     started = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -5945,6 +6390,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "worker_session_turn": turn_index,
         "instruction_path": str(instruction_path),
         "instruction_sha256": sha256_file(instruction_path),
+        "input_access_receipt_path": str(
+            run_dir / "input-access-receipt.json"
+        ),
+        "input_access_receipt_sha256": sha256_file(
+            run_dir / "input-access-receipt.json"
+        ),
         "started_at": utc_now(),
     }
     if writing_gate_path:
@@ -5974,10 +6425,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             proc = run_worker_with_heartbeats(
                 cmd, prompt, plan_dir, run_id, args.timeout,
                 max(1, min(60, assurance["heartbeat_stale_seconds"] // 3)),
+                sandbox_dir,
             )
         else:
             proc = run_worker_with_heartbeats(
                 cmd, prompt, plan_dir, run_id, args.timeout, None,
+                sandbox_dir,
             )
     except FileNotFoundError as exc:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "claude_not_found", "completed_at": utc_now()})
@@ -6084,9 +6537,47 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             )
         release_worker_session_lease(session_lease)
         raise
+    identity_path = run_dir / "identity-receipt.json"
+    reported_model = (
+        None if transport_metadata is None
+        else transport_metadata.get("reported_model")
+    )
+    reported_provider = (
+        None if transport_metadata is None
+        else transport_metadata.get("reported_provider")
+    )
+    identity_receipt = {
+        "schema_version": 1,
+        "plan_id": plan_identity(plan_dir),
+        "worker_run_id": run_id,
+        "task_contract_sha256": sha256_file(contract_path),
+        "resolved_executable": resolved_claude_bin,
+        "model_argument": policy["worker_model"],
+        "reported_model": reported_model,
+        "provider": reported_provider or "MiniMax",
+        "provider_evidence": (
+            "claude_transport_metadata"
+            if reported_provider is not None
+            else "frozen_model_policy_and_minimax_only_runtime_guard"
+        ),
+        "agent": "claude-code-worker",
+        "session_id": (
+            None if worker_session is None else worker_session["session_id"]
+        ),
+        "turn_index": turn_index,
+        "command_sha256": sha256_json(cmd),
+        "transport_metadata_sha256": sha256_json(
+            transport_metadata or {},
+        ),
+        "result_sha256": sha256_file(result_path),
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(identity_path, identity_receipt, immutable=True)
     completed = update_worker_status(plan_dir, run_id, "COMPLETED", {
         "completed_at": utc_now(), "result_path": str(result_path),
         "result_sha256": sha256_file(result_path),
+        "identity_receipt_path": str(identity_path),
+        "identity_receipt_sha256": sha256_file(identity_path),
     })
     if completed.get("status") == "CANCELLED":
         if worker_session is not None:
@@ -15674,6 +16165,7 @@ def staged_preflight_payload(
     verified_source_manifest: list[dict[str, Any]] = []
     evaluator_conformance: dict[str, Any] | None = None
     report_validator_conformance: dict[str, Any] | None = None
+    worker_io_budget_proof: dict[str, Any] | None = None
     if observation_only:
         implementation_materials = [
             item for item in envelope.get("review_material_manifest", [])
@@ -15953,7 +16445,10 @@ def staged_preflight_payload(
             break
         reachable = expanded
     required_states = (
-        {"STAGE_AUTHORIZED", "DEVELOPING", "RECORDED", "COMPLETE", "PAUSED"}
+        {
+            "STAGE_AUTHORIZED", "DEVELOPING", "RECORDED",
+            "CONTRACTED", "PAUSED",
+        }
         if observation_only
         else {
             "STAGE_AUTHORIZED", "CANDIDATE_FROZEN", "GATE_QUERIED",
@@ -16016,6 +16511,104 @@ def staged_preflight_payload(
             sum(item["size_bytes"] for item in verified_source_manifest) + 2
         ) // 3
         required_worker_tokens = estimated_source_tokens + 8000
+        worker_contract_materials = [
+            item for item in envelope.get("review_material_manifest", [])
+            if item.get("purpose") == "worker_task_contract"
+        ]
+        if len(worker_contract_materials) > 1:
+            raise ContractError(
+                "observation-only stage has multiple Worker task contracts"
+            )
+        if worker_contract_materials:
+            contract_material = worker_contract_materials[0]
+            worker_contract_path = normalize_owned_path(
+                plan_dir, str(plan_dir / contract_material["path"]),
+            )
+            if (
+                worker_contract_path.is_symlink()
+                or not worker_contract_path.is_file()
+                or sha256_file(worker_contract_path)
+                != contract_material["sha256"]
+            ):
+                raise ContractError(
+                    "observation-only Worker task contract changed"
+                )
+            worker_contract = read_json(worker_contract_path)
+            worker_inputs = verify_manifest_items(
+                worker_contract.get("inputs", []), base_dir=plan_dir,
+            )
+            raw_outputs = worker_contract.get("artifact_outputs")
+            if not isinstance(raw_outputs, list) or not raw_outputs:
+                raise ContractError(
+                    "observation-only Worker task contract has no outputs"
+                )
+            declarations = [
+                normalize_declared_output(plan_dir, item)
+                for item in raw_outputs
+            ]
+            instruction = worker_contract.get("instruction")
+            output_schema = worker_contract.get("output_schema")
+            request = worker_contract.get("stage_resource_request")
+            if (
+                not isinstance(instruction, str)
+                or not instruction
+                or not isinstance(output_schema, dict)
+                or not isinstance(request, dict)
+                or set(request) != {"tool_calls", "worker_tokens"}
+            ):
+                raise ContractError(
+                    "observation-only Worker task budget contract is invalid"
+                )
+            input_bytes = sum(
+                Path(item["path"]).stat().st_size for item in worker_inputs
+            )
+            maximum_output_bytes = sum(
+                item["max_bytes"] for item in declarations
+            )
+            prompt_overhead_bytes = (
+                worker_contract_path.stat().st_size
+                + len(instruction.encode("utf-8"))
+                + len(canonical_json(output_schema))
+                + 8192
+            )
+            required_read_calls = len(worker_inputs)
+            estimated_input_tokens = (
+                input_bytes + prompt_overhead_bytes + 2
+            ) // 3
+            estimated_output_tokens = (maximum_output_bytes + 2) // 3
+            required_worker_tokens = (
+                estimated_input_tokens + estimated_output_tokens
+            )
+            if (
+                isinstance(request["tool_calls"], bool)
+                or not isinstance(request["tool_calls"], int)
+                or isinstance(request["worker_tokens"], bool)
+                or not isinstance(request["worker_tokens"], int)
+                or request["tool_calls"] < required_read_calls
+                or request["worker_tokens"] < required_worker_tokens
+                or request["tool_calls"] > budget["tool_calls"]
+                or request["worker_tokens"] > budget["worker_tokens"]
+            ):
+                raise ContractError(
+                    "Worker task budget cannot cover every declared input, "
+                    "maximum outputs, and Runtime prompt overhead"
+                )
+            worker_io_budget_proof = {
+                "task_contract_path": str(worker_contract_path),
+                "task_contract_sha256": sha256_file(worker_contract_path),
+                "declared_input_count": len(worker_inputs),
+                "declared_input_bytes": input_bytes,
+                "required_read_calls": required_read_calls,
+                "maximum_output_bytes": maximum_output_bytes,
+                "prompt_overhead_bytes": prompt_overhead_bytes,
+                "estimated_input_tokens": estimated_input_tokens,
+                "estimated_output_tokens": estimated_output_tokens,
+                "required_worker_tokens": required_worker_tokens,
+                "task_authorized_tool_calls": request["tool_calls"],
+                "task_authorized_worker_tokens": request["worker_tokens"],
+                "stage_authorized_tool_calls": budget["tool_calls"],
+                "stage_authorized_worker_tokens": budget["worker_tokens"],
+            }
         if (
             budget["tool_calls"] < required_read_calls
             or budget["worker_tokens"] < required_worker_tokens
@@ -16120,6 +16713,9 @@ def staged_preflight_payload(
                 "authorized_tool_calls": budget["tool_calls"],
                 "authorized_worker_tokens": budget["worker_tokens"],
             },
+            **({
+                "worker_io_budget_proof": worker_io_budget_proof,
+            } if worker_io_budget_proof is not None else {}),
             "evaluator_conformance": evaluator_conformance,
             "stage_report_validator_conformance": (
                 report_validator_conformance
@@ -16615,10 +17211,10 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
     staged_require_preflight(plan_dir)
-    if state["state"] not in {
-        "STAGE_AUTHORIZED", "DEVELOPING", "CANDIDATE_FROZEN",
-    }:
-        raise ContractError("candidate freeze requires a controller-authorized stage")
+    if state["state"] not in {"DEVELOPING", "CANDIDATE_FROZEN"}:
+        raise ContractError(
+            "candidate freeze requires a canonical real-Worker dispatch"
+        )
     try:
         require_staged_transition(
             "freeze_candidate", state["state"], "CANDIDATE_FROZEN",
@@ -16639,6 +17235,25 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     promotion = read_json(promotion_path)
     run_id = promotion.get("worker_run_id", "")
     run_dir = worker_run_dir(plan_dir, run_id)
+    dispatch_path = (
+        staged_root(plan_dir) / "dispatch-reservations" / f"{run_id}.json"
+    )
+    dispatch_journal_path = (
+        staged_root(plan_dir) / "dispatch-journals" / f"{run_id}.json"
+    )
+    dispatch = read_json(dispatch_path)
+    dispatch_journal = read_json(dispatch_journal_path)
+    if (
+        dispatch_journal.get("phase") != "COMMITTED"
+        or dispatch_journal.get("dispatch_id") != run_id
+        or dispatch_journal.get("checkpoint") is not None
+        or dispatch_journal.get("stage_id") != state["active_stage_id"]
+        or dispatch_journal.get("state_after") != "DEVELOPING"
+        or dispatch_journal.get("marker_after") != dispatch
+    ):
+        raise ContractError(
+            "candidate requires a canonical real-Worker dispatch receipt"
+        )
     if promotion_path != run_dir / "promotion-receipt.json":
         raise ContractError("candidate requires a canonical worker promotion receipt")
     promotion_binding = staged_canonical_file(
@@ -17777,9 +18392,68 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = worker_run_dir(plan_dir, args.worker_run_id)
     status_path_value = run_dir / "status.json"
     status = read_json(status_path_value)
+    access_path = run_dir / "input-access-receipt.json"
+    access = read_json(access_path)
+    contract = read_json(Path(status["contract_path"]))
+    declared_inputs = verify_manifest_items(
+        contract.get("inputs", []), base_dir=plan_dir,
+    )
+    expected_access = [
+        {
+            "declared_path": item["path"],
+            "declared_sha256": item["sha256"],
+            "sandbox_path": str(
+                run_dir / "declared-input-sandbox"
+                / f"{index:03d}-{Path(item['path']).name}"
+            ),
+            "sandbox_sha256": item["sha256"],
+        }
+        for index, item in enumerate(declared_inputs)
+    ]
+    if (
+        status.get("input_access_receipt_path") != str(access_path)
+        or status.get("input_access_receipt_sha256") != sha256_file(access_path)
+        or access.get("worker_run_id") != args.worker_run_id
+        or access.get("inputs") != expected_access
+        or any(
+            not Path(item["sandbox_path"]).is_file()
+            or sha256_file(Path(item["sandbox_path"]))
+            != item["sandbox_sha256"]
+            for item in expected_access
+        )
+    ):
+        raise ContractError(
+            "stage report lacks exact declared-input sandbox lineage"
+        )
     promotion_path = run_dir / "promotion-receipt.json"
     promotion = read_json(promotion_path)
     promotion_journal = read_json(run_dir / "promotion-journal.json")
+    identity_path = run_dir / "identity-receipt.json"
+    identity = read_json(identity_path)
+    expected_identity = {
+        "model": status["worker_model"],
+        "agent": "claude-code-worker",
+        "provider": "MiniMax",
+    }
+    identity_failures = [
+        label for label, condition in (
+            ("status_path", status.get("identity_receipt_path") != str(identity_path)),
+            ("status_sha256", status.get("identity_receipt_sha256") != sha256_file(identity_path)),
+            ("worker_run_id", identity.get("worker_run_id") != args.worker_run_id),
+            ("task_contract", identity.get("task_contract_sha256") != status["contract_sha256"]),
+            ("model", identity.get("model_argument") != status["worker_model"]),
+            ("agent", identity.get("agent") != expected_identity["agent"]),
+            ("provider", "minimax" not in str(identity.get("provider", "")).lower()),
+            ("session", identity.get("session_id") != status.get("worker_session_id")),
+            ("turn", identity.get("turn_index") != status.get("worker_session_turn")),
+            ("result", identity.get("result_sha256") != status.get("result_sha256")),
+        ) if condition
+    ]
+    if identity_failures:
+        raise ContractError(
+            "stage report lacks the controller-owned Worker identity receipt: "
+            + ",".join(identity_failures)
+        )
     if (
         status.get("status") != "COMPLETED"
         or status.get("worker_model") != load_policy(plan_dir)["worker_model"]
@@ -17801,7 +18475,9 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         validate_stage_report(
             report,
             stage_cycle_id=state["active_stage_id"],
-            worker_model=status["worker_model"],
+            expected_worker_identity={
+                **expected_identity,
+            },
             candidate_sha256=candidate["candidate_sha256"],
             authorized_evidence_refs=envelope["authorized_evidence_refs"],
             expected_validator_receipts=(
@@ -17815,9 +18491,7 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     worker = report["worker_identity"]
     if (
         not isinstance(worker, dict)
-        or worker.get("model") != status["worker_model"]
-        or not worker.get("agent")
-        or not worker.get("provider")
+        or worker != expected_identity
     ):
         raise ContractError("terminal stage report must be produced by MiniMax-M3")
     visible_path = staged_root(plan_dir) / "role-visible" / f"{args.worker_run_id}.json"
@@ -20448,6 +21122,36 @@ def build_parser() -> argparse.ArgumentParser:
     worker_conformance.add_argument("--output", required=True)
     worker_conformance.set_defaults(
         handler=command_attest_worker_output_conformance,
+    )
+
+    worker_tools = sub.add_parser(
+        "attest-worker-tool-intersection",
+        help=(
+            "bind the exact read-only Claude tool intersection to current "
+            "Runtime bytes without launching a model"
+        ),
+    )
+    worker_tools.add_argument("--plan-dir", required=True)
+    worker_tools.add_argument("--task-contract", required=True)
+    worker_tools.add_argument("--worker-session-policy", required=True)
+    worker_tools.add_argument("--output", required=True)
+    worker_tools.set_defaults(
+        handler=command_attest_worker_tool_intersection,
+    )
+
+    worker_identity = sub.add_parser(
+        "attest-worker-identity-boundary",
+        help=(
+            "bind the exact post-transport Worker identity receipt boundary "
+            "to current Runtime bytes"
+        ),
+    )
+    worker_identity.add_argument("--plan-dir", required=True)
+    worker_identity.add_argument("--task-contract", required=True)
+    worker_identity.add_argument("--worker-session-policy", required=True)
+    worker_identity.add_argument("--output", required=True)
+    worker_identity.set_defaults(
+        handler=command_attest_worker_identity_boundary,
     )
 
     recover_worker_budget = sub.add_parser(

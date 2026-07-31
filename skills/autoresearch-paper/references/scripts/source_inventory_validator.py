@@ -15,7 +15,7 @@ from typing import Any
 
 
 VALIDATOR_ID = "source_inventory_v1"
-VALIDATOR_VERSION = "source-inventory-validator/7"
+VALIDATOR_VERSION = "source-inventory-validator/8"
 SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
@@ -160,7 +160,8 @@ def validate_source_inventory_construction(
     """Bind free-text hypotheses/questions and exact bytes to a frozen contract."""
     fields = {
         "schema_version", "contract_id", "record_construction",
-        "uncertainties_and_next_questions", "expected_content_sha256",
+        "uncertainties_and_next_questions", "serialization_contract",
+        "expected_content_sha256",
     }
     if (
         not isinstance(construction_contract, dict)
@@ -184,6 +185,51 @@ def validate_source_inventory_construction(
             "source inventory construction contract has an invalid closed shape"
         )
     inventory = _strict_json_loads(content)
+    serialization = construction_contract["serialization_contract"]
+    expected_serialization = {
+        "encoding": "utf-8",
+        "ensure_ascii": False,
+        "separators": [",", ":"],
+        "terminal_newline": False,
+        "top_level_key_order": [
+            "schema_version", "records",
+            "uncertainties_and_next_questions",
+        ],
+        "record_key_order": [
+            "path", "source_sha256", "symbol", "line_start",
+            "observation", "hypothesis",
+        ],
+        "observation_rule": (
+            "exact cited UTF-8 source line after Python str.strip()"
+        ),
+    }
+    if serialization != expected_serialization:
+        raise SourceInventoryValidationError(
+            "source inventory serialization contract changed"
+        )
+    if (
+        not isinstance(inventory, dict)
+        or list(inventory) != serialization["top_level_key_order"]
+        or any(
+            not isinstance(record, dict)
+            or list(record) != serialization["record_key_order"]
+            for record in inventory.get("records", [])
+        )
+    ):
+        raise SourceInventoryValidationError(
+            "source inventory key order changed"
+        )
+    canonical_content = json.dumps(
+        inventory,
+        ensure_ascii=serialization["ensure_ascii"],
+        separators=tuple(serialization["separators"]),
+    )
+    if serialization["terminal_newline"]:
+        canonical_content += "\n"
+    if content != canonical_content:
+        raise SourceInventoryValidationError(
+            "source inventory serialization bytes are not canonical"
+        )
     expected_records = construction_contract["record_construction"]
     actual_records = inventory.get("records") if isinstance(inventory, dict) else None
     if not isinstance(actual_records, list) or len(actual_records) != len(
@@ -404,7 +450,26 @@ def run_conformance_suite() -> dict[str, Any]:
             "observed": "accept" if cli_passed else "reject",
             "passed": cli_passed,
         })
-        valid_content = json.dumps(valid, ensure_ascii=False)
+        valid_content = json.dumps(
+            valid, ensure_ascii=False, separators=(",", ":"),
+        )
+        serialization_contract = {
+            "encoding": "utf-8",
+            "ensure_ascii": False,
+            "separators": [",", ":"],
+            "terminal_newline": False,
+            "top_level_key_order": [
+                "schema_version", "records",
+                "uncertainties_and_next_questions",
+            ],
+            "record_key_order": [
+                "path", "source_sha256", "symbol", "line_start",
+                "observation", "hypothesis",
+            ],
+            "observation_rule": (
+                "exact cited UTF-8 source line after Python str.strip()"
+            ),
+        }
         construction = {
             "schema_version": 1,
             "contract_id": "source_inventory_construction_v1",
@@ -418,6 +483,7 @@ def run_conformance_suite() -> dict[str, Any]:
             "uncertainties_and_next_questions": valid[
                 "uncertainties_and_next_questions"
             ],
+            "serialization_contract": serialization_contract,
             "expected_content_sha256": hashlib.sha256(
                 valid_content.encode("utf-8"),
             ).hexdigest(),
@@ -438,7 +504,10 @@ def run_conformance_suite() -> dict[str, Any]:
         changed["records"][0]["hypothesis"] = "A different hypothesis."
         try:
             validate_source_inventory_construction(
-                json.dumps(changed, ensure_ascii=False), construction,
+                json.dumps(
+                    changed, ensure_ascii=False, separators=(",", ":"),
+                ),
+                construction,
             )
         except SourceInventoryValidationError:
             construction_rejects = True
@@ -449,6 +518,21 @@ def run_conformance_suite() -> dict[str, Any]:
             "expected": "reject",
             "observed": "reject" if construction_rejects else "accept",
             "passed": construction_rejects,
+        })
+        noncanonical = json.dumps(valid, ensure_ascii=False, indent=2)
+        try:
+            validate_source_inventory_construction(
+                noncanonical, construction,
+            )
+        except SourceInventoryValidationError:
+            serialization_rejects = True
+        else:
+            serialization_rejects = False
+        results.append({
+            "case_id": "construction_contract_rejects_noncanonical_serialization",
+            "expected": "reject",
+            "observed": "reject" if serialization_rejects else "accept",
+            "passed": serialization_rejects,
         })
         if not all(item["passed"] for item in results):
             raise SourceInventoryValidationError(

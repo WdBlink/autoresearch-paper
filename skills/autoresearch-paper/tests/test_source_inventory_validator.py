@@ -33,7 +33,7 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         result = validator.run_conformance_suite()
         self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["case_count"], 14)
+        self.assertEqual(result["case_count"], 15)
         self.assertTrue(all(item["passed"] for item in result["cases"]))
 
     def test_conformance_cli_covers_the_executable_receipt_path(self) -> None:
@@ -49,7 +49,7 @@ class SourceInventoryValidatorTests(unittest.TestCase):
         )
         receipt = json.loads(completed.stdout)
         self.assertEqual(receipt["status"], "PASS")
-        self.assertEqual(receipt["case_count"], 14)
+        self.assertEqual(receipt["case_count"], 15)
         self.assertTrue(any(
             case["case_id"] == "cli_validate_artifact_receipt"
             and case["passed"]
@@ -216,7 +216,9 @@ class SourceInventoryValidatorTests(unittest.TestCase):
                 "Where is Alpha instantiated?",
             ],
         }
-        content = json.dumps(payload, ensure_ascii=False)
+        content = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"),
+        )
         contract = {
             "schema_version": 1,
             "contract_id": "construction_v1",
@@ -230,6 +232,23 @@ class SourceInventoryValidatorTests(unittest.TestCase):
             "uncertainties_and_next_questions": payload[
                 "uncertainties_and_next_questions"
             ],
+            "serialization_contract": {
+                "encoding": "utf-8",
+                "ensure_ascii": False,
+                "separators": [",", ":"],
+                "terminal_newline": False,
+                "top_level_key_order": [
+                    "schema_version", "records",
+                    "uncertainties_and_next_questions",
+                ],
+                "record_key_order": [
+                    "path", "source_sha256", "symbol", "line_start",
+                    "observation", "hypothesis",
+                ],
+                "observation_rule": (
+                    "exact cited UTF-8 source line after Python str.strip()"
+                ),
+            },
             "expected_content_sha256": hashlib.sha256(
                 content.encode("utf-8"),
             ).hexdigest(),
@@ -242,7 +261,10 @@ class SourceInventoryValidatorTests(unittest.TestCase):
             "questions changed",
         ):
             validator.validate_source_inventory_construction(
-                json.dumps(changed, ensure_ascii=False), contract,
+                json.dumps(
+                    changed, ensure_ascii=False, separators=(",", ":"),
+                ),
+                contract,
             )
 
     def test_declared_output_preserves_source_citation_bindings(self) -> None:
@@ -505,6 +527,192 @@ class SourceInventoryValidatorTests(unittest.TestCase):
                     ),
                 )
             self.assertFalse(receipt_path.exists())
+
+    def test_runtime_binds_exact_worker_tool_intersection(self) -> None:
+        runtime = load_module(
+            "harness_runtime_tool_intersection_test",
+            SCRIPTS / "harness-runtime.py",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "resource_manifest.json").write_text(
+                json.dumps({"plan_id": "plan_tool_intersection"}),
+            )
+            contract_path = root / "task-contract.json"
+            contract_path.write_text(json.dumps({
+                "schema_version": 1,
+                "task_id": "read_only_worker",
+                "allowed_tools": ["Read", "Glob", "Grep"],
+            }))
+            policy_path = root / "worker-session-policy.json"
+            policy_path.write_text(json.dumps({
+                "schema_version": 1,
+                "plan_id": "plan_tool_intersection",
+                "runtime": "claude-code",
+                "permission_mode": "dontAsk",
+                "allowed_tool_ceiling": [
+                    "Read", "Glob", "Grep", "Bash", "Edit", "Write",
+                ],
+            }))
+            contract_path.chmod(0o444)
+            policy_path.chmod(0o444)
+            receipt_path = root / "worker-tool-intersection.json"
+            result = runtime.command_attest_worker_tool_intersection(
+                argparse.Namespace(
+                    plan_dir=str(root),
+                    task_contract=str(contract_path),
+                    worker_session_policy=str(policy_path),
+                    output=str(receipt_path),
+                ),
+            )
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(
+                result["assurance_kind"],
+                "runtime_bound_worker_tool_intersection",
+            )
+            self.assertEqual(
+                result["effective_claude_tools_argument"],
+                "Read,Glob,Grep",
+            )
+            self.assertEqual(
+                result["runtime_sha256"],
+                hashlib.sha256(
+                    (SCRIPTS / "harness-runtime.py").read_bytes()
+                ).hexdigest(),
+            )
+            self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o444)
+
+    def test_activation_rejects_stale_worker_assurance_runtime(self) -> None:
+        runtime = load_module(
+            "harness_runtime_stale_assurance_test",
+            SCRIPTS / "harness-runtime.py",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "resource_manifest.json").write_text(
+                json.dumps({"plan_id": "plan_assurance"}),
+            )
+            contract_path = root / "task-contract.json"
+            contract_path.write_text("{}")
+            policy_path = root / "worker-session-policy.json"
+            policy_path.write_text(json.dumps({
+                "worker_model": "MiniMax-M3",
+            }))
+            runtime_sha = hashlib.sha256(
+                (SCRIPTS / "harness-runtime.py").read_bytes()
+            ).hexdigest()
+            output_receipt_path = root / "worker-output.json"
+            output_receipt_path.write_text(json.dumps({
+                "status": "PASS",
+                "plan_id": "plan_assurance",
+                "task_contract_path": str(contract_path),
+                "task_contract_sha256": hashlib.sha256(
+                    contract_path.read_bytes()
+                ).hexdigest(),
+                "runtime_sha256": runtime_sha,
+                "case_count": 2,
+                "cases": [
+                    {"case_id": "valid", "passed": True},
+                    {"case_id": "invalid", "passed": True},
+                ],
+            }))
+            tool_receipt_path = root / "worker-tools.json"
+            tool_receipt_path.write_text(json.dumps({
+                "status": "PASS",
+                "assurance_kind": "runtime_bound_worker_tool_intersection",
+                "plan_id": "plan_assurance",
+                "task_contract_path": str(contract_path),
+                "task_contract_sha256": hashlib.sha256(
+                    contract_path.read_bytes()
+                ).hexdigest(),
+                "runtime_sha256": runtime_sha,
+                "worker_session_policy_path": str(policy_path),
+                "worker_session_policy_sha256": hashlib.sha256(
+                    policy_path.read_bytes()
+                ).hexdigest(),
+            }))
+            identity_receipt_path = root / "worker-identity.json"
+            identity_receipt_path.write_text(json.dumps({
+                "status": "PASS",
+                "assurance_kind":
+                    "runtime_bound_worker_identity_attestation",
+                "plan_id": "plan_assurance",
+                "task_contract_path": str(contract_path),
+                "task_contract_sha256": hashlib.sha256(
+                    contract_path.read_bytes()
+                ).hexdigest(),
+                "runtime_sha256": runtime_sha,
+                "worker_session_policy_path": str(policy_path),
+                "worker_session_policy_sha256": hashlib.sha256(
+                    policy_path.read_bytes()
+                ).hexdigest(),
+                "expected_worker_identity": {
+                    "model": "MiniMax-M3",
+                    "agent": "claude-code-worker",
+                    "provider": "MiniMax",
+                },
+            }))
+            for path in (
+                contract_path, policy_path, output_receipt_path,
+                tool_receipt_path, identity_receipt_path,
+            ):
+                path.chmod(0o444)
+            envelope = {"review_material_manifest": [
+                {
+                    "purpose": "worker_task_contract",
+                    "path": contract_path.name,
+                    "sha256": hashlib.sha256(
+                        contract_path.read_bytes()
+                    ).hexdigest(),
+                },
+                {
+                    "purpose": "worker_output_conformance",
+                    "path": output_receipt_path.name,
+                    "sha256": hashlib.sha256(
+                        output_receipt_path.read_bytes()
+                    ).hexdigest(),
+                },
+                {
+                    "purpose": "worker_tool_intersection_assurance",
+                    "path": tool_receipt_path.name,
+                    "sha256": hashlib.sha256(
+                        tool_receipt_path.read_bytes()
+                    ).hexdigest(),
+                },
+                {
+                    "purpose": "worker_identity_attestation_assurance",
+                    "path": identity_receipt_path.name,
+                    "sha256": hashlib.sha256(
+                        identity_receipt_path.read_bytes()
+                    ).hexdigest(),
+                },
+            ]}
+            graph = {"tasks": [{
+                "task_contract": {
+                    "path": str(contract_path),
+                    "sha256": hashlib.sha256(
+                        contract_path.read_bytes()
+                    ).hexdigest(),
+                },
+            }]}
+            prepared = {"worker_session_policy_path": str(policy_path)}
+            runtime.validate_cp01_worker_assurances(
+                root, envelope, graph, prepared,
+            )
+            tool_receipt_path.chmod(0o644)
+            stale = json.loads(tool_receipt_path.read_text())
+            stale["runtime_sha256"] = "0" * 64
+            tool_receipt_path.write_text(json.dumps(stale))
+            tool_receipt_path.chmod(0o444)
+            envelope["review_material_manifest"][2]["sha256"] = (
+                hashlib.sha256(tool_receipt_path.read_bytes()).hexdigest()
+            )
+            with self.assertRaisesRegex(
+                runtime.ContractError, "activated Runtime bytes",
+            ):
+                runtime.validate_cp01_worker_assurances(
+                    root, envelope, graph, prepared,
+                )
 
 
 if __name__ == "__main__":

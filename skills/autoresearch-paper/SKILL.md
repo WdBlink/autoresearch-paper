@@ -74,6 +74,13 @@ production cutover.
   tools. Claude grants that read authority at directory granularity: the input
   parent must contain no sibling secret that the Worker is not authorized to
   read. Accepted evidence still cites only the frozen manifest.
+- For unattended dispatch, use Runtime's clean per-run declared-input sandbox:
+  copy only hash-verified inputs, run Claude from that cwd, expose only that
+  directory through `--add-dir`, and retain the input-access receipt. A
+  read-only tool list without this path boundary is insufficient isolation.
+  Treat that receipt as terminal authority: stage-report recording must
+  reconstruct the task manifest, match every declared/sandbox path and digest,
+  and rehash every immutable copy before accepting Worker evidence.
 - Never claim Worker-output conformance from an ad hoc fixture generator.
   Freeze one exact positive response containing content that passes every
   declared content validator, then run `attest-worker-output-conformance`.
@@ -81,9 +88,22 @@ production cutover.
   positive fixture.
 - When source-inventory hypotheses or questions are decided before dispatch,
   bind them in an immutable construction contract and include its path,
-  SHA-256, and expected exact UTF-8 content SHA-256 in
+  SHA-256, deterministic UTF-8 serialization contract (encoding, separators,
+  terminal-newline policy, top-level and record key order, and exact cited-line
+  observation rule), and expected exact content SHA-256 in
   `content_validator.construction_contract`. Source grounding alone does not
   prove that the planned hypotheses/questions were delivered.
+- Before CP-01, separately bind `attest-worker-tool-intersection` and
+  `attest-worker-identity-boundary` PASS receipts alongside the task contract
+  and real positive output fixture. After dispatch, require Runtime's
+  controller-owned identity receipt—resolved executable, model, provider
+  evidence, agent, persistent session/turn, command, transport metadata, and
+  result digest—before accepting a terminal Worker report.
+- When Stage 1 relies on source snapshots, bind both `snapshot_manifest` and
+  `origin_verification_receipt`. Activation must prove exact equality for local
+  origins and bind a plan-owned official capture digest plus machine-true
+  canonical ID/title match for URL sources; a summary or paraphrase is never
+  represented as official-page bytes.
 - Never reuse a source-file or blueprint SHA as a Worker proposal SHA by
   assumption. A read-only Worker sets `sha256` to `controller-compute`; the
   trusted Host computes it from the exact UTF-8 bytes of the returned `content`
@@ -146,6 +166,8 @@ run activate-codex-host-plan to publish staged state, deterministic preflight,
 for every first Worker task, freeze one genuine exact-schema positive response
   and run attest-worker-output-conformance; bind its PASS receipt to CP-01
   instead of hand-writing adversarial-conformance JSON
+run attest-worker-tool-intersection and attest-worker-identity-boundary against
+  the same immutable task/session policy; bind both PASS receipts separately
 bind contract + stage + preflight + named capacity to CP-01
 run a fresh strongest-policy Codex review task; retain controller authority
 require validated CP-01 accept -> apply + assert approve_execution
@@ -732,7 +754,7 @@ this file.
   `role_visible_state_sha256`; only Runtime may add the exact post-call binding.
   Source validator conformance also runs the actual CLI artifact/receipt path.
   Canonical preflight now records and revalidates the equivalent Runtime
-  identity and ten-case result for `stage-report-validator/2`, closing the sole
+  identity and twelve-case result for `stage-report-validator/3`, closing the sole
   Plan025 CP-01 critical finding. Source-inventory Worker contracts now retain
   and revalidate the exact `symbol` and `line_start` citation bindings instead
   of passing the generic path/hash/purpose input shape to the content

@@ -89,13 +89,42 @@ python3 references/scripts/harness-runtime.py \
   --task-contract PLAN/control/staged-inputs/task-contract.json \
   --valid-response PLAN/control/review-materials/valid-worker-response.json \
   --output PLAN/control/review-materials/worker-output-conformance.json
+
+python3 references/scripts/harness-runtime.py \
+  attest-worker-tool-intersection \
+  --plan-dir PLAN \
+  --task-contract PLAN/control/staged-inputs/task-contract.json \
+  --worker-session-policy PLAN/control/codex-host-entry/v1/worker-session-policy.json \
+  --output PLAN/control/review-materials/worker-tool-intersection.json
+
+python3 references/scripts/harness-runtime.py \
+  attest-worker-identity-boundary \
+  --plan-dir PLAN \
+  --task-contract PLAN/control/staged-inputs/task-contract.json \
+  --worker-session-policy PLAN/control/codex-host-entry/v1/worker-session-policy.json \
+  --output PLAN/control/review-materials/worker-identity-attestation.json
 ```
 
 The Runtime validates the positive fixture with the live content validators
 and derives adversarial mutations itself. A placeholder `{}` source inventory
 therefore fails before a PASS receipt exists. When a construction contract is
-declared, the same path also freezes the planned hypotheses, questions, and
-exact candidate bytes.
+declared, the same path also freezes the planned hypotheses, questions,
+encoding, separators, terminal-newline policy, object-key order, cited-line
+observation rule, and exact candidate bytes. Bind the task contract, positive
+fixture, and all three Runtime-authored receipts as separate review-material
+manifest entries. Activation rejects a
+partial set or any receipt whose Runtime hash differs from the executable
+bytes being activated. After the real transport completes, Runtime writes a
+separate immutable identity receipt from the executable/model/provider/session
+invocation and result; terminal report validation consumes that receipt rather
+than trusting a Worker-authored identity field.
+
+If the first stage declares source snapshots, also bind `snapshot_manifest`
+and `origin_verification_receipt`. Activation rejects a local origin unless its
+current bytes exactly equal the frozen snapshot. For URL sources, retain a
+plan-owned official response capture and SHA-256, canonical identifier/title,
+retrieval URL/time, and a machine-true metadata-to-summary match. Do not claim
+that a plan-authored summary is byte-identical to the official source.
 
 For an already prepared, authorized plan, use one transaction instead of
 calling the runtime layers independently:
@@ -898,16 +927,16 @@ The frozen source validator's twelve-case `--conformance` run includes a real
 CLI invocation of the `validate_artifact` and hash-bound receipt path;
 function-only conformance evidence is insufficient for CP-01 readiness.
 Canonical observation preflight also records the plan-local and Runtime paths
-and hashes for `stage-report-validator/2`, an explicit byte-identity result,
-the frozen conformance receipt path/hash, and the complete ten-case result.
+and hashes for `stage-report-validator/3`, an explicit byte-identity result,
+the frozen conformance receipt path/hash, and the complete twelve-case result.
 `staged_require_preflight` revalidates that attestation after CP-01; a frozen
 conformance file without Runtime identity is not sufficient review evidence.
 
 The terminal report must be a promoted MiniMax artifact. Runtime first applies
 the CP-01-frozen `stage_report_validator.py`, whose implementation must be
-byte-identical to Runtime and whose frozen ten-case conformance receipt must
+byte-identical to Runtime and whose frozen twelve-case conformance receipt must
 match Runtime execution. It covers the closed shape, stage/candidate identity,
-Worker identity, evidence-list types, bounded scientific summary/findings,
+the exact model/agent/provider Worker identity, evidence-list types, bounded scientific summary/findings,
 claim-to-candidate hashes, exact canonical terminal-validation receipt
 bindings, strict JSON-integer version typing, and rejection of Worker-authored
 Controller provenance. Its source form must omit

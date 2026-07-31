@@ -20,6 +20,70 @@
 - Preserve plan040 and plan043 as immutable negative evidence. They exposed a
   generic real-brief compiler gap after the earlier fixed T032 lineage passed;
   they are not rewritten or retroactively accepted.
+- Preserve plan044 as a fresh independent `revise` result. Its successful
+  transport exposed stale evaluator-admission replays, a lifecycle path that
+  could freeze before canonical Worker dispatch, assurances bound to older
+  Runtime bytes, premature evaluator-freeze ordering, partial Worker identity
+  validation, and incomplete full-input budget accounting.
+- Restrict candidate freeze to `DEVELOPING` plus the exact committed Worker
+  dispatch marker/journal and promotion lineage. Upgrade the stage-report
+  validator to `/3` with exact model/agent/provider matching and upgrade the
+  Worker lifecycle conformance to `/4` with a skipped-dispatch rejection case.
+- Add Runtime-authored Worker tool-intersection receipts, activate-time
+  Runtime-hash checks for separately manifest-bound Worker assurances, and
+  optional full-task preflight arithmetic over every declared input, maximum
+  output bytes, task-contract/prompt overhead, and both task/stage budgets.
+- Preserve plan046 as immutable `revise` evidence. It exposed contradictory
+  Stage 2 semantics, unbound origin-to-snapshot provenance, underspecified
+  Worker serialization, self-declared Worker identity, indistinguishable
+  replay executions, and ambiguous one-dispatch retry language.
+- Upgrade source-inventory validation to `/8`: the construction contract now
+  freezes UTF-8 encoding, separators, terminal-newline policy, top-level and
+  record key order, and the exact cited-line observation rule; noncanonical
+  serialization is an explicit fifteenth rejection case.
+- Add Runtime-bound Worker identity-attestation assurances and immutable
+  post-transport identity receipts covering the resolved Claude executable,
+  model argument, provider evidence, agent, persistent session/turn, command,
+  transport metadata, and result. Terminal stage reports must bind this
+  controller-owned receipt instead of relying on Worker self-identification.
+- Make plan047 bind the snapshot manifest plus origin/Git verification,
+  separately manifest the positive Worker fixture, use zero retries for its
+  single dispatch, normalize Stage 2 to literature/comparator admission and
+  Stage 3 to evaluator implementation, and distinguish both deterministic
+  evaluator replays with independent execution receipts.
+- Preserve plan047 as immutable `revise` evidence. Its audit accepted the
+  resource arithmetic, evaluator lineage, Worker capability/identity boundary,
+  staged ordering, and continuation authority, while exposing one historical
+  snapshot newline mismatch, insufficient official arXiv capture provenance,
+  and a Markdown rather than closed-JSON terminal-report positive fixture.
+- Validate manifest-bound origin provenance during activation: local origins
+  require exact file/snapshot SHA-256 equality; URL sources require a
+  plan-owned official capture digest plus machine-true arXiv ID/title match.
+- Extend Worker output conformance through the terminal stage-report validator.
+  A positive fixture must now be closed JSON with exact fixed bindings, and a
+  malformed terminal report is an explicit negative case. Plan048 also
+  declares typed PAUSED transitions for candidate validation, report
+  validation, and terminal-review rejection.
+- Preserve plan048 as immutable `revise` evidence. It confirmed local
+  provenance, evaluator readiness, staged ordering, and figure deferral, while
+  exposing directory-level Worker read leakage, non-manifested official
+  captures, a circular “real Worker before CP-01” entry criterion, and typed
+  pause transitions declared only in the plan.
+- Dispatch Workers from a clean per-run cwd containing only hash-verified
+  immutable copies of declared inputs, expose only that directory to Claude,
+  and persist the exact declared-path/sandbox-path access receipt.
+- Upgrade lifecycle authority to `/5` with typed failure-to-PAUSED transitions
+  from `DEVELOPING`, `CANDIDATE_FROZEN`, and `RECORDED` plus executable
+  conformance. Plan049 separately manifests a readable exact official-capture
+  bundle, labels preapproval fixtures synthetic, and reserves 180k review
+  tokens for terminal review.
+- Preserve plan049 as immutable `revise` evidence. All earlier criticals were
+  closed; its sole remaining critical required the declared-input sandbox
+  receipt to become terminally acceptance-critical rather than advisory.
+- Bind `input-access-receipt.json` and every immutable sandbox copy into Worker
+  status. Terminal stage-report recording now reconstructs the exact task input
+  manifest, requires one matching sandbox path/hash per input, rehashes every
+  copy, and rejects missing, extra, stale, or substituted access lineage.
 
 ## v0.20.0 — 2026-07-30
 
