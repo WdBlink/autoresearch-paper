@@ -14,6 +14,10 @@
 - Keep the claim boundary explicit: this release does not establish Stage 2
   scientific completion, SOTA, 24h or 7x24 stability, production readiness,
   or full production cutover.
+- Integrate the remaining standalone-install validation from the migration
+  branch: copied Agent Skills bundles validate without repository parents,
+  unrelated container READMEs are ignored, and source layouts still fail
+  closed when the repository README is missing.
 
 ## v0.19.4 — 2026-07-30
 

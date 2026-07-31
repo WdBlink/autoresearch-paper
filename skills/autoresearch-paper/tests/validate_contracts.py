@@ -73,6 +73,7 @@ def main() -> int:
         "tests/test_scientific_figure_pipeline.py",
         "tests/test_staged_research_governance.py",
         "tests/test_codex_host_entry.py",
+        "tests/test_install_layout.py",
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
@@ -323,8 +324,20 @@ def main() -> int:
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
     require('version: "0.20.0"' in read("SKILL.md"), "SKILL.md version must be 0.20.0", errors)
-    repository_readme = ROOT.parents[1] / "README.md"
-    if repository_readme.is_file():
+    repository_root = ROOT.parents[1]
+    repository_readme = repository_root / "README.md"
+    source_layout = any(
+        marker.exists()
+        for marker in (
+            repository_root / ".git",
+            repository_root / ".github",
+            repository_root / "CHANGELOG.md",
+            repository_root / "docs",
+        )
+    )
+    if source_layout:
+        require(repository_readme.is_file(), "missing repository README.md", errors)
+    if repository_readme.is_file() and source_layout:
         repository_readme_text = repository_readme.read_text()
         require(
             "Current version:** v0.20.0" in repository_readme_text,
