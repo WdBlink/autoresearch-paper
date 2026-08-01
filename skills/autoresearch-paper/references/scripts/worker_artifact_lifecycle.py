@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-IMPLEMENTATION_ID = "worker-artifact-lifecycle/2"
+IMPLEMENTATION_ID = "worker-artifact-lifecycle/5"
 
 
 class WorkerArtifactLifecycleError(ValueError):
@@ -79,7 +79,7 @@ def write_exact_utf8(path: Path, content: str, expected_sha256: str) -> None:
 
 STAGED_TRANSITIONS = {
     "freeze_candidate": {
-        "from": {"STAGE_AUTHORIZED", "DEVELOPING", "CANDIDATE_FROZEN"},
+        "from": {"DEVELOPING", "CANDIDATE_FROZEN"},
         "to": "CANDIDATE_FROZEN",
     },
     "complete_observation": {
@@ -98,14 +98,50 @@ STAGED_TRANSITIONS = {
         "from": {"STAGE_AUTHORIZED", "DEVELOPING"},
         "to": "DEVELOPING",
     },
+    "pause_typed_failure": {
+        "from": {"DEVELOPING", "CANDIDATE_FROZEN", "RECORDED"},
+        "to": "PAUSED",
+    },
 }
 
 
-def require_staged_transition(event: str, current: str, target: str) -> None:
+CONTINUATION_COMPILE_GUARDS = {
+    "terminal_decision_recorded",
+    "stage_report_recorded",
+    "strong_review_accepted",
+    "exact_continuation_reviewed",
+}
+
+
+def require_staged_transition(
+    event: str, current: str, target: str,
+    evidence: dict[str, Any] | None = None,
+) -> None:
     rule = STAGED_TRANSITIONS.get(event)
     if rule is None or current not in rule["from"] or target != rule["to"]:
         raise WorkerArtifactLifecycleError(
             f"invalid staged transition: {event} {current}->{target}"
+        )
+    if event == "compile_continuation":
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != CONTINUATION_COMPILE_GUARDS
+            or any(evidence[guard] is not True for guard in CONTINUATION_COMPILE_GUARDS)
+        ):
+            raise WorkerArtifactLifecycleError(
+                "continuation compilation requires terminal decision, stage report, "
+                "accepted strong review, and exact continuation-review binding"
+            )
+    if event == "pause_typed_failure" and (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"failure_class", "receipt_sha256"}
+        or not isinstance(evidence["failure_class"], str)
+        or not evidence["failure_class"]
+        or not isinstance(evidence["receipt_sha256"], str)
+        or len(evidence["receipt_sha256"]) != 64
+    ):
+        raise WorkerArtifactLifecycleError(
+            "typed pause requires failure class and immutable receipt digest"
         )
 
 
@@ -163,7 +199,13 @@ def run_conformance_suite() -> dict[str, Any]:
     ]
     try:
         for event, current, target in ordered:
-            require_staged_transition(event, current, target)
+            require_staged_transition(
+                event, current, target,
+                (
+                    {guard: True for guard in CONTINUATION_COMPILE_GUARDS}
+                    if event == "compile_continuation" else None
+                ),
+            )
     except WorkerArtifactLifecycleError:
         record("two_stage_transition_order_accepts", False)
     else:
@@ -180,6 +222,38 @@ def run_conformance_suite() -> dict[str, Any]:
         record("paused_continuation_rejected", True)
     else:
         record("paused_continuation_rejected", False)
+    for state in ("DEVELOPING", "CANDIDATE_FROZEN", "RECORDED"):
+        try:
+            require_staged_transition(
+                "pause_typed_failure", state, "PAUSED",
+                {
+                    "failure_class": "validation_failure",
+                    "receipt_sha256": "0" * 64,
+                },
+            )
+        except WorkerArtifactLifecycleError:
+            record(f"typed_pause_from_{state.lower()}", False)
+        else:
+            record(f"typed_pause_from_{state.lower()}", True)
+    try:
+        require_staged_transition(
+            "freeze_candidate", "STAGE_AUTHORIZED", "CANDIDATE_FROZEN",
+        )
+    except WorkerArtifactLifecycleError:
+        record("freeze_without_worker_dispatch_rejected", True)
+    else:
+        record("freeze_without_worker_dispatch_rejected", False)
+    for missing_guard in sorted(CONTINUATION_COMPILE_GUARDS):
+        evidence = {guard: True for guard in CONTINUATION_COMPILE_GUARDS}
+        evidence[missing_guard] = False
+        try:
+            require_staged_transition(
+                "compile_continuation", "RECORDED", "CONTRACTED", evidence,
+            )
+        except WorkerArtifactLifecycleError:
+            record(f"continuation_missing_{missing_guard}_rejected", True)
+        else:
+            record(f"continuation_missing_{missing_guard}_rejected", False)
     return {
         "schema_version": 1,
         "implementation_id": IMPLEMENTATION_ID,

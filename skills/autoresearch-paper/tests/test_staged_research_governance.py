@@ -828,7 +828,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             self.assertTrue(
                 report_attestation["runtime_byte_identity_verified"]
             )
-            self.assertEqual(report_attestation["case_count"], 10)
+            self.assertEqual(report_attestation["case_count"], 12)
             self.assertEqual(report_attestation["status"], "PASS")
             self.assertEqual(
                 payload["validators"][
@@ -1511,13 +1511,13 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                     {"id": "authorize", "from": "CONTRACTED", "event": "cp01", "to": "STAGE_AUTHORIZED"},
                     {"id": "develop", "from": "STAGE_AUTHORIZED", "event": "dispatch", "to": "DEVELOPING"},
                     {"id": "record", "from": "DEVELOPING", "event": "report", "to": "RECORDED"},
-                    {"id": "complete", "from": "RECORDED", "event": "compile", "to": "COMPLETE"},
+                    {"id": "compile", "from": "RECORDED", "event": "compile_with_terminal_report_strong_review_and_exact_draft", "to": "CONTRACTED"},
                     {"id": "pause", "from": "DEVELOPING", "event": "stop", "to": "PAUSED"},
                 ],
             },
             "critical_path": {
                 "ordered_transition_ids": [
-                    "authorize", "develop", "record", "complete",
+                    "authorize", "develop", "record", "compile",
                 ],
                 "checkpoint_after_transition": {"CP-01": "authorize"},
             },
@@ -1594,6 +1594,36 @@ class StagedResearchGovernanceTests(unittest.TestCase):
     ) -> Path:
         run_id = "cwr_" + digest(f"candidate:{suffix}")[:32]
         run_dir = plan / "state" / "worker_runs" / run_id
+        staged_root = plan / "state" / "staged_research" / "v1"
+        state_path = staged_root / "state.json"
+        state = json.loads(state_path.read_text())
+        marker = {
+            "schema_version": 1,
+            "dispatch_id": run_id,
+            "checkpoint": None,
+            "fixture": "canonical_worker_dispatch",
+        }
+        self.write(
+            staged_root / "dispatch-reservations" / f"{run_id}.json",
+            marker,
+        ).chmod(0o444)
+        self.write(
+            staged_root / "dispatch-journals" / f"{run_id}.json",
+            {
+                "schema_version": 1,
+                "phase": "COMMITTED",
+                "dispatch_id": run_id,
+                "checkpoint": None,
+                "stage_id": state["active_stage_id"],
+                "state_after": "DEVELOPING",
+                "marker_after": marker,
+            },
+        )
+        if state["state"] == "STAGE_AUTHORIZED":
+            state["state"] = "DEVELOPING"
+            state_path.write_text(
+                json.dumps(state, sort_keys=True, indent=2) + "\n"
+            )
         contract_path = self.write(
             plan / "inputs" / f"candidate-contract-{suffix}.json",
             {"schema_version": 1, "task_id": f"candidate-{suffix}"},
@@ -1654,13 +1684,52 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             run_dir / "result.json", {"result": {"ok": True}},
         )
         policy_path = plan / "state" / "model_policy.json"
+        result_sha = hashlib.sha256(result_path.read_bytes()).hexdigest()
+        (run_dir / "declared-input-sandbox").mkdir()
+        access_path = self.write(run_dir / "input-access-receipt.json", {
+            "schema_version": 1,
+            "worker_run_id": run_id,
+            "policy": (
+                "clean cwd plus only declared immutable copies exposed "
+                "through Claude --add-dir"
+            ),
+            "inputs": [],
+        })
+        identity_path = self.write(run_dir / "identity-receipt.json", {
+            "schema_version": 1, "plan_id": "plan_staged",
+            "worker_run_id": run_id,
+            "task_contract_sha256": hashlib.sha256(
+                contract_path.read_bytes()
+            ).hexdigest(),
+            "resolved_executable": "/usr/local/bin/claude",
+            "model_argument": "MiniMax-M3",
+            "reported_model": "MiniMax-M3",
+            "provider": "MiniMax",
+            "provider_evidence": "claude_transport_metadata",
+            "agent": "claude-code-worker",
+            "session_id": None,
+            "turn_index": None,
+            "command_sha256": "1" * 64,
+            "transport_metadata_sha256": "2" * 64,
+            "result_sha256": result_sha,
+            "attested_at": "2026-07-26T00:00:00Z",
+        })
         status_path = self.write(run_dir / "status.json", {
             "schema_version": 1, "run_id": run_id,
             "task_id": f"stage-report-{suffix}", "status": "COMPLETED",
             "worker_model": "MiniMax-M3", "contract_path": str(contract_path),
             "contract_sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest(),
             "result_path": str(result_path),
-            "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            "result_sha256": result_sha,
+            "worker_session_id": None, "worker_session_turn": None,
+            "identity_receipt_path": str(identity_path.resolve()),
+            "identity_receipt_sha256": hashlib.sha256(
+                identity_path.read_bytes()
+            ).hexdigest(),
+            "input_access_receipt_path": str(access_path.resolve()),
+            "input_access_receipt_sha256": hashlib.sha256(
+                access_path.read_bytes()
+            ).hexdigest(),
             "model_policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         })
         visible = self.visible(
@@ -1693,7 +1762,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
             "stage_report_id": "report_stage_1",
             "stage_cycle_id": "stage_1",
             "worker_identity": {
-                "agent": "worker_1", "model": "MiniMax-M3",
+                "agent": "claude-code-worker", "model": "MiniMax-M3",
                 "provider": "MiniMax",
             },
             "role_visible_state_sha256": visible["sha256"],
@@ -4275,7 +4344,7 @@ class StagedResearchGovernanceTests(unittest.TestCase):
                 "--candidate", str(candidate),
                 "--promotion-receipt", str(promotion), ok=False,
             )
-            self.assertIn("controller-authorized stage", proc.stderr)
+            self.assertIn("canonical real-Worker dispatch", proc.stderr)
             envelope_path = (
                 plan / "state" / "staged_research" / "v1" / "stages"
                 / "stage_1" / "envelope.json"

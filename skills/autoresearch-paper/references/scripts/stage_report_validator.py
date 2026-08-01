@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 VALIDATOR_ID = "autoresearch-paper-stage-report-validator"
-VALIDATOR_VERSION = "stage-report-validator/2"
+VALIDATOR_VERSION = "stage-report-validator/3"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_FIELDS = {
@@ -86,7 +86,8 @@ def _validate_scientific_content(report: dict[str, Any], candidate_sha256: str) 
 
 
 def validate_stage_report(
-    report: dict[str, Any], *, stage_cycle_id: str, worker_model: str,
+    report: dict[str, Any], *, stage_cycle_id: str,
+    expected_worker_identity: dict[str, str],
     candidate_sha256: str, authorized_evidence_refs: list[str],
     expected_validator_receipts: list[dict[str, str]],
 ) -> None:
@@ -115,9 +116,13 @@ def validate_stage_report(
     if (
         not isinstance(worker, dict)
         or set(worker) != {"model", "agent", "provider"}
-        or worker.get("model") != worker_model
-        or any(not isinstance(worker.get(key), str) or not worker[key].strip()
-               for key in ("model", "agent", "provider"))
+        or worker != expected_worker_identity
+        or set(expected_worker_identity) != {"model", "agent", "provider"}
+        or any(
+            not isinstance(expected_worker_identity.get(key), str)
+            or not expected_worker_identity[key].strip()
+            for key in ("model", "agent", "provider")
+        )
     ):
         raise StageReportValidationError("worker_identity is invalid")
     _bounded_strings(report.get("evidence_refs"), "evidence_refs", allow_empty=True)
@@ -168,6 +173,12 @@ def run_conformance_suite() -> dict[str, Any]:
         ("wrong_model", {**valid, "worker_identity": {
             **valid["worker_identity"], "model": "other",
         }}, False),
+        ("wrong_agent", {**valid, "worker_identity": {
+            **valid["worker_identity"], "agent": "other",
+        }}, False),
+        ("wrong_provider", {**valid, "worker_identity": {
+            **valid["worker_identity"], "provider": "other",
+        }}, False),
         ("wrong_evidence", {**valid, "evidence_refs": ["other"]}, False),
         ("empty_receipts", {**valid, "development_validator_receipts": []}, False),
         ("wrong_receipt_binding", {**valid, "development_validator_receipts": [{
@@ -187,7 +198,12 @@ def run_conformance_suite() -> dict[str, Any]:
         accepted = True
         try:
             validate_stage_report(
-                payload, stage_cycle_id="stage_1", worker_model="MiniMax-M3",
+                payload, stage_cycle_id="stage_1",
+                expected_worker_identity={
+                    "model": "MiniMax-M3",
+                    "agent": "worker_1",
+                    "provider": "MiniMax",
+                },
                 candidate_sha256="a" * 64,
                 authorized_evidence_refs=["evidence_stage_1"],
                 expected_validator_receipts=[{

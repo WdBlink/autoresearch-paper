@@ -344,6 +344,19 @@ class CodexHostEntryTests(unittest.TestCase):
             self.assertIn(
                 "execution_dependency:lifecycle_conformance", roles,
             )
+            self.assertIn(
+                "execution_dependency:plan_boundary_implementation", roles,
+            )
+            self.assertIn(
+                "execution_dependency:plan_boundary_conformance", roles,
+            )
+            self.assertIn("execution_dependency:plan_deadline", roles)
+            self.assertIn(
+                "execution_dependency:continuation_authority", roles,
+            )
+            self.assertIn(
+                "execution_dependency:global_frontier_policy", roles,
+            )
             self.assertIn("execution_dependency:durable_objective", roles)
             self.assertIn("execution_dependency:durable_constraints", roles)
             self.assertIn("execution_dependency:durable_evaluator", roles)

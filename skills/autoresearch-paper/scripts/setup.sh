@@ -122,6 +122,7 @@ for path in \
   "${ROOT_DIR}/references/scientific-figure-pipeline.md" \
   "${ROOT_DIR}/references/canonical-conformance-workflow.json" \
   "${ROOT_DIR}/references/scripts/harness-runtime.py" \
+  "${ROOT_DIR}/references/scripts/plan_execution_boundaries.py" \
   "${ROOT_DIR}/references/scripts/dashboard_server.py" \
   "${ROOT_DIR}/references/dashboard/index.html" \
   "${ROOT_DIR}/references/dashboard/THIRD_PARTY_NOTICES.md" \

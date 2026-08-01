@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import fcntl
 import hashlib
 import hmac
@@ -40,6 +41,7 @@ from source_inventory_validator import (
     run_conformance_suite as run_source_inventory_conformance_suite,
     symbol_occurs_on_line,
     validate_source_inventory,
+    validate_source_inventory_construction,
 )
 from stage_report_validator import (
     StageReportValidationError,
@@ -54,6 +56,13 @@ from worker_artifact_lifecycle import (
     run_conformance_suite as run_worker_artifact_lifecycle_conformance,
     validate_controller_digest_authority_record,
     write_exact_utf8,
+)
+from plan_execution_boundaries import (
+    PlanExecutionBoundaryError,
+    make_plan_deadline,
+    next_frontier_totals,
+    require_deadline_active,
+    run_conformance_suite as run_plan_execution_boundary_conformance,
 )
 from dashboard_server import DashboardError, make_dashboard_server
 
@@ -170,6 +179,11 @@ STAGED_CP01_OPTIONAL_REVIEW_MATERIAL_PURPOSES = {
     "evaluator_implementation", "evaluator_conformance",
     "acceptance_profile", "source_manifest", "citation_universe",
     "evaluation_profile", "evaluator_loader_parameters",
+    "worker_task_contract", "worker_output_conformance",
+    "worker_tool_intersection_assurance",
+    "worker_identity_attestation_assurance",
+    "worker_positive_fixture", "snapshot_manifest",
+    "origin_verification_receipt", "official_capture_bundle",
 }
 STAGED_CP01_REVIEW_ROLE_PREFIX = "review_material:"
 DIRECTION_FIELDS = {
@@ -1045,7 +1059,7 @@ def verify_manifest_items(items: Any, *, base_dir: Path) -> list[dict[str, str]]
 def verify_source_inventory_manifest_items(
     items: Any, *, base_dir: Path,
 ) -> list[dict[str, Any]]:
-    """Freeze the richer manifest required by source-inventory-validator/6.
+    """Freeze the richer manifest required by source-inventory-validator/7.
 
     A task input manifest intentionally exposes only path/hash/purpose.  The
     source-inventory content validator additionally needs the exact symbol and
@@ -4496,6 +4510,10 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
         ("harness_runtime_implementation_path", "harness_runtime_implementation_sha256"),
         ("execution_lifecycle_implementation_path", "execution_lifecycle_implementation_sha256"),
         ("execution_lifecycle_conformance_path", "execution_lifecycle_conformance_sha256"),
+        ("execution_boundary_implementation_path", "execution_boundary_implementation_sha256"),
+        ("execution_boundary_conformance_path", "execution_boundary_conformance_sha256"),
+        ("plan_boundary_path", "plan_boundary_sha256"),
+        ("continuation_authority_path", "continuation_authority_sha256"),
         ("dashboard_runtime_manifest_path", "dashboard_runtime_manifest_sha256"),
     ):
         validate_immutable_binding(
@@ -4507,6 +4525,12 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
     )
     implementation_path = Path(receipt["execution_lifecycle_implementation_path"])
     conformance_path = Path(receipt["execution_lifecycle_conformance_path"])
+    boundary_implementation_path = Path(
+        receipt["execution_boundary_implementation_path"],
+    )
+    boundary_conformance_path = Path(
+        receipt["execution_boundary_conformance_path"],
+    )
     if (
         sha256_file(Path(receipt["harness_runtime_implementation_path"]))
         != sha256_file(SCRIPT_DIR / "harness-runtime.py")
@@ -4516,12 +4540,314 @@ def validate_codex_host_activation(plan_dir: Path) -> dict[str, Any]:
         or read_json(conformance_path)
         != run_worker_artifact_lifecycle_conformance()
         or read_json(conformance_path).get("status") != "PASS"
+        or sha256_file(boundary_implementation_path)
+        != sha256_file(SCRIPT_DIR / "plan_execution_boundaries.py")
+        or read_json(boundary_conformance_path)
+        != run_plan_execution_boundary_conformance()
+        or read_json(boundary_conformance_path).get("status") != "PASS"
     ):
         raise ContractError(
             "Codex host execution lifecycle implementation/conformance changed"
         )
+    plan_boundary = read_json(Path(receipt["plan_boundary_path"]))
+    expected_deadline = make_plan_deadline(
+        plan_boundary.get("activated_at"),
+        plan_boundary.get("wall_clock_seconds"),
+    )
+    if (
+        plan_boundary.get("schema_version") != 1
+        or plan_boundary.get("plan_id") != receipt["plan_id"]
+        or {
+            key: plan_boundary.get(key) for key in expected_deadline
+        } != expected_deadline
+    ):
+        raise ContractError("Codex host plan-wide deadline boundary changed")
+    authorization = validate_applied_action_receipt(
+        plan_dir, Path(receipt["authorization_receipt_path"]),
+        "authorize_contract",
+    )
+    bounded = authorization.get("details", {}).get(
+        "bounded_continuation_authority",
+    )
+    assurance = read_json(Path(receipt["continuation_authority_path"]))
+    expected_assurance = {
+        "schema_version": 1,
+        "plan_id": receipt["plan_id"],
+        "authority_kind": (
+            "bounded_automatic_continuation"
+            if isinstance(bounded, dict) else "first_stage_only"
+        ),
+        "allowed_stage_ids": (
+            bounded["allowed_stage_ids"] if isinstance(bounded, dict) else []
+        ),
+        "max_automatic_crossings": (
+            bounded["max_automatic_crossings"]
+            if isinstance(bounded, dict) else 0
+        ),
+        "silence_is_approval": (
+            bounded["silence_is_approval"]
+            if isinstance(bounded, dict) else False
+        ),
+        "authorization_receipt_path": receipt["authorization_receipt_path"],
+        "authorization_receipt_sha256": receipt[
+            "authorization_receipt_sha256"
+        ],
+    }
+    if assurance != expected_assurance:
+        raise ContractError("Codex host continuation authority assurance changed")
     validate_codex_host_dashboard_runtime(receipt)
     return receipt
+
+
+def validate_cp01_worker_assurances(
+    plan_dir: Path, envelope: dict[str, Any], graph: dict[str, Any],
+    prepared: dict[str, Any],
+) -> None:
+    """Reject stale or partial first-Worker assurances before state mutation."""
+    selected = {
+        item.get("purpose"): item
+        for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") in {
+            "worker_task_contract",
+            "worker_output_conformance",
+            "worker_tool_intersection_assurance",
+            "worker_identity_attestation_assurance",
+        }
+    }
+    if not selected:
+        return
+    required = {
+        "worker_task_contract",
+        "worker_output_conformance",
+        "worker_tool_intersection_assurance",
+        "worker_identity_attestation_assurance",
+    }
+    if set(selected) != required:
+        raise ContractError(
+            "CP-01 Worker assurances must separately bind task contract, "
+            "output conformance, tool intersection, and identity attestation"
+        )
+    bound_paths: dict[str, Path] = {}
+    for purpose, item in selected.items():
+        path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["path"]),
+        )
+        validate_immutable_binding(path, item["sha256"], purpose)
+        bound_paths[purpose] = path
+    contract_path = bound_paths["worker_task_contract"]
+    if not any(
+        task["task_contract"] == {
+            "path": str(contract_path),
+            "sha256": sha256_file(contract_path),
+        }
+        for task in graph["tasks"]
+    ):
+        raise ContractError(
+            "CP-01 Worker task contract is not the executable durable task"
+        )
+    current_runtime_sha = sha256_file(Path(__file__).resolve())
+    session_policy_path = Path(prepared["worker_session_policy_path"]).resolve()
+    session_policy = read_json(session_policy_path)
+    expected_common = {
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "runtime_sha256": current_runtime_sha,
+    }
+    output_receipt = read_json(bound_paths["worker_output_conformance"])
+    tool_receipt = read_json(
+        bound_paths["worker_tool_intersection_assurance"],
+    )
+    identity_receipt = read_json(
+        bound_paths["worker_identity_attestation_assurance"],
+    )
+    if (
+        output_receipt.get("status") != "PASS"
+        or any(output_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or output_receipt.get("case_count", 0) < 2
+        or not all(
+            item.get("passed") is True
+            for item in output_receipt.get("cases", [])
+        )
+        or tool_receipt.get("status") != "PASS"
+        or tool_receipt.get("assurance_kind")
+        != "runtime_bound_worker_tool_intersection"
+        or any(tool_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or tool_receipt.get("worker_session_policy_path")
+        != str(session_policy_path)
+        or tool_receipt.get("worker_session_policy_sha256")
+        != sha256_file(session_policy_path)
+        or identity_receipt.get("status") != "PASS"
+        or identity_receipt.get("assurance_kind")
+        != "runtime_bound_worker_identity_attestation"
+        or any(identity_receipt.get(key) != value
+               for key, value in expected_common.items())
+        or identity_receipt.get("worker_session_policy_path")
+        != str(session_policy_path)
+        or identity_receipt.get("worker_session_policy_sha256")
+        != sha256_file(session_policy_path)
+        or identity_receipt.get("expected_worker_identity") != {
+            "model": session_policy.get("worker_model"),
+            "agent": "claude-code-worker",
+            "provider": "MiniMax",
+        }
+    ):
+        raise ContractError(
+            "CP-01 Worker assurances do not bind the activated Runtime bytes"
+        )
+
+
+def validate_cp01_origin_provenance(
+    plan_dir: Path, envelope: dict[str, Any],
+) -> None:
+    """Require every declared snapshot origin criterion to be machine-true."""
+    selected = {
+        item.get("purpose"): item
+        for item in envelope.get("review_material_manifest", [])
+        if item.get("purpose") in {
+            "snapshot_manifest", "origin_verification_receipt",
+        }
+    }
+    if not selected:
+        return
+    if set(selected) != {
+        "snapshot_manifest", "origin_verification_receipt",
+    }:
+        raise ContractError(
+            "CP-01 origin provenance requires manifest and verification receipt"
+        )
+    paths: dict[str, Path] = {}
+    for purpose, item in selected.items():
+        path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["path"]),
+        )
+        validate_immutable_binding(path, item["sha256"], purpose)
+        paths[purpose] = path
+    manifest = read_json(paths["snapshot_manifest"])
+    receipt = read_json(paths["origin_verification_receipt"])
+    entries = manifest.get("entries")
+    verified = receipt.get("entries")
+    if (
+        receipt.get("snapshot_manifest_path")
+        != str(paths["snapshot_manifest"])
+        or receipt.get("snapshot_manifest_sha256")
+        != sha256_file(paths["snapshot_manifest"])
+        or not isinstance(entries, list)
+        or not isinstance(verified, list)
+        or len(entries) != len(verified)
+    ):
+        raise ContractError("CP-01 origin provenance receipt is incomplete")
+    by_snapshot = {
+        item.get("snapshot_path"): item for item in verified
+        if isinstance(item, dict)
+    }
+    for item in entries:
+        snapshot_path = normalize_owned_path(
+            plan_dir, str(plan_dir / item["snapshot_path"]),
+        )
+        record = by_snapshot.get(str(snapshot_path))
+        if (
+            record is None
+            or record.get("origin") != item.get("origin")
+            or record.get("snapshot_sha256") != item.get("sha256")
+            or sha256_file(snapshot_path) != item.get("sha256")
+        ):
+            raise ContractError("CP-01 snapshot provenance binding changed")
+        if record.get("origin_kind") == "local_file":
+            if (
+                record.get("origin_exists") is not True
+                or record.get("origin_matches_snapshot") is not True
+                or record.get("origin_sha256") != item.get("sha256")
+            ):
+                raise ContractError(
+                    "CP-01 local origin does not match its frozen snapshot"
+                )
+        elif record.get("origin_kind") == "url_frozen_primary_source":
+            capture_value = record.get("official_capture_path")
+            if not isinstance(capture_value, str) or not capture_value:
+                raise ContractError(
+                    "CP-01 official-source capture path is missing"
+                )
+            capture_path = normalize_owned_path(
+                plan_dir, capture_value,
+            )
+            if (
+                record.get("canonical_url") != item.get("origin")
+                or record.get("metadata_matches_snapshot_summary") is not True
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(record.get("official_capture_sha256", "")),
+                )
+                or sha256_file(capture_path)
+                != record["official_capture_sha256"]
+            ):
+                raise ContractError(
+                    "CP-01 official-source metadata provenance is unverified"
+                )
+        else:
+            raise ContractError("CP-01 snapshot origin kind is invalid")
+
+
+def enforce_codex_host_plan_deadline(
+    plan_dir: Path, *, observed_at: str | None = None,
+) -> None:
+    """Pause an activated plan before any new model or loop mutation at expiry."""
+    activation_path = (
+        codex_host_activation_root(plan_dir) / "activation-receipt.json"
+    )
+    if not activation_path.is_file():
+        return
+    activation = validate_codex_host_activation(plan_dir)
+    boundary_path = Path(activation["plan_boundary_path"])
+    boundary = read_json(boundary_path)
+    observed = observed_at or utc_now()
+    try:
+        require_deadline_active(boundary, observed)
+    except PlanExecutionBoundaryError as exc:
+        expiry_path = (
+            codex_host_activation_root(plan_dir)
+            / "plan-deadline-expired.json"
+        )
+        expiry = {
+            "schema_version": 1,
+            "plan_id": plan_identity(plan_dir),
+            "status": "PAUSED",
+            "reason": "plan_wall_clock_deadline_exhausted",
+            "plan_boundary_path": str(boundary_path),
+            "plan_boundary_sha256": sha256_file(boundary_path),
+            "observed_at": observed,
+        }
+        if expiry_path.exists():
+            prior = read_json(expiry_path)
+            if (
+                prior.get("plan_id") != expiry["plan_id"]
+                or prior.get("reason") != expiry["reason"]
+                or prior.get("plan_boundary_sha256")
+                != expiry["plan_boundary_sha256"]
+            ):
+                raise ContractError("plan deadline expiry receipt changed") from exc
+        else:
+            atomic_write_json(expiry_path, expiry, immutable=True)
+        if staged_is_active(plan_dir):
+            with staged_transaction_lock(plan_dir):
+                state = staged_load_state(plan_dir)
+                if state["state"] != "PAUSED":
+                    prior_state = state["state"]
+                    state["state"] = "PAUSED"
+                    atomic_write_json(staged_state_path(plan_dir), state)
+                    _staged_ensure_audit_once_locked(
+                        plan_dir,
+                        "plan_deadline_exhausted",
+                        {"plan_boundary_sha256": sha256_file(boundary_path)},
+                        {
+                            "prior_state": prior_state,
+                            "observed_at": observed,
+                            "expiry_receipt_path": str(expiry_path),
+                        },
+                    )
+        raise ContractError("plan wall-clock deadline exhausted") from exc
 
 
 def ensure_codex_host_activation_manifest(plan_dir: Path, receipt_path: Path) -> None:
@@ -4610,6 +4936,31 @@ def staged_cp01_execution_dependencies(
             "path": activation["execution_lifecycle_conformance_path"],
             "sha256": activation["execution_lifecycle_conformance_sha256"],
             "purpose": "execution_dependency:lifecycle_conformance",
+        },
+        {
+            "path": activation["execution_boundary_implementation_path"],
+            "sha256": activation["execution_boundary_implementation_sha256"],
+            "purpose": "execution_dependency:plan_boundary_implementation",
+        },
+        {
+            "path": activation["execution_boundary_conformance_path"],
+            "sha256": activation["execution_boundary_conformance_sha256"],
+            "purpose": "execution_dependency:plan_boundary_conformance",
+        },
+        {
+            "path": activation["plan_boundary_path"],
+            "sha256": activation["plan_boundary_sha256"],
+            "purpose": "execution_dependency:plan_deadline",
+        },
+        {
+            "path": activation["continuation_authority_path"],
+            "sha256": activation["continuation_authority_sha256"],
+            "purpose": "execution_dependency:continuation_authority",
+        },
+        {
+            "path": str(policy_path(plan_dir)),
+            "sha256": sha256_file(policy_path(plan_dir)),
+            "purpose": "execution_dependency:global_frontier_policy",
         },
         {
             "path": activation["dashboard_runtime_manifest_path"],
@@ -4703,7 +5054,9 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
         ensure_codex_host_activation_manifest(plan_dir, receipt_path)
         return {"ok": True, "idempotent": True, **receipt}
     authorization_path = Path(args.authorization_receipt).resolve()
-    validate_applied_action_receipt(plan_dir, authorization_path, "authorize_contract")
+    authorization = validate_applied_action_receipt(
+        plan_dir, authorization_path, "authorize_contract",
+    )
     immutable_inputs = {
         "contract": Path(args.contract).resolve(),
         "stage_envelope": Path(args.stage_envelope).resolve(),
@@ -4731,6 +5084,31 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
     graph = validate_durable_graph(plan_dir, read_json(graph_path))
     if graph.get("plan_id") != plan_identity(plan_dir):
         raise ContractError("durable graph belongs to another plan")
+    validate_cp01_worker_assurances(
+        plan_dir, declared_envelope, graph, prepared,
+    )
+    validate_cp01_origin_provenance(plan_dir, declared_envelope)
+    bounded_continuation = authorization.get("details", {}).get(
+        "bounded_continuation_authority",
+    )
+    if graph.get("execution_mode") == "unattended" and graph.get(
+        "target_tier",
+    ) in {"conference", "journal-q1"} and (
+        not isinstance(bounded_continuation, dict)
+        or set(bounded_continuation) != {
+            "schema_version", "allowed_stage_ids",
+            "max_automatic_crossings", "silence_is_approval",
+        }
+        or bounded_continuation.get("schema_version") != 1
+        or not isinstance(bounded_continuation.get("allowed_stage_ids"), list)
+        or len(bounded_continuation["allowed_stage_ids"]) != 1
+        or bounded_continuation.get("max_automatic_crossings") != 1
+        or bounded_continuation.get("silence_is_approval") is not False
+    ):
+        raise ContractError(
+            "unattended conference/journal activation requires one bounded "
+            "automatic continuation"
+        )
     staged = command_init_staged_research(argparse.Namespace(
         plan_dir=str(plan_dir), plan_id=plan_identity(plan_dir),
         contract=str(immutable_inputs["contract"]),
@@ -4774,6 +5152,67 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
         raise ContractError("Worker artifact lifecycle conformance failed")
     atomic_write_json(
         lifecycle_conformance_path, lifecycle_conformance, immutable=True,
+    )
+    boundary_implementation_path = (
+        activation_root / "plan-execution-boundaries.py"
+    )
+    atomic_write_bytes(
+        boundary_implementation_path,
+        (SCRIPT_DIR / "plan_execution_boundaries.py").read_bytes(),
+        immutable=True,
+    )
+    boundary_conformance_path = (
+        activation_root / "plan-execution-boundaries-conformance.json"
+    )
+    boundary_conformance = run_plan_execution_boundary_conformance()
+    if boundary_conformance.get("status") != "PASS":
+        raise ContractError("plan execution boundary conformance failed")
+    atomic_write_json(
+        boundary_conformance_path, boundary_conformance, immutable=True,
+    )
+    activated_at = utc_now()
+    plan_boundary_path = activation_root / "plan-boundary.json"
+    atomic_write_json(
+        plan_boundary_path,
+        {
+            "schema_version": 1,
+            "plan_id": plan_identity(plan_dir),
+            **make_plan_deadline(
+                activated_at,
+                closed_brief["resource_bounds"]["wall_clock_seconds"],
+            ),
+        },
+        immutable=True,
+    )
+    continuation_authority_path = (
+        activation_root / "continuation-authority.json"
+    )
+    atomic_write_json(
+        continuation_authority_path,
+        {
+            "schema_version": 1,
+            "plan_id": plan_identity(plan_dir),
+            "authority_kind": (
+                "bounded_automatic_continuation"
+                if isinstance(bounded_continuation, dict)
+                else "first_stage_only"
+            ),
+            "allowed_stage_ids": (
+                bounded_continuation["allowed_stage_ids"]
+                if isinstance(bounded_continuation, dict) else []
+            ),
+            "max_automatic_crossings": (
+                bounded_continuation["max_automatic_crossings"]
+                if isinstance(bounded_continuation, dict) else 0
+            ),
+            "silence_is_approval": (
+                bounded_continuation["silence_is_approval"]
+                if isinstance(bounded_continuation, dict) else False
+            ),
+            "authorization_receipt_path": str(authorization_path),
+            "authorization_receipt_sha256": sha256_file(authorization_path),
+        },
+        immutable=True,
     )
     _, dashboard_runtime_artifacts = snapshot_codex_host_dashboard_runtime(
         activation_root,
@@ -4819,12 +5258,20 @@ def command_activate_codex_host_plan(args: argparse.Namespace) -> dict[str, Any]
         "execution_lifecycle_implementation_sha256": sha256_file(lifecycle_implementation_path),
         "execution_lifecycle_conformance_path": str(lifecycle_conformance_path),
         "execution_lifecycle_conformance_sha256": sha256_file(lifecycle_conformance_path),
+        "execution_boundary_implementation_path": str(boundary_implementation_path),
+        "execution_boundary_implementation_sha256": sha256_file(boundary_implementation_path),
+        "execution_boundary_conformance_path": str(boundary_conformance_path),
+        "execution_boundary_conformance_sha256": sha256_file(boundary_conformance_path),
+        "plan_boundary_path": str(plan_boundary_path),
+        "plan_boundary_sha256": sha256_file(plan_boundary_path),
+        "continuation_authority_path": str(continuation_authority_path),
+        "continuation_authority_sha256": sha256_file(continuation_authority_path),
         "dashboard_runtime_manifest_path": str(dashboard_runtime_manifest_path),
         "dashboard_runtime_manifest_sha256": sha256_file(dashboard_runtime_manifest_path),
         "staged_state": staged["state"],
         "preflight_status": preflight.get("status", "passed"),
         "projection_revision": projections.get("audit_revision"),
-        "activated_at": utc_now(),
+        "activated_at": activated_at,
     }
     atomic_write_json(receipt_path, receipt, immutable=True)
     ensure_codex_host_activation_manifest(plan_dir, receipt_path)
@@ -4873,7 +5320,12 @@ def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
     if validator is not None:
         if (
             not isinstance(validator, dict)
-            or set(validator) != {"kind", "source_manifest"}
+            or frozenset(validator) not in {
+                frozenset({"kind", "source_manifest"}),
+                frozenset({
+                    "kind", "source_manifest", "construction_contract",
+                }),
+            }
             or validator.get("kind") != "source_inventory_v1"
         ):
             raise ContractError("artifact content_validator is invalid")
@@ -4882,7 +5334,37 @@ def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
         )
         if len(checked_sources) != len(validator["source_manifest"]):
             raise ContractError("artifact source manifest is incomplete")
-        validator = {"kind": "source_inventory_v1", "source_manifest": checked_sources}
+        normalized_validator: dict[str, Any] = {
+            "kind": "source_inventory_v1",
+            "source_manifest": checked_sources,
+        }
+        construction_binding = validator.get("construction_contract")
+        if construction_binding is not None:
+            if (
+                not isinstance(construction_binding, dict)
+                or set(construction_binding) != {"path", "sha256"}
+            ):
+                raise ContractError(
+                    "artifact construction_contract requires exactly path and sha256"
+                )
+            construction_path = Path(
+                str(construction_binding.get("path", "")),
+            ).resolve()
+            try:
+                construction_path.relative_to(plan_dir)
+            except ValueError as exc:
+                raise ContractError(
+                    "artifact construction contract must be plan-owned"
+                ) from exc
+            validate_immutable_binding(
+                construction_path, construction_binding.get("sha256"),
+                "artifact construction contract",
+            )
+            normalized_validator["construction_contract"] = {
+                "path": str(construction_path),
+                "sha256": sha256_file(construction_path),
+            }
+        validator = normalized_validator
     return {
         **raw, "path": str(path),
         **({"content_validator": validator} if validator is not None else {}),
@@ -4891,9 +5373,17 @@ def normalize_declared_output(plan_dir: Path, raw: Any) -> dict[str, Any]:
 
 def validate_source_inventory_content(
     content: str, source_manifest: list[dict[str, Any]],
+    construction_contract: dict[str, str] | None = None,
 ) -> None:
     try:
         validate_source_inventory(content, source_manifest)
+        if construction_contract is not None:
+            path = Path(construction_contract["path"])
+            validate_immutable_binding(
+                path, construction_contract["sha256"],
+                "artifact construction contract",
+            )
+            validate_source_inventory_construction(content, read_json(path))
     except SourceInventoryValidationError as exc:
         raise ContractError(str(exc)) from exc
 
@@ -4952,6 +5442,7 @@ def validate_worker_artifact_proposals(
         if validator is not None:
             validate_source_inventory_content(
                 content, validator["source_manifest"],
+                validator.get("construction_contract"),
             )
         # The canonical proposal always records the Host-computed digest of
         # the exact returned string.
@@ -4962,6 +5453,363 @@ def validate_worker_artifact_proposals(
     ]:
         raise ContractError("worker artifact proposal order changed")
     return checked
+
+
+def command_attest_worker_output_conformance(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Prove one real positive Worker fixture and deterministic rejection cases.
+
+    The positive fixture is deliberately supplied as exact Worker-visible
+    output.  Runtime validates it with the same code used at dispatch, then
+    derives adversarial cases mechanically.  A planner therefore cannot claim
+    conformance by feeding placeholder content such as ``{}``.
+    """
+    plan_dir = Path(args.plan_dir).resolve()
+    contract_path = Path(args.task_contract).resolve()
+    valid_response_path = Path(args.valid_response).resolve()
+    requested_output_path = Path(args.output).absolute()
+    for label, path in (
+        ("task contract", contract_path),
+        ("valid Worker response", valid_response_path),
+    ):
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(f"{label} must be plan-owned") from exc
+        validate_immutable_binding(
+            path, sha256_file(path) if path.is_file() else None, label,
+        )
+    cursor = requested_output_path.parent
+    while cursor != cursor.parent:
+        if cursor.is_symlink():
+            raise ContractError(
+                "Worker conformance receipt path contains a symlink parent"
+            )
+        if cursor == plan_dir:
+            break
+        cursor = cursor.parent
+    output_path = requested_output_path.resolve()
+    try:
+        output_path.relative_to(plan_dir)
+    except ValueError as exc:
+        raise ContractError("Worker conformance receipt must be plan-owned") from exc
+    if output_path.exists():
+        raise ContractError("Worker conformance receipt is immutable")
+
+    contract = read_json(contract_path)
+    raw_outputs = contract.get("artifact_outputs")
+    if not isinstance(raw_outputs, list) or not raw_outputs:
+        raise ContractError("Worker conformance requires declared artifact outputs")
+    declarations = [
+        normalize_declared_output(plan_dir, item) for item in raw_outputs
+    ]
+    response = read_json(valid_response_path)
+    if not isinstance(response, dict):
+        raise ContractError("valid Worker response fixture must be an object")
+    exact_schema = (
+        contract.get("output_schema")
+        == exact_worker_artifact_output_schema(declarations)
+    )
+    if not exact_schema:
+        raise ContractError(
+            "Worker conformance requires the exact controller-digest output schema"
+        )
+    validate_schema(response, contract["output_schema"])
+    validate_worker_artifact_proposals(
+        copy.deepcopy(response), declarations, require_controller_marker=True,
+    )
+
+    cases: list[dict[str, Any]] = [{
+        "case_id": "valid_declared_order_and_content",
+        "expected": "accept",
+        "observed": "accept",
+        "passed": True,
+    }]
+    terminal_bindings = [
+        item for item in contract.get("inputs", [])
+        if item.get("purpose")
+        == "controller_known_terminal_report_bindings"
+    ]
+    terminal_proposals = [
+        item for item in response.get("artifacts", [])
+        if item.get("artifact_id") == "stage_report_source"
+    ]
+    if terminal_bindings or terminal_proposals:
+        if len(terminal_bindings) != 1 or len(terminal_proposals) != 1:
+            raise ContractError(
+                "terminal report conformance requires one binding and proposal"
+            )
+        binding_path = Path(terminal_bindings[0]["path"]).resolve()
+        validate_immutable_binding(
+            binding_path, terminal_bindings[0]["sha256"],
+            "terminal report binding contract",
+        )
+        binding = read_json(binding_path)
+        fixed = binding.get("worker_report_fixed_bindings")
+        if not isinstance(fixed, dict):
+            raise ContractError(
+                "terminal report binding contract is invalid"
+            )
+        def validate_terminal_proposal(candidate: dict[str, Any]) -> None:
+            try:
+                proposal = next(
+                    item for item in candidate.get("artifacts", [])
+                    if item.get("artifact_id") == "stage_report_source"
+                )
+                report_fixture = json.loads(proposal["content"])
+                validate_stage_report(
+                    report_fixture,
+                    stage_cycle_id=fixed["stage_cycle_id"],
+                    expected_worker_identity=fixed["worker_identity"],
+                    candidate_sha256=fixed["candidate_sha256"],
+                    authorized_evidence_refs=fixed["evidence_refs"],
+                    expected_validator_receipts=(
+                        fixed["development_validator_receipts"]
+                    ),
+                )
+            except (
+                StopIteration, json.JSONDecodeError, KeyError,
+                StageReportValidationError,
+            ) as exc:
+                raise ContractError(
+                    f"terminal stage report is invalid: {exc}"
+                ) from exc
+
+        validate_terminal_proposal(response)
+        cases.append({
+            "case_id": "valid_terminal_stage_report_source",
+            "expected": "accept",
+            "observed": "accept",
+            "passed": True,
+        })
+
+    def require_rejection(case_id: str, candidate: dict[str, Any]) -> None:
+        try:
+            validate_worker_artifact_proposals(
+                copy.deepcopy(candidate), declarations,
+                require_controller_marker=True,
+            )
+            if terminal_proposals:
+                validate_terminal_proposal(candidate)
+        except ContractError as exc:
+            cases.append({
+                "case_id": case_id,
+                "expected": "reject",
+                "observed": "reject",
+                "passed": True,
+                "reason": str(exc),
+            })
+        else:
+            raise ContractError(
+                f"Worker output adversarial case was accepted: {case_id}"
+            )
+
+    missing = copy.deepcopy(response)
+    missing["artifacts"] = missing["artifacts"][:-1]
+    require_rejection("wrong_cardinality", missing)
+
+    wrong_marker = copy.deepcopy(response)
+    wrong_marker["artifacts"][0]["sha256"] = exact_utf8_sha256(
+        wrong_marker["artifacts"][0]["content"],
+    )
+    require_rejection("worker_claims_digest_authority", wrong_marker)
+
+    undeclared_path = copy.deepcopy(response)
+    undeclared_path["artifacts"][0]["path"] = (
+        undeclared_path["artifacts"][0]["path"] + ".undeclared"
+    )
+    require_rejection("undeclared_id_path_pair", undeclared_path)
+
+    if len(declarations) > 1:
+        reversed_order = copy.deepcopy(response)
+        reversed_order["artifacts"].reverse()
+        require_rejection("reversed_declaration_order", reversed_order)
+
+        crossed = copy.deepcopy(response)
+        crossed["artifacts"][0]["path"], crossed["artifacts"][1]["path"] = (
+            crossed["artifacts"][1]["path"],
+            crossed["artifacts"][0]["path"],
+        )
+        require_rejection("crossed_id_path_pairs", crossed)
+
+        duplicate = copy.deepcopy(response)
+        duplicate["artifacts"][1]["artifact_id"] = duplicate[
+            "artifacts"
+        ][0]["artifact_id"]
+        require_rejection("duplicate_artifact_id", duplicate)
+
+    if any(item.get("content_validator") for item in declarations):
+        invalid_content = copy.deepcopy(response)
+        index = next(
+            i for i, item in enumerate(declarations)
+            if item.get("content_validator")
+        )
+        invalid_content["artifacts"][index]["content"] = "{}"
+        require_rejection("content_validator_rejects_placeholder", invalid_content)
+
+    if terminal_proposals:
+        malformed_report = copy.deepcopy(response)
+        report_index = next(
+            i for i, item in enumerate(malformed_report["artifacts"])
+            if item["artifact_id"] == "stage_report_source"
+        )
+        malformed_report["artifacts"][report_index]["content"] = "{}"
+        require_rejection(
+            "terminal_stage_report_rejects_invalid_closed_shape",
+            malformed_report,
+        )
+
+    receipt = {
+        "schema_version": 1,
+        "status": "PASS",
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "valid_response_path": str(valid_response_path),
+        "valid_response_sha256": sha256_file(valid_response_path),
+        "runtime_path": str(Path(__file__).resolve()),
+        "runtime_sha256": sha256_file(Path(__file__).resolve()),
+        "case_count": len(cases),
+        "cases": cases,
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(output_path, receipt, immutable=True)
+    return {"ok": True, "path": str(output_path), **receipt}
+
+
+def command_attest_worker_tool_intersection(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Bind the exact read-only Claude tool intersection to Runtime bytes."""
+    plan_dir = Path(args.plan_dir).resolve()
+    contract_path = Path(args.task_contract).resolve()
+    session_policy_path = Path(args.worker_session_policy).resolve()
+    output_path = Path(args.output).absolute()
+    for label, path in (
+        ("task contract", contract_path),
+        ("Worker session policy", session_policy_path),
+    ):
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(f"{label} must be plan-owned") from exc
+        validate_immutable_binding(
+            path, sha256_file(path) if path.is_file() else None, label,
+        )
+    try:
+        output_path.resolve().relative_to(plan_dir)
+    except ValueError as exc:
+        raise ContractError(
+            "Worker tool-intersection receipt must be plan-owned"
+        ) from exc
+    if output_path.exists() or output_path.is_symlink():
+        raise ContractError("Worker tool-intersection receipt is immutable")
+    contract = read_json(contract_path)
+    policy = read_json(session_policy_path)
+    tools = contract.get("allowed_tools")
+    ceiling = policy.get("allowed_tool_ceiling")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or len(tools) != len(set(tools))
+        or any(not isinstance(item, str) or not item for item in tools)
+        or set(tools) - READ_ONLY_CLAUDE_TOOLS
+        or not isinstance(ceiling, list)
+        or not set(tools).issubset(set(ceiling))
+        or policy.get("runtime") != "claude-code"
+        or policy.get("permission_mode") != "dontAsk"
+    ):
+        raise ContractError(
+            "Worker tool declaration is not an authorized read-only intersection"
+        )
+    runtime_path = Path(__file__).resolve()
+    receipt = {
+        "schema_version": 1,
+        "status": "PASS",
+        "assurance_kind": "runtime_bound_worker_tool_intersection",
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "worker_session_policy_path": str(session_policy_path),
+        "worker_session_policy_sha256": sha256_file(session_policy_path),
+        "runtime_path": str(runtime_path),
+        "runtime_sha256": sha256_file(runtime_path),
+        "task_declared_tools": tools,
+        "effective_claude_tools_argument": ",".join(tools),
+        "denied_tools": sorted(
+            set(ceiling) - set(tools)
+        ),
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(output_path, receipt, immutable=True)
+    return {"ok": True, "path": str(output_path), **receipt}
+
+
+def command_attest_worker_identity_boundary(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Bind the post-transport Worker identity receipt boundary to Runtime."""
+    plan_dir = Path(args.plan_dir).resolve()
+    contract_path = Path(args.task_contract).resolve()
+    session_policy_path = Path(args.worker_session_policy).resolve()
+    output_path = Path(args.output).absolute()
+    for label, path in (
+        ("task contract", contract_path),
+        ("Worker session policy", session_policy_path),
+    ):
+        try:
+            path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise ContractError(f"{label} must be plan-owned") from exc
+        validate_immutable_binding(
+            path, sha256_file(path) if path.is_file() else None, label,
+        )
+    try:
+        output_path.resolve().relative_to(plan_dir)
+    except ValueError as exc:
+        raise ContractError(
+            "Worker identity-attestation assurance must be plan-owned"
+        ) from exc
+    if output_path.exists() or output_path.is_symlink():
+        raise ContractError(
+            "Worker identity-attestation assurance is immutable"
+        )
+    policy = load_policy(plan_dir)
+    session_policy = read_json(session_policy_path)
+    if (
+        session_policy.get("runtime") != "claude-code"
+        or session_policy.get("worker_model") != policy["worker_model"]
+        or session_policy.get("session_mode") != "persistent_exact_resume"
+        or not isinstance(session_policy.get("session_id"), str)
+    ):
+        raise ContractError("Worker identity policy is not exact")
+    runtime_path = Path(__file__).resolve()
+    receipt = {
+        "schema_version": 1,
+        "status": "PASS",
+        "assurance_kind": "runtime_bound_worker_identity_attestation",
+        "plan_id": plan_identity(plan_dir),
+        "task_contract_path": str(contract_path),
+        "task_contract_sha256": sha256_file(contract_path),
+        "worker_session_policy_path": str(session_policy_path),
+        "worker_session_policy_sha256": sha256_file(session_policy_path),
+        "runtime_path": str(runtime_path),
+        "runtime_sha256": sha256_file(runtime_path),
+        "expected_worker_identity": {
+            "model": policy["worker_model"],
+            "agent": "claude-code-worker",
+            "provider": "MiniMax",
+        },
+        "required_runtime_receipt_fields": [
+            "resolved_executable", "model_argument", "provider",
+            "agent", "session_id", "turn_index", "command_sha256",
+            "transport_metadata_sha256", "result_sha256",
+        ],
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(output_path, receipt, immutable=True)
+    return {"ok": True, "path": str(output_path), **receipt}
 
 
 def validate_persisted_controller_digest_authority(
@@ -5104,7 +5952,7 @@ def worker_visible_content_contracts(
             continue
         if validator.get("kind") != "source_inventory_v1":
             raise ContractError("unknown Worker-visible content validator")
-        contracts.append({
+        visible = {
             "artifact_id": declaration["artifact_id"],
             "content_encoding": "strict JSON encoded as the artifact content string",
             "exact_top_level_fields": [
@@ -5132,7 +5980,15 @@ def worker_visible_content_contracts(
                 "maximum_characters_per_item": 500,
             },
             "additional_fields": "forbidden at every object level",
-        })
+        }
+        if validator.get("construction_contract") is not None:
+            visible["construction_contract"] = validator[
+                "construction_contract"
+            ]
+            visible["construction_binding"] = (
+                "hypotheses, questions, and exact UTF-8 content sha256 are frozen"
+            )
+        contracts.append(visible)
     return contracts
 
 
@@ -5178,13 +6034,15 @@ def command_record_worker_heartbeat(args: argparse.Namespace) -> dict[str, Any]:
 def run_worker_with_heartbeats(
     cmd: list[str], prompt: str, plan_dir: Path, run_id: str,
     timeout: int, heartbeat_interval: int | None,
+    worker_cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     run_dir = worker_run_dir(plan_dir, run_id)
     stdout_path = run_dir / "transport.stdout"
     stderr_path = run_dir / "transport.stderr"
     with stdout_path.open("w") as stdout_handle, stderr_path.open("w") as stderr_handle:
         proc = subprocess.Popen(
-            cmd, cwd=plan_dir, stdin=subprocess.PIPE, stdout=stdout_handle,
+            cmd, cwd=worker_cwd or plan_dir, stdin=subprocess.PIPE,
+            stdout=stdout_handle,
             stderr=stderr_handle, text=True, start_new_session=os.name == "posix",
         )
         try:
@@ -5236,6 +6094,7 @@ def run_worker_with_heartbeats(
 
 def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    enforce_codex_host_plan_deadline(plan_dir)
     require_controller_not_stopped(plan_dir)
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
     policy = load_policy(plan_dir)
@@ -5403,12 +6262,51 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
     else:
         staged_reserve_dispatch(plan_dir, dispatch_id=run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
+    sandbox_dir = run_dir / "declared-input-sandbox"
+    sandbox_dir.mkdir()
+    worker_inputs: list[dict[str, Any]] = []
+    input_access_receipt: list[dict[str, Any]] = []
+    for index, item in enumerate(inputs):
+        source = Path(item["path"])
+        target = sandbox_dir / f"{index:03d}-{source.name}"
+        shutil.copyfile(source, target)
+        target.chmod(0o444)
+        copied_sha = sha256_file(target)
+        if copied_sha != item["sha256"]:
+            raise ContractError("declared Worker input sandbox copy changed")
+        worker_inputs.append({
+            **item,
+            "access_path": str(target),
+        })
+        input_access_receipt.append({
+            "declared_path": item["path"],
+            "declared_sha256": item["sha256"],
+            "sandbox_path": str(target),
+            "sandbox_sha256": copied_sha,
+        })
+    atomic_write_json(
+        run_dir / "input-access-receipt.json",
+        {
+            "schema_version": 1,
+            "worker_run_id": run_id,
+            "policy": (
+                "clean cwd plus only declared immutable copies exposed "
+                "through Claude --add-dir"
+            ),
+            "inputs": input_access_receipt,
+        },
+        immutable=True,
+    )
     prompt = json.dumps({
         "role": "bounded research worker",
         "authority": "artifact producer only; do not change plan lifecycle state",
         "task_id": task_id,
         "instruction": instruction,
-        "inputs": inputs,
+        "inputs": worker_inputs,
+        "input_access_rule": (
+            "Read only access_path. Preserve declared path and sha256 in "
+            "the proposed scientific artifact."
+        ),
         "artifact_outputs": declarations,
         "artifact_content_contracts": worker_visible_content_contracts(
             declarations,
@@ -5467,12 +6365,11 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         cmd.extend(["--session-id", worker_session["session_id"]])
     else:
         cmd.extend(["--resume", worker_session["session_id"]])
-    input_dirs = sorted({str(Path(item["path"]).parent) for item in inputs})
-    if input_dirs:
+    if worker_inputs:
         # Claude Code treats files outside cwd as permission-denied even when
         # Read is the only exposed tool.  Grant directory visibility for the
         # already hash-verified input manifest; this does not grant write tools.
-        cmd.extend(["--add-dir", *input_dirs])
+        cmd.extend(["--add-dir", str(sandbox_dir)])
     started = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -5493,6 +6390,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
         "worker_session_turn": turn_index,
         "instruction_path": str(instruction_path),
         "instruction_sha256": sha256_file(instruction_path),
+        "input_access_receipt_path": str(
+            run_dir / "input-access-receipt.json"
+        ),
+        "input_access_receipt_sha256": sha256_file(
+            run_dir / "input-access-receipt.json"
+        ),
         "started_at": utc_now(),
     }
     if writing_gate_path:
@@ -5522,10 +6425,12 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             proc = run_worker_with_heartbeats(
                 cmd, prompt, plan_dir, run_id, args.timeout,
                 max(1, min(60, assurance["heartbeat_stale_seconds"] // 3)),
+                sandbox_dir,
             )
         else:
             proc = run_worker_with_heartbeats(
                 cmd, prompt, plan_dir, run_id, args.timeout, None,
+                sandbox_dir,
             )
     except FileNotFoundError as exc:
         update_worker_status(plan_dir, run_id, "FAILED", {"failure": "claude_not_found", "completed_at": utc_now()})
@@ -5632,9 +6537,47 @@ def command_dispatch_worker(args: argparse.Namespace) -> dict[str, Any]:
             )
         release_worker_session_lease(session_lease)
         raise
+    identity_path = run_dir / "identity-receipt.json"
+    reported_model = (
+        None if transport_metadata is None
+        else transport_metadata.get("reported_model")
+    )
+    reported_provider = (
+        None if transport_metadata is None
+        else transport_metadata.get("reported_provider")
+    )
+    identity_receipt = {
+        "schema_version": 1,
+        "plan_id": plan_identity(plan_dir),
+        "worker_run_id": run_id,
+        "task_contract_sha256": sha256_file(contract_path),
+        "resolved_executable": resolved_claude_bin,
+        "model_argument": policy["worker_model"],
+        "reported_model": reported_model,
+        "provider": reported_provider or "MiniMax",
+        "provider_evidence": (
+            "claude_transport_metadata"
+            if reported_provider is not None
+            else "frozen_model_policy_and_minimax_only_runtime_guard"
+        ),
+        "agent": "claude-code-worker",
+        "session_id": (
+            None if worker_session is None else worker_session["session_id"]
+        ),
+        "turn_index": turn_index,
+        "command_sha256": sha256_json(cmd),
+        "transport_metadata_sha256": sha256_json(
+            transport_metadata or {},
+        ),
+        "result_sha256": sha256_file(result_path),
+        "attested_at": utc_now(),
+    }
+    atomic_write_json(identity_path, identity_receipt, immutable=True)
     completed = update_worker_status(plan_dir, run_id, "COMPLETED", {
         "completed_at": utc_now(), "result_path": str(result_path),
         "result_sha256": sha256_file(result_path),
+        "identity_receipt_path": str(identity_path),
+        "identity_receipt_sha256": sha256_file(identity_path),
     })
     if completed.get("status") == "CANCELLED":
         if worker_session is not None:
@@ -7360,6 +8303,7 @@ def make_context_capsule(
 
 def command_advance_durable_plan(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    enforce_codex_host_plan_deadline(plan_dir)
     require_controller_not_stopped(plan_dir)
     try:
         require_durable_autonomy_eligibility(plan_dir)
@@ -8407,6 +9351,7 @@ def command_bootstrap_host_runtime(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     if not plan_dir.is_dir():
         raise ContractError("plan_dir must be an existing directory")
+    enforce_codex_host_plan_deadline(plan_dir)
     policy = load_policy(plan_dir)
     check_transition_receipt(plan_dir, plan_identity(plan_dir), "approve_execution")
     entry_prepared = None
@@ -9911,15 +10856,28 @@ def reserve_budget(plan_dir: Path, request: dict[str, Any], policy: dict[str, An
         if request["request_id"] in ledger["request_ids"]:
             return ledger
         limits = effective_frontier_limits(policy, ledger)
-        next_calls = ledger["reserved_calls"] + require_non_negative_int(requested["call"], "budget_reservation.call")
-        next_input = ledger["reserved_input_tokens"] + require_non_negative_int(requested["max_input_tokens"], "budget_reservation.max_input_tokens")
-        next_output = ledger["reserved_output_tokens"] + require_non_negative_int(requested["max_output_tokens"], "budget_reservation.max_output_tokens")
-        if next_calls > limits["max_calls"] or next_input > limits["max_input_tokens"] or next_output > limits["max_output_tokens"]:
-            raise ContractError("frontier budget exhausted")
+        try:
+            totals = next_frontier_totals(
+                ledger,
+                {
+                    "calls": require_non_negative_int(
+                        requested["call"], "budget_reservation.call",
+                    ),
+                    "input_tokens": require_non_negative_int(
+                        requested["max_input_tokens"],
+                        "budget_reservation.max_input_tokens",
+                    ),
+                    "output_tokens": require_non_negative_int(
+                        requested["max_output_tokens"],
+                        "budget_reservation.max_output_tokens",
+                    ),
+                },
+                limits,
+            )
+        except PlanExecutionBoundaryError as exc:
+            raise ContractError("frontier budget exhausted") from exc
         ledger.update({
-            "reserved_calls": next_calls,
-            "reserved_input_tokens": next_input,
-            "reserved_output_tokens": next_output,
+            **totals,
             "request_ids": [*ledger["request_ids"], request["request_id"]],
             "updated_at": utc_now(),
         })
@@ -12326,6 +13284,7 @@ def recover_public_unstarted_release(
 
 def command_send_request(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
+    enforce_codex_host_plan_deadline(plan_dir)
     with request_send_lock(plan_dir, args.request_id):
         current = read_json(status_path(plan_dir, args.request_id))
         if current["state"] in {"RECEIVED", "VALIDATED", "APPLIED"}:
@@ -15206,6 +16165,7 @@ def staged_preflight_payload(
     verified_source_manifest: list[dict[str, Any]] = []
     evaluator_conformance: dict[str, Any] | None = None
     report_validator_conformance: dict[str, Any] | None = None
+    worker_io_budget_proof: dict[str, Any] | None = None
     if observation_only:
         implementation_materials = [
             item for item in envelope.get("review_material_manifest", [])
@@ -15485,7 +16445,10 @@ def staged_preflight_payload(
             break
         reachable = expanded
     required_states = (
-        {"STAGE_AUTHORIZED", "DEVELOPING", "RECORDED", "COMPLETE", "PAUSED"}
+        {
+            "STAGE_AUTHORIZED", "DEVELOPING", "RECORDED",
+            "CONTRACTED", "PAUSED",
+        }
         if observation_only
         else {
             "STAGE_AUTHORIZED", "CANDIDATE_FROZEN", "GATE_QUERIED",
@@ -15548,6 +16511,104 @@ def staged_preflight_payload(
             sum(item["size_bytes"] for item in verified_source_manifest) + 2
         ) // 3
         required_worker_tokens = estimated_source_tokens + 8000
+        worker_contract_materials = [
+            item for item in envelope.get("review_material_manifest", [])
+            if item.get("purpose") == "worker_task_contract"
+        ]
+        if len(worker_contract_materials) > 1:
+            raise ContractError(
+                "observation-only stage has multiple Worker task contracts"
+            )
+        if worker_contract_materials:
+            contract_material = worker_contract_materials[0]
+            worker_contract_path = normalize_owned_path(
+                plan_dir, str(plan_dir / contract_material["path"]),
+            )
+            if (
+                worker_contract_path.is_symlink()
+                or not worker_contract_path.is_file()
+                or sha256_file(worker_contract_path)
+                != contract_material["sha256"]
+            ):
+                raise ContractError(
+                    "observation-only Worker task contract changed"
+                )
+            worker_contract = read_json(worker_contract_path)
+            worker_inputs = verify_manifest_items(
+                worker_contract.get("inputs", []), base_dir=plan_dir,
+            )
+            raw_outputs = worker_contract.get("artifact_outputs")
+            if not isinstance(raw_outputs, list) or not raw_outputs:
+                raise ContractError(
+                    "observation-only Worker task contract has no outputs"
+                )
+            declarations = [
+                normalize_declared_output(plan_dir, item)
+                for item in raw_outputs
+            ]
+            instruction = worker_contract.get("instruction")
+            output_schema = worker_contract.get("output_schema")
+            request = worker_contract.get("stage_resource_request")
+            if (
+                not isinstance(instruction, str)
+                or not instruction
+                or not isinstance(output_schema, dict)
+                or not isinstance(request, dict)
+                or set(request) != {"tool_calls", "worker_tokens"}
+            ):
+                raise ContractError(
+                    "observation-only Worker task budget contract is invalid"
+                )
+            input_bytes = sum(
+                Path(item["path"]).stat().st_size for item in worker_inputs
+            )
+            maximum_output_bytes = sum(
+                item["max_bytes"] for item in declarations
+            )
+            prompt_overhead_bytes = (
+                worker_contract_path.stat().st_size
+                + len(instruction.encode("utf-8"))
+                + len(canonical_json(output_schema))
+                + 8192
+            )
+            required_read_calls = len(worker_inputs)
+            estimated_input_tokens = (
+                input_bytes + prompt_overhead_bytes + 2
+            ) // 3
+            estimated_output_tokens = (maximum_output_bytes + 2) // 3
+            required_worker_tokens = (
+                estimated_input_tokens + estimated_output_tokens
+            )
+            if (
+                isinstance(request["tool_calls"], bool)
+                or not isinstance(request["tool_calls"], int)
+                or isinstance(request["worker_tokens"], bool)
+                or not isinstance(request["worker_tokens"], int)
+                or request["tool_calls"] < required_read_calls
+                or request["worker_tokens"] < required_worker_tokens
+                or request["tool_calls"] > budget["tool_calls"]
+                or request["worker_tokens"] > budget["worker_tokens"]
+            ):
+                raise ContractError(
+                    "Worker task budget cannot cover every declared input, "
+                    "maximum outputs, and Runtime prompt overhead"
+                )
+            worker_io_budget_proof = {
+                "task_contract_path": str(worker_contract_path),
+                "task_contract_sha256": sha256_file(worker_contract_path),
+                "declared_input_count": len(worker_inputs),
+                "declared_input_bytes": input_bytes,
+                "required_read_calls": required_read_calls,
+                "maximum_output_bytes": maximum_output_bytes,
+                "prompt_overhead_bytes": prompt_overhead_bytes,
+                "estimated_input_tokens": estimated_input_tokens,
+                "estimated_output_tokens": estimated_output_tokens,
+                "required_worker_tokens": required_worker_tokens,
+                "task_authorized_tool_calls": request["tool_calls"],
+                "task_authorized_worker_tokens": request["worker_tokens"],
+                "stage_authorized_tool_calls": budget["tool_calls"],
+                "stage_authorized_worker_tokens": budget["worker_tokens"],
+            }
         if (
             budget["tool_calls"] < required_read_calls
             or budget["worker_tokens"] < required_worker_tokens
@@ -15652,6 +16713,9 @@ def staged_preflight_payload(
                 "authorized_tool_calls": budget["tool_calls"],
                 "authorized_worker_tokens": budget["worker_tokens"],
             },
+            **({
+                "worker_io_budget_proof": worker_io_budget_proof,
+            } if worker_io_budget_proof is not None else {}),
             "evaluator_conformance": evaluator_conformance,
             "stage_report_validator_conformance": (
                 report_validator_conformance
@@ -16147,10 +17211,10 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     plan_dir = Path(args.plan_dir).resolve()
     state = staged_load_state(plan_dir)
     staged_require_preflight(plan_dir)
-    if state["state"] not in {
-        "STAGE_AUTHORIZED", "DEVELOPING", "CANDIDATE_FROZEN",
-    }:
-        raise ContractError("candidate freeze requires a controller-authorized stage")
+    if state["state"] not in {"DEVELOPING", "CANDIDATE_FROZEN"}:
+        raise ContractError(
+            "candidate freeze requires a canonical real-Worker dispatch"
+        )
     try:
         require_staged_transition(
             "freeze_candidate", state["state"], "CANDIDATE_FROZEN",
@@ -16171,6 +17235,25 @@ def command_freeze_stage_candidate(args: argparse.Namespace) -> dict[str, Any]:
     promotion = read_json(promotion_path)
     run_id = promotion.get("worker_run_id", "")
     run_dir = worker_run_dir(plan_dir, run_id)
+    dispatch_path = (
+        staged_root(plan_dir) / "dispatch-reservations" / f"{run_id}.json"
+    )
+    dispatch_journal_path = (
+        staged_root(plan_dir) / "dispatch-journals" / f"{run_id}.json"
+    )
+    dispatch = read_json(dispatch_path)
+    dispatch_journal = read_json(dispatch_journal_path)
+    if (
+        dispatch_journal.get("phase") != "COMMITTED"
+        or dispatch_journal.get("dispatch_id") != run_id
+        or dispatch_journal.get("checkpoint") is not None
+        or dispatch_journal.get("stage_id") != state["active_stage_id"]
+        or dispatch_journal.get("state_after") != "DEVELOPING"
+        or dispatch_journal.get("marker_after") != dispatch
+    ):
+        raise ContractError(
+            "candidate requires a canonical real-Worker dispatch receipt"
+        )
     if promotion_path != run_dir / "promotion-receipt.json":
         raise ContractError("candidate requires a canonical worker promotion receipt")
     promotion_binding = staged_canonical_file(
@@ -17309,9 +18392,68 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = worker_run_dir(plan_dir, args.worker_run_id)
     status_path_value = run_dir / "status.json"
     status = read_json(status_path_value)
+    access_path = run_dir / "input-access-receipt.json"
+    access = read_json(access_path)
+    contract = read_json(Path(status["contract_path"]))
+    declared_inputs = verify_manifest_items(
+        contract.get("inputs", []), base_dir=plan_dir,
+    )
+    expected_access = [
+        {
+            "declared_path": item["path"],
+            "declared_sha256": item["sha256"],
+            "sandbox_path": str(
+                run_dir / "declared-input-sandbox"
+                / f"{index:03d}-{Path(item['path']).name}"
+            ),
+            "sandbox_sha256": item["sha256"],
+        }
+        for index, item in enumerate(declared_inputs)
+    ]
+    if (
+        status.get("input_access_receipt_path") != str(access_path)
+        or status.get("input_access_receipt_sha256") != sha256_file(access_path)
+        or access.get("worker_run_id") != args.worker_run_id
+        or access.get("inputs") != expected_access
+        or any(
+            not Path(item["sandbox_path"]).is_file()
+            or sha256_file(Path(item["sandbox_path"]))
+            != item["sandbox_sha256"]
+            for item in expected_access
+        )
+    ):
+        raise ContractError(
+            "stage report lacks exact declared-input sandbox lineage"
+        )
     promotion_path = run_dir / "promotion-receipt.json"
     promotion = read_json(promotion_path)
     promotion_journal = read_json(run_dir / "promotion-journal.json")
+    identity_path = run_dir / "identity-receipt.json"
+    identity = read_json(identity_path)
+    expected_identity = {
+        "model": status["worker_model"],
+        "agent": "claude-code-worker",
+        "provider": "MiniMax",
+    }
+    identity_failures = [
+        label for label, condition in (
+            ("status_path", status.get("identity_receipt_path") != str(identity_path)),
+            ("status_sha256", status.get("identity_receipt_sha256") != sha256_file(identity_path)),
+            ("worker_run_id", identity.get("worker_run_id") != args.worker_run_id),
+            ("task_contract", identity.get("task_contract_sha256") != status["contract_sha256"]),
+            ("model", identity.get("model_argument") != status["worker_model"]),
+            ("agent", identity.get("agent") != expected_identity["agent"]),
+            ("provider", "minimax" not in str(identity.get("provider", "")).lower()),
+            ("session", identity.get("session_id") != status.get("worker_session_id")),
+            ("turn", identity.get("turn_index") != status.get("worker_session_turn")),
+            ("result", identity.get("result_sha256") != status.get("result_sha256")),
+        ) if condition
+    ]
+    if identity_failures:
+        raise ContractError(
+            "stage report lacks the controller-owned Worker identity receipt: "
+            + ",".join(identity_failures)
+        )
     if (
         status.get("status") != "COMPLETED"
         or status.get("worker_model") != load_policy(plan_dir)["worker_model"]
@@ -17333,7 +18475,9 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
         validate_stage_report(
             report,
             stage_cycle_id=state["active_stage_id"],
-            worker_model=status["worker_model"],
+            expected_worker_identity={
+                **expected_identity,
+            },
             candidate_sha256=candidate["candidate_sha256"],
             authorized_evidence_refs=envelope["authorized_evidence_refs"],
             expected_validator_receipts=(
@@ -17347,9 +18491,7 @@ def command_record_stage_report(args: argparse.Namespace) -> dict[str, Any]:
     worker = report["worker_identity"]
     if (
         not isinstance(worker, dict)
-        or worker.get("model") != status["worker_model"]
-        or not worker.get("agent")
-        or not worker.get("provider")
+        or worker != expected_identity
     ):
         raise ContractError("terminal stage report must be produced by MiniMax-M3")
     visible_path = staged_root(plan_dir) / "role-visible" / f"{args.worker_run_id}.json"
@@ -18617,6 +19759,7 @@ def _staged_advance_fault(phase: str) -> None:
 def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
     """Cross one pre-authorized stage boundary and start exactly one Worker."""
     plan_dir = Path(args.plan_dir).resolve()
+    enforce_codex_host_plan_deadline(plan_dir)
     capacity = read_json(staged_root(plan_dir) / "capacity-ledger.json")
     staged_validate_capacity(capacity)
     if capacity.get("schema_version") != 2:
@@ -18727,6 +19870,12 @@ def command_advance_staged_research(args: argparse.Namespace) -> dict[str, Any]:
         try:
             require_staged_transition(
                 "compile_continuation", current_state, "CONTRACTED",
+                {
+                    "terminal_decision_recorded": True,
+                    "stage_report_recorded": True,
+                    "strong_review_accepted": True,
+                    "exact_continuation_reviewed": True,
+                },
             )
         except WorkerArtifactLifecycleError as exc:
             raise ContractError(str(exc)) from exc
@@ -19959,6 +21108,51 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     worker.set_defaults(handler=command_dispatch_worker)
+
+    worker_conformance = sub.add_parser(
+        "attest-worker-output-conformance",
+        help=(
+            "validate one real positive Worker response and Runtime-derived "
+            "adversarial cases without launching a model"
+        ),
+    )
+    worker_conformance.add_argument("--plan-dir", required=True)
+    worker_conformance.add_argument("--task-contract", required=True)
+    worker_conformance.add_argument("--valid-response", required=True)
+    worker_conformance.add_argument("--output", required=True)
+    worker_conformance.set_defaults(
+        handler=command_attest_worker_output_conformance,
+    )
+
+    worker_tools = sub.add_parser(
+        "attest-worker-tool-intersection",
+        help=(
+            "bind the exact read-only Claude tool intersection to current "
+            "Runtime bytes without launching a model"
+        ),
+    )
+    worker_tools.add_argument("--plan-dir", required=True)
+    worker_tools.add_argument("--task-contract", required=True)
+    worker_tools.add_argument("--worker-session-policy", required=True)
+    worker_tools.add_argument("--output", required=True)
+    worker_tools.set_defaults(
+        handler=command_attest_worker_tool_intersection,
+    )
+
+    worker_identity = sub.add_parser(
+        "attest-worker-identity-boundary",
+        help=(
+            "bind the exact post-transport Worker identity receipt boundary "
+            "to current Runtime bytes"
+        ),
+    )
+    worker_identity.add_argument("--plan-dir", required=True)
+    worker_identity.add_argument("--task-contract", required=True)
+    worker_identity.add_argument("--worker-session-policy", required=True)
+    worker_identity.add_argument("--output", required=True)
+    worker_identity.set_defaults(
+        handler=command_attest_worker_identity_boundary,
+    )
 
     recover_worker_budget = sub.add_parser(
         "reconcile-orphan-worker-budget",
