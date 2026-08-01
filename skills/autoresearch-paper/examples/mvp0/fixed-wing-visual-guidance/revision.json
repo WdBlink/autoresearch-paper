@@ -1,0 +1,14 @@
+{
+  "changes": [
+    {
+      "op": "replace",
+      "path": "/central_claim/evaluation_scope",
+      "value": "Paired truth, synthetic degraded-truth, and frozen FastSAM rollouts with identical dynamics, rewards, seeds, wind, obstacles, and training budget."
+    }
+  ],
+  "summary": "Bind the real-detector condition into the claim scope while preserving provisional novelty language and every evaluator, metric, safety, and budget boundary.",
+  "addressed_finding_ids": [
+    "bind-fastsam-scope",
+    "retain-provisional-novelty"
+  ]
+}

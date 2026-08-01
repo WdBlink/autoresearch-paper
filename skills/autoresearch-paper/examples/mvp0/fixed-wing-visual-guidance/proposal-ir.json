@@ -1,0 +1,461 @@
+{
+  "schema_version": "research-ir/v1",
+  "ir_id": "fixed-wing-privileged-visual-guidance",
+  "version": 1,
+  "parent_ir_sha256": null,
+  "source": {
+    "source_task_id": "019fb6a0-a1cc-7422-ae35-8e9625de1c13",
+    "source_summary": "Compile privileged-to-perceptual fixed-wing target approach under wind, occlusion, obstacles, and detector degradation into a falsifiable research contract.",
+    "brief_artifact": {
+      "path": "/Users/wdblink/AI/Skills/autoresearch-paper/skills/autoresearch-paper/examples/mvp0/fixed-wing-visual-guidance/source-brief.md",
+      "sha256": "5c7f3482af74c81d3896877e538cd296b86c8f89aaae028ea5752a05da780c72"
+    },
+    "workspace_root": "/Users/wdblink/Research/papers/Fixed-Win-Visual-Guidance",
+    "code_root": "/Users/wdblink/Code/my_repo/pyflyt-drone"
+  },
+  "problem_statement": "Determine whether privileged critic information can improve a deployable fixed-wing target-approach policy whose Actor uses only onboard vision history and vehicle state, without degrading safety under wind, temporary occlusion, obstacles, and detector errors.",
+  "central_claim": {
+    "statement": "An asymmetric recurrent Actor-Critic whose Actor excludes target truth improves paired safe task success over a recurrent pure-vision PPO baseline without increasing collision rate.",
+    "baseline_id": "recurrent-pure-vision-ppo",
+    "primary_metric_id": "safe-success-delta",
+    "evaluation_scope": "Paired truth and synthetic degraded-truth rollouts with identical dynamics, rewards, seeds, wind, obstacles, and training budget."
+  },
+  "falsification_conditions": [
+    {
+      "id": "no-safe-success-gain",
+      "metric_id": "safe-success-delta",
+      "aggregation": "ci_lower",
+      "operator": "<=",
+      "value": 0.0,
+      "decision": "REJECT_CLAIM"
+    },
+    {
+      "id": "collision-regression",
+      "metric_id": "collision-rate-delta",
+      "aggregation": "ci_upper",
+      "operator": ">",
+      "value": 0.02,
+      "decision": "REJECT_CLAIM"
+    },
+    {
+      "id": "actor-information-leak",
+      "metric_id": "actor-privileged-input-count",
+      "aggregation": "estimate",
+      "operator": ">",
+      "value": 0.0,
+      "decision": "REJECT_CLAIM"
+    },
+    {
+      "id": "detector-collapse",
+      "metric_id": "detector-retention-ratio",
+      "aggregation": "ci_lower",
+      "operator": "<",
+      "value": 0.65,
+      "decision": "REJECT_CLAIM"
+    }
+  ],
+  "related_work_gap": {
+    "statement": "The current evidence suggests a gap at the intersection of asymmetric privileged training, recurrent onboard-only perception, fixed-wing forward-flight constraints, and controlled truth-to-detector degradation; novelty remains provisional until the frozen literature and comparator audit is complete.",
+    "evidence_refs": [
+      {
+        "source_id": "current-observation-wrapper",
+        "locator": "/Users/wdblink/Code/my_repo/pyflyt-drone/envs/fixedwing_envs/flatten_objlock_env.py",
+        "supports": "The current Actor observation concatenates target_vector with attitude and duck_vision, proving privileged target leakage.",
+        "sha256": "1fa46f37a88f986b0e55d8c7e6b9cc3e88150b43fd57a9b86b2582cdabb73213"
+      },
+      {
+        "source_id": "current-trainer",
+        "locator": "/Users/wdblink/Code/my_repo/pyflyt-drone/train/train_objlock.py",
+        "supports": "The current trainer already records collision, success-with-avoidance, timeout, and reward-hacking signals.",
+        "sha256": "4d1804d02f0c51e58ce4a82efb658dbf8e5a01a793fa6d88d0f866e648897ad4"
+      },
+      {
+        "source_id": "truth-evaluator",
+        "locator": "/Users/wdblink/Code/my_repo/pyflyt-drone/eval/eval_objlock.py",
+        "supports": "A truth-path evaluator exists, but it is not a frozen shared comparison interface.",
+        "sha256": "7455aed7ba9e37c4e98d4dc7e96ac55beee7f6ebdf39ca26cfbea3ae440ca713"
+      },
+      {
+        "source_id": "detector-evaluator",
+        "locator": "/Users/wdblink/Code/my_repo/pyflyt-drone/eval/eval_objlock_yolo.py",
+        "supports": "A detector-path evaluator exists but carries configuration differences that prevent direct causal comparison.",
+        "sha256": "0d797d967663f1b2fa9f25228c98f66e165be022166aea72da6bca4b0af4ef03"
+      },
+      {
+        "source_id": "privileged-navigation-paper",
+        "locator": "https://arxiv.org/abs/2412.06313",
+        "supports": "Preliminary related work for privileged-information visual navigation; exact task comparability remains to be audited.",
+        "sha256": null
+      },
+      {
+        "source_id": "fixed-wing-tracking-paper",
+        "locator": "https://arxiv.org/abs/2607.12801",
+        "supports": "Preliminary fixed-wing target-tracking comparator using a different perception-control stack; reproducibility remains to be audited.",
+        "sha256": null
+      }
+    ]
+  },
+  "baseline_contract": {
+    "baseline_id": "recurrent-pure-vision-ppo",
+    "status": "PLANNED",
+    "description": "A recurrent PPO Actor-Critic trained without target_vector in either Actor or Critic, using only vehicle state and duck_vision history under the same training and evaluation manifests as the candidate.",
+    "source_artifacts": [
+      {
+        "path": "/Users/wdblink/Code/my_repo/pyflyt-drone/train/train_objlock.py",
+        "sha256": "4d1804d02f0c51e58ce4a82efb658dbf8e5a01a793fa6d88d0f866e648897ad4"
+      },
+      {
+        "path": "/Users/wdblink/Code/my_repo/pyflyt-drone/envs/fixedwing_envs/flatten_objlock_env.py",
+        "sha256": "1fa46f37a88f986b0e55d8c7e6b9cc3e88150b43fd57a9b86b2582cdabb73213"
+      }
+    ],
+    "implementation_artifact": "/Users/wdblink/Code/my_repo/pyflyt-drone/train/research/train_recurrent_visual.py",
+    "implementation_sha256": null,
+    "training_argv": [
+      "python3",
+      "train/research/train_recurrent_visual.py",
+      "--config",
+      "configs/research/recurrent-visual-baseline.json",
+      "--seed-manifest",
+      "artifacts/research/seeds.json"
+    ],
+    "comparison_scope": [
+      "same PPO implementation family",
+      "same recurrent Actor capacity",
+      "same dynamics and reward",
+      "same total training steps",
+      "same paired evaluation seeds",
+      "same truth, degradation, and detector manifests"
+    ]
+  },
+  "metric_contract": {
+    "primary_metric": {
+      "metric_id": "safe-success-delta",
+      "name": "paired safe task success delta",
+      "direction": "maximize",
+      "unit": "proportion",
+      "acceptance": {
+        "aggregation": "ci_lower",
+        "operator": ">=",
+        "value": 0.05,
+        "confidence_level": 0.95,
+        "minimum_seeds": 5
+      }
+    },
+    "guardrails": [
+      {
+        "metric_id": "collision-rate-delta",
+        "name": "paired collision rate delta",
+        "direction": "minimize",
+        "unit": "proportion",
+        "acceptance": {
+          "aggregation": "ci_upper",
+          "operator": "<=",
+          "value": 0.02,
+          "confidence_level": 0.95,
+          "minimum_seeds": 5
+        }
+      },
+      {
+        "metric_id": "actor-privileged-input-count",
+        "name": "privileged Actor input count",
+        "direction": "minimize",
+        "unit": "features",
+        "acceptance": {
+          "aggregation": "estimate",
+          "operator": "<=",
+          "value": 0.0,
+          "confidence_level": 0.95,
+          "minimum_seeds": 1
+        }
+      },
+      {
+        "metric_id": "detector-retention-ratio",
+        "name": "FastSAM-to-truth safe-success retention ratio",
+        "direction": "maximize",
+        "unit": "ratio",
+        "acceptance": {
+          "aggregation": "ci_lower",
+          "operator": ">=",
+          "value": 0.65,
+          "confidence_level": 0.95,
+          "minimum_seeds": 5
+        }
+      }
+    ]
+  },
+  "evaluator_spec": {
+    "status": "PLANNED",
+    "working_directory": "/Users/wdblink/Code/my_repo/pyflyt-drone",
+    "command_argv": [
+      "python3",
+      "eval/research/unified_guidance_evaluator.py",
+      "--manifest",
+      "artifacts/research/evaluation-manifest.json",
+      "--output",
+      "artifacts/research/evaluator-result.json"
+    ],
+    "implementation_artifact": "/Users/wdblink/Code/my_repo/pyflyt-drone/eval/research/unified_guidance_evaluator.py",
+    "implementation_sha256": null,
+    "input_contract": "One immutable manifest binds baseline and candidate policy hashes, environment and reward config, truth/degraded/FastSAM perception modes, paired seeds, episode counts, and bootstrap settings.",
+    "output_contract": "Strict JSON binds the input manifest hash and reports raw per-seed episode outcomes, all declared metrics, paired confidence intervals, environment identity, and produced artifact hashes.",
+    "metric_bindings": [
+      {
+        "metric_id": "safe-success-delta",
+        "json_path": "$.comparison.safe_task_success_rate.delta"
+      },
+      {
+        "metric_id": "collision-rate-delta",
+        "json_path": "$.comparison.collision_rate.delta"
+      },
+      {
+        "metric_id": "actor-privileged-input-count",
+        "json_path": "$.conformance.actor_privileged_input_count"
+      },
+      {
+        "metric_id": "detector-retention-ratio",
+        "json_path": "$.comparison.detector_retention_ratio"
+      }
+    ]
+  },
+  "allowed_search_space": [
+    {
+      "id": "unified-evaluator",
+      "description": "Create and calibrate the shared manifest-driven evaluator without modifying legacy evaluator evidence.",
+      "paths": [
+        "eval/research/**",
+        "configs/research/evaluation/**",
+        "tests/research/evaluator/**"
+      ],
+      "operations": [
+        "CREATE",
+        "MODIFY"
+      ]
+    },
+    {
+      "id": "visual-baseline",
+      "description": "Create the no-privilege recurrent visual baseline and its frozen training configuration.",
+      "paths": [
+        "train/research/train_recurrent_visual.py",
+        "envs/research_wrappers/**",
+        "configs/research/recurrent-visual-baseline.json"
+      ],
+      "operations": [
+        "CREATE",
+        "MODIFY"
+      ]
+    },
+    {
+      "id": "asymmetric-method",
+      "description": "Create asymmetric privileged-Critic variants while keeping Actor inputs, evaluator, reward, and environment fixed.",
+      "paths": [
+        "train/research/train_asymmetric_visual.py",
+        "train/research/policies/**",
+        "configs/research/asymmetric-*.json"
+      ],
+      "operations": [
+        "CREATE",
+        "MODIFY"
+      ]
+    }
+  ],
+  "forbidden_changes": [
+    "problem_statement",
+    "central_claim",
+    "falsification_conditions",
+    "related_work_gap",
+    "baseline_contract",
+    "metric_contract",
+    "evaluator_spec",
+    "allowed_search_space",
+    "experiment_plan",
+    "budget",
+    "stop_rules"
+  ],
+  "experiment_plan": [
+    {
+      "id": "exp-unified-evaluator",
+      "stage": "EVALUATOR_BUILD",
+      "hypothesis": "A single manifest-driven evaluator can make truth, synthetic degradation, and FastSAM differ only in the declared perception path.",
+      "intervention": "Implement paired-seed evaluation, raw episode output, observation-leakage conformance, and regression fixtures before any method experiment.",
+      "controls": [
+        "legacy truth evaluator snapshot",
+        "legacy FastSAM evaluator snapshot",
+        "identical environment and reward manifest"
+      ],
+      "expected_observation": "Adversarial fixtures detect any environment, reward, seed, policy, or observation difference outside the declared perception path.",
+      "falsification_condition_ids": [
+        "no-safe-success-gain",
+        "collision-regression",
+        "actor-information-leak",
+        "detector-collapse"
+      ],
+      "search_space_ids": [
+        "unified-evaluator"
+      ],
+      "depends_on": [],
+      "command_argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/research/evaluator"
+      ],
+      "expected_artifacts": [
+        "eval/research/unified_guidance_evaluator.py",
+        "artifacts/research/evaluator-conformance.json",
+        "artifacts/research/evaluation-manifest.json"
+      ]
+    },
+    {
+      "id": "exp-visual-baseline",
+      "stage": "BASELINE",
+      "hypothesis": "A recurrent Actor with vehicle state and visual history only can be trained reproducibly under the unified evaluator.",
+      "intervention": "Create and train the recurrent no-privilege baseline across the frozen seed manifest without changing dynamics, rewards, or evaluator settings.",
+      "controls": [
+        "fixed PPO family",
+        "fixed training steps",
+        "fixed environment and reward manifest"
+      ],
+      "expected_observation": "The baseline produces complete per-seed truth, degraded-truth, and FastSAM outcomes with calibrated variance.",
+      "falsification_condition_ids": [
+        "actor-information-leak",
+        "detector-collapse"
+      ],
+      "search_space_ids": [
+        "visual-baseline"
+      ],
+      "depends_on": [
+        "exp-unified-evaluator"
+      ],
+      "command_argv": [
+        "python3",
+        "train/research/train_recurrent_visual.py",
+        "--config",
+        "configs/research/recurrent-visual-baseline.json",
+        "--seed-manifest",
+        "artifacts/research/seeds.json"
+      ],
+      "expected_artifacts": [
+        "artifacts/research/baseline-model-manifest.json",
+        "artifacts/research/baseline-evaluator-result.json"
+      ]
+    },
+    {
+      "id": "exp-asymmetric-critic",
+      "stage": "METHOD",
+      "hypothesis": "Adding target truth, obstacle distance, and wind parameters to the Critic only improves the recurrent visual Actor's safe task success.",
+      "intervention": "Train an asymmetric recurrent Actor-Critic with identical Actor architecture and budget while adding privileged features only to the Critic.",
+      "controls": [
+        "same Actor inputs and recurrent capacity",
+        "same PPO family and training steps",
+        "same paired evaluation manifest"
+      ],
+      "expected_observation": "The paired safe-success confidence interval improves while collision and information-leakage guardrails remain satisfied.",
+      "falsification_condition_ids": [
+        "no-safe-success-gain",
+        "collision-regression",
+        "actor-information-leak"
+      ],
+      "search_space_ids": [
+        "asymmetric-method"
+      ],
+      "depends_on": [
+        "exp-visual-baseline"
+      ],
+      "command_argv": [
+        "python3",
+        "train/research/train_asymmetric_visual.py",
+        "--config",
+        "configs/research/asymmetric-default.json",
+        "--seed-manifest",
+        "artifacts/research/seeds.json"
+      ],
+      "expected_artifacts": [
+        "artifacts/research/asymmetric-model-manifest.json",
+        "artifacts/research/asymmetric-evaluator-result.json"
+      ]
+    },
+    {
+      "id": "exp-detector-stress",
+      "stage": "METHOD",
+      "hypothesis": "Temporal visual memory preserves at least 65 percent of truth-perception safe success under the frozen FastSAM condition.",
+      "intervention": "Evaluate the accepted baseline and asymmetric candidate under matched latency, dropout, occlusion, and FastSAM manifests without retraining on evaluation seeds.",
+      "controls": [
+        "paired policy hashes",
+        "paired environment seeds",
+        "identical non-perception configuration"
+      ],
+      "expected_observation": "The detector-retention lower confidence bound remains at or above the frozen guardrail for the candidate.",
+      "falsification_condition_ids": [
+        "detector-collapse",
+        "collision-regression"
+      ],
+      "search_space_ids": [
+        "unified-evaluator",
+        "asymmetric-method"
+      ],
+      "depends_on": [
+        "exp-asymmetric-critic"
+      ],
+      "command_argv": [
+        "python3",
+        "eval/research/unified_guidance_evaluator.py",
+        "--manifest",
+        "artifacts/research/detector-stress-manifest.json",
+        "--output",
+        "artifacts/research/detector-stress-result.json"
+      ],
+      "expected_artifacts": [
+        "artifacts/research/detector-stress-result.json"
+      ]
+    }
+  ],
+  "budget": {
+    "max_experiments": 12,
+    "max_failed_experiments": 5,
+    "max_wall_clock_seconds": 86400
+  },
+  "stop_rules": [
+    {
+      "id": "stop-evaluator-unfair",
+      "condition": "The unified evaluator cannot isolate perception-path differences without changing dynamics, rewards, observations, or seeds.",
+      "action": "STOP",
+      "evidence_required": [
+        "evaluator conformance output",
+        "legacy evaluator diff"
+      ]
+    },
+    {
+      "id": "stop-claim-rejected",
+      "condition": "All frozen asymmetric variants meet any claim falsification condition after satisfying the minimum seed rule.",
+      "action": "STOP",
+      "evidence_required": [
+        "raw per-seed evaluator JSON",
+        "paired confidence intervals",
+        "policy and environment hashes"
+      ]
+    },
+    {
+      "id": "recompile-protected-contract",
+      "condition": "Evidence requires changing the claim, baseline, metrics, evaluator interface, search space, experiment graph, budget, or stop rules.",
+      "action": "RECOMPILE",
+      "evidence_required": [
+        "experiment receipts",
+        "failed direction summary",
+        "requested protected-field diff"
+      ]
+    },
+    {
+      "id": "recompile-novelty-gap",
+      "condition": "The frozen literature and comparator audit finds a directly comparable method that removes the claimed gap.",
+      "action": "RECOMPILE",
+      "evidence_required": [
+        "source snapshot hashes",
+        "comparator matrix",
+        "claim-to-prior-art mapping"
+      ]
+    }
+  ]
+}

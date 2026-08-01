@@ -21,6 +21,13 @@ start writing.
 ## Status
 
 - **Current version:** v0.20.1
+- **MVP-0 migration track:** P1 Research Compiler is implemented on the
+  `codex/mvp0-thin-loop` feature branch. It provides an isolated Research IR v1
+  schema, deterministic semantic validator, strongest-Codex compiler prompt,
+  proposal/critique/revision workflow, and content-addressed freeze receipts.
+  This does not replace or extend the Legacy Harness runtime, start a Worker,
+  or change the released v0.20.1 product claim. See
+  [`mvp/README.md`](skills/autoresearch-paper/mvp/README.md).
 - **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
   bounded T032 field-lineage acceptance
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)

@@ -29,6 +29,12 @@ def main() -> int:
     errors: list[str] = []
 
     for path in [
+        "mvp/README.md",
+        "mvp/research_compiler.py",
+        "mvp/schemas/research-ir.schema.json",
+        "mvp/prompts/codex-research-compiler.md",
+        "examples/mvp0/fixed-wing-visual-guidance/README.md",
+        "tests/test_mvp_research_compiler.py",
         "references/research-state-contract.md",
         "references/lifecycle-contract.md",
         "references/scripts/plan-l0-guard.py",

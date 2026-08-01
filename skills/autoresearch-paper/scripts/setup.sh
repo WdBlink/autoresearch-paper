@@ -102,6 +102,10 @@ fi
 
 for path in \
   "${ROOT_DIR}/SKILL.md" \
+  "${ROOT_DIR}/mvp/README.md" \
+  "${ROOT_DIR}/mvp/research_compiler.py" \
+  "${ROOT_DIR}/mvp/schemas/research-ir.schema.json" \
+  "${ROOT_DIR}/mvp/prompts/codex-research-compiler.md" \
   "${ROOT_DIR}/assets/task-prompt-snippets.md" \
   "${ROOT_DIR}/assets/first-action-last-seen-hook.md" \
   "${ROOT_DIR}/references/bootstrap-watchdog.sh" \
