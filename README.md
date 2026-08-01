@@ -21,12 +21,21 @@ start writing.
 ## Status
 
 - **Current version:** v0.20.1
-- **MVP-0 migration track:** P1 Research Compiler is implemented on the
-  `codex/mvp0-thin-loop` feature branch. It provides an isolated Research IR v1
-  schema, deterministic semantic validator, strongest-Codex compiler prompt,
-  proposal/critique/revision workflow, and content-addressed freeze receipts.
-  This does not replace or extend the Legacy Harness runtime, start a Worker,
-  or change the released v0.20.1 product claim. See
+- **MVP-0 migration track:** P1 Research Compiler and P2 Minimal Worker Adapter
+  are implemented on the `codex/mvp0-thin-loop` feature branch. P1 provides an
+  isolated Research IR v1 schema, deterministic semantic validator,
+  strongest-Codex compiler prompt, proposal/critique/revision workflow, two
+  mandatory interactive Human Critique/Human Approval stops, and
+  content-addressed freeze receipts. P2 binds an owner-reviewed IR to one clean
+  detached research worktree and one exact Claude Code/MiniMax session, then
+  validates a closed task contract, closed JSON result, Git-visible change
+  boundary, and immutable identity/usage receipt.
+  `ENGINEERING_ACCEPTANCE` is test-only; a live freeze requires recorded owner
+  critique and later explicit owner approval.
+  This track does not import or extend the Legacy Harness runtime and does not
+  change the released v0.20.1 product claim. P2 does not add watchdogs,
+  checkpoints, Dashboard, launchd, promotion, scientific acceptance, or an
+  autonomous loop. See
   [`mvp/README.md`](skills/autoresearch-paper/mvp/README.md).
 - **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
   bounded T032 field-lineage acceptance

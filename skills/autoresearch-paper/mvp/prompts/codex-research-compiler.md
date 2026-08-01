@@ -66,17 +66,27 @@ Those are outside Research IR.
 
 ## Review workflow
 
-The proposal is not frozen directly:
+The proposal is not frozen directly. Interactive research requires two real
+human turns:
 
 1. publish a `research-ir-proposal/v1` object;
-2. obtain critique from a recorded identity different from the proposal
-   author;
-3. revise every blocker and major finding without changing `ir_id`, `version`,
-   or `parent_ir_sha256`; express the revision as explicit JSON Pointer
-   `add`/`replace`/`remove` operations so the semantic diff is auditable;
-4. freeze only after an independent recorded approval. `OWNER_REVIEWED` records
-   owner review but is not an authenticated lifecycle capability;
-   engineering-acceptance approval proves the compiler workflow only.
+2. render the claim, baseline, primary metric, falsification conditions,
+   evaluator readiness, experiment graph, budget, and stop rules as a readable
+   review card, then stop in `AWAITING_HUMAN_CRITIQUE`;
+3. only after the owner replies, record the owner's critique under an
+   `owner/<identity>` reviewer and revise every blocker and major finding
+   without changing `ir_id`, `version`, or `parent_ir_sha256`; express the
+   revision as explicit JSON Pointer `add`/`replace`/`remove` operations;
+4. render the revised card and semantic diff, then stop in
+   `AWAITING_HUMAN_APPROVAL`;
+5. only after an explicit approval in a later owner turn, freeze with
+   `OWNER_REVIEWED` and an `owner/<identity>` approver.
+
+Do not create model-authored critique, revision, or freeze artifacts while
+waiting for either human turn. `ENGINEERING_ACCEPTANCE` is restricted to
+fixtures and CI and requires the explicit `--engineering-test` switch. It must
+never be used to finish an interactive research request. P1 owner identity
+strings are recorded but not authenticated lifecycle capabilities.
 
 Any later change to a protected field requires a new IR version whose
 `parent_ir_sha256` binds the prior frozen IR. A Worker must request that future

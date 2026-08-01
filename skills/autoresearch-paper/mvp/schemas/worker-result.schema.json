@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WdBlink/autoresearch-paper/schemas/mvp/worker-result-v1.json",
+  "title": "Autoresearch Paper MVP-0 Worker Result v1",
+  "description": "A proposal-only result from the Claude Code/MiniMax worker. It is not scientific acceptance or lifecycle authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "status",
+    "summary",
+    "artifacts",
+    "commands_run",
+    "observations",
+    "proposed_next_actions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "worker-result/v1"
+    },
+    "task_id": {
+      "$ref": "#/$defs/id"
+    },
+    "status": {
+      "enum": [
+        "COMPLETED",
+        "BLOCKED"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 12
+    },
+    "artifacts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "change_type",
+          "sha256",
+          "purpose"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "change_type": {
+            "enum": [
+              "CREATED",
+              "MODIFIED"
+            ]
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      }
+    },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "argv",
+          "exit_code",
+          "summary"
+        ],
+        "properties": {
+          "argv": {
+            "$ref": "#/$defs/argv"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 4
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statement",
+          "evidence"
+        ],
+        "properties": {
+          "statement": {
+            "type": "string",
+            "minLength": 12
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256"
+              ],
+              "properties": {
+                "path": {
+                  "$ref": "#/$defs/relative_path"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha256"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "proposed_next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 8
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

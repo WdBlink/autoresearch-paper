@@ -248,7 +248,7 @@ class ResearchCompilerContracts(unittest.TestCase):
             recorded_at="2026-08-01T09:00:00Z",
         )
 
-    def publish_critique(self, proposal: dict[str, str]) -> dict[str, str]:
+    def publish_critique(self, proposal: dict[str, str], *, reviewer: str = "codex/critic") -> dict[str, str]:
         critique_input = {
             "summary": "The proposal is structurally sound but must make the detector condition part of the frozen evaluation scope.",
             "verdict": "REVISE",
@@ -266,8 +266,27 @@ class ResearchCompilerContracts(unittest.TestCase):
             proposal_path=Path(proposal["proposal_path"]),
             critique_path=write_json(self.root / "critique.json", critique_input),
             store=self.store,
-            reviewer="codex/critic",
+            reviewer=reviewer,
             recorded_at="2026-08-01T09:10:00Z",
+        )
+
+    def publish_revision(self, proposal: dict[str, str], critique: dict[str, str]) -> dict[str, str]:
+        revision_input = {
+            "changes": [{
+                "op": "replace",
+                "path": "/central_claim/evaluation_scope",
+                "value": "Paired truth, degraded-truth, and FastSAM detector rollouts under identical seeds and environment parameters.",
+            }],
+            "summary": "Bound the detector condition explicitly while preserving the research identity and all protected contracts.",
+            "addressed_finding_ids": ["bind-detector-scope"],
+        }
+        return compiler.revise(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_record_path=Path(critique["critique_path"]),
+            revision_path=write_json(self.root / "revision.json", revision_input),
+            store=self.store,
+            author="codex/reviser",
+            recorded_at="2026-08-01T09:20:00Z",
         )
 
     def test_valid_ir_passes_schema_semantics_and_path_checks(self) -> None:
@@ -333,24 +352,10 @@ class ResearchCompilerContracts(unittest.TestCase):
 
     def test_full_proposal_critique_revision_freeze_lineage(self) -> None:
         proposal = self.publish_proposal()
+        self.assertEqual(proposal["stage"], "AWAITING_HUMAN_CRITIQUE")
         critique = self.publish_critique(proposal)
-        revision_input = {
-            "changes": [{
-                "op": "replace",
-                "path": "/central_claim/evaluation_scope",
-                "value": "Paired truth, degraded-truth, and FastSAM detector rollouts under identical seeds and environment parameters.",
-            }],
-            "summary": "Bound the detector condition explicitly while preserving the research identity and all protected contracts.",
-            "addressed_finding_ids": ["bind-detector-scope"],
-        }
-        revision = compiler.revise(
-            proposal_path=Path(proposal["proposal_path"]),
-            critique_record_path=Path(critique["critique_path"]),
-            revision_path=write_json(self.root / "revision.json", revision_input),
-            store=self.store,
-            author="codex/reviser",
-            recorded_at="2026-08-01T09:20:00Z",
-        )
+        revision = self.publish_revision(proposal, critique)
+        self.assertEqual(revision["stage"], "AWAITING_HUMAN_APPROVAL")
         frozen = compiler.freeze(
             revision_path=Path(revision["revision_path"]),
             store=self.store,
@@ -358,6 +363,7 @@ class ResearchCompilerContracts(unittest.TestCase):
             approval_scope="ENGINEERING_ACCEPTANCE",
             approval_note="Approve only the P1 compiler acceptance fixture; this does not authorize research execution.",
             approved_at="2026-08-01T09:30:00Z",
+            engineering_test=True,
         )
         verified = compiler.verify_freeze(
             receipt_path=Path(frozen["freeze_receipt_path"]),
@@ -369,6 +375,53 @@ class ResearchCompilerContracts(unittest.TestCase):
         self.assertEqual(Path(frozen["freeze_receipt_path"]).stem, frozen["freeze_receipt_sha256"])
         self.assertEqual(Path(frozen["research_ir_path"]).stem, frozen["research_ir_sha256"])
         self.assertEqual(Path(frozen["freeze_receipt_path"]).stat().st_mode & 0o222, 0)
+
+    def test_engineering_acceptance_requires_explicit_test_flag(self) -> None:
+        proposal = self.publish_proposal()
+        critique = self.publish_critique(proposal)
+        revision = self.publish_revision(proposal, critique)
+
+        with self.assertRaisesRegex(compiler.CompilerError, "test-only"):
+            compiler.freeze(
+                revision_path=Path(revision["revision_path"]),
+                store=self.store,
+                approved_by="test-harness/engineering-gate",
+                approval_scope="ENGINEERING_ACCEPTANCE",
+                approval_note="This fixture deliberately omits the required engineering test flag.",
+            )
+
+    def test_owner_reviewed_freeze_rejects_model_only_critique(self) -> None:
+        proposal = self.publish_proposal()
+        critique = self.publish_critique(proposal)
+        revision = self.publish_revision(proposal, critique)
+
+        with self.assertRaisesRegex(compiler.CompilerError, "owner/<identity>"):
+            compiler.freeze(
+                revision_path=Path(revision["revision_path"]),
+                store=self.store,
+                approved_by="owner/research-owner",
+                approval_scope="OWNER_REVIEWED",
+                approval_note="The owner approval cannot repair a critique that never came from the owner review turn.",
+            )
+
+    def test_owner_can_critique_then_approve_the_revised_ir(self) -> None:
+        proposal = self.publish_proposal()
+        critique = self.publish_critique(proposal, reviewer="owner/research-owner")
+        revision = self.publish_revision(proposal, critique)
+        frozen = compiler.freeze(
+            revision_path=Path(revision["revision_path"]),
+            store=self.store,
+            approved_by="owner/research-owner",
+            approval_scope="OWNER_REVIEWED",
+            approval_note="The research owner reviewed the proposal, requested the bound revision, and explicitly approved the revised IR.",
+            approved_at="2026-08-01T09:30:00Z",
+        )
+
+        verified = compiler.verify_freeze(
+            receipt_path=Path(frozen["freeze_receipt_path"]),
+            store=self.store,
+        )
+        self.assertEqual(verified["approval_scope"], "OWNER_REVIEWED")
 
     def test_revision_cannot_skip_major_finding(self) -> None:
         proposal = self.publish_proposal()
@@ -412,6 +465,7 @@ class ResearchCompilerContracts(unittest.TestCase):
                 approved_by="owner/engineering-acceptance",
                 approval_scope="ENGINEERING_ACCEPTANCE",
                 approval_note="This approval must fail because the revision lineage was forged.",
+                engineering_test=True,
             )
 
     def test_role_separation_is_enforced(self) -> None:
@@ -463,6 +517,15 @@ class ResearchCompilerContracts(unittest.TestCase):
         self.assertNotIn("references.scripts", source)
         self.assertNotIn("subprocess", source)
 
+    def test_interactive_prompt_requires_both_human_review_stops(self) -> None:
+        prompt = compiler.COMPILER_PROMPT_PATH.read_text(encoding="utf-8")
+        readme = (compiler.MVP_ROOT / "README.md").read_text(encoding="utf-8")
+        for marker in ("AWAITING_HUMAN_CRITIQUE", "AWAITING_HUMAN_APPROVAL"):
+            self.assertIn(marker, prompt)
+            self.assertIn(marker, readme)
+        self.assertIn("--engineering-test", prompt)
+        self.assertIn("--engineering-test", readme)
+
     def test_committed_fixed_wing_acceptance_fixture_replays(self) -> None:
         fixture = SKILL_ROOT / "examples" / "mvp0" / "fixed-wing-visual-guidance"
         store = fixture / "acceptance-store"
@@ -478,8 +541,8 @@ class ResearchCompilerContracts(unittest.TestCase):
             verified["research_ir_sha256"],
             "88096110be7a32b9f57d719442a50ebbba7e0358a7228a34a5e50c495850bcb5",
         )
-        self.assertEqual(receipt["compiler_prompt_sha256"], compiler.sha256_file(compiler.COMPILER_PROMPT_PATH))
         self.assertEqual(receipt["research_ir_schema_sha256"], compiler.sha256_file(compiler.SCHEMA_PATH))
+        self.assertEqual(receipt["compiler_prompt_sha256"], compiler.sha256_file(compiler.COMPILER_PROMPT_PATH))
         self.assertEqual(receipt["semantic_validator_sha256"], compiler.sha256_file(compiler.VALIDATOR_PATH))
 
 

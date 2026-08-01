@@ -21,11 +21,11 @@ revision explicitly replaces that claim field before freeze.
 | Artifact | SHA-256 |
 |---|---|
 | Proposed IR | `9ff5318d04669ce47446d8a89ef4230210d824f386818c539804eda0c7322a3e` |
-| Proposal record | `8a5fa5b469144d046b455513f8071212a7beadb3b6a97ef49f188d852e9f8824` |
-| Critique record | `db22d86b71ae17d03b8bb842ee399599adab819c4911e1adf045be36e047fc71` |
+| Proposal record | `bc50735ef26d787baebfe0f0538e3181ff0e7d273fddbf7de427b21284e23255` |
+| Critique record | `a2e907a5c7ebb4b876166d7b0f9dfd17ffb6d8215fe5fdf0183866a371b2fdb6` |
 | Frozen revised IR | `88096110be7a32b9f57d719442a50ebbba7e0358a7228a34a5e50c495850bcb5` |
-| Revision record | `ffea10eb2dbf226267c41b212365b391b2394ab85e7ee82c5fd5a4535d696930` |
-| Freeze receipt | `3581453633e5a6ba23bcbcbcae09131263fe5233a00f15452c344240123d4b32` |
+| Revision record | `c742e5971b7f729ed0cd1ad3d616c25ad77d70156b91346d94bb7972f00c152f` |
+| Freeze receipt | `520661ab70a879d1f1be88c0140de523ea8a29290c45b81baee12804e590c9be` |
 
 The receipt scope is `ENGINEERING_ACCEPTANCE`. It proves P1 can produce and
 replay a frozen Research IR; it does **not** authorize Worker dispatch, claim
@@ -36,7 +36,7 @@ Replay without ambient project paths:
 ```bash
 python3 ../../../mvp/research_compiler.py verify-freeze \
   --store acceptance-store \
-  --receipt acceptance-store/receipts/sha256/3581453633e5a6ba23bcbcbcae09131263fe5233a00f15452c344240123d4b32.json
+  --receipt acceptance-store/receipts/sha256/520661ab70a879d1f1be88c0140de523ea8a29290c45b81baee12804e590c9be.json
 ```
 
 Add `--check-paths` on the source machine to revalidate the bound workspace,

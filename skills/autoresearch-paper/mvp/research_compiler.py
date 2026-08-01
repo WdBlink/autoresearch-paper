@@ -42,6 +42,7 @@ PROTECTED_FIELDS = {
     "stop_rules",
 }
 REQUIRED_FINDING_SEVERITIES = {"blocker", "major"}
+OWNER_IDENTITY_PREFIX = "owner/"
 PROPOSAL_KEYS = {
     "author",
     "compiler_prompt_sha256",
@@ -583,6 +584,13 @@ def _identity(value: str, label: str) -> str:
     return value.strip()
 
 
+def _require_owner_identity(value: str, label: str) -> str:
+    identity = _identity(value, label)
+    if not identity.startswith(OWNER_IDENTITY_PREFIX) or len(identity) == len(OWNER_IDENTITY_PREFIX):
+        raise CompilerError(f"{label} must use the owner/<identity> namespace")
+    return identity
+
+
 def _require_hash(value: Any, label: str) -> str:
     if not isinstance(value, str) or HASH_RE.fullmatch(value) is None:
         raise CompilerError(f"{label} must be a lowercase SHA-256 digest")
@@ -693,7 +701,7 @@ def propose(*, ir_path: Path, store: Path, author: str, recorded_at: str | None 
         "research_ir_schema_sha256": sha256_file(SCHEMA_PATH),
     }
     digest, path = publish_object(store, record)
-    return {"stage": "PROPOSED", "proposal_sha256": digest, "proposal_path": str(path), "research_ir_sha256": ir_digest, "research_ir_path": str(ir_object)}
+    return {"stage": "AWAITING_HUMAN_CRITIQUE", "proposal_sha256": digest, "proposal_path": str(path), "research_ir_sha256": ir_digest, "research_ir_path": str(ir_object)}
 
 
 def _validate_critique_input(value: Any) -> dict[str, Any]:
@@ -886,7 +894,7 @@ def revise(
         "summary": revision_input["summary"],
     }
     digest, path = publish_object(store, record)
-    return {"stage": "REVISED", "revision_sha256": digest, "revision_path": str(path), "research_ir_sha256": revised_ir_digest, "research_ir_path": str(revised_ir_object)}
+    return {"stage": "AWAITING_HUMAN_APPROVAL", "revision_sha256": digest, "revision_path": str(path), "research_ir_sha256": revised_ir_digest, "research_ir_path": str(revised_ir_object)}
 
 
 def freeze(
@@ -897,6 +905,7 @@ def freeze(
     approval_scope: str,
     approval_note: str,
     approved_at: str | None = None,
+    engineering_test: bool = False,
 ) -> dict[str, str]:
     revision, revision_digest = _load_addressed(revision_path, expected_kind="research-ir-revision/v1")
     _validate_revision_record(revision)
@@ -923,10 +932,18 @@ def freeze(
     if proposal["compiler_prompt_sha256"] != sha256_file(COMPILER_PROMPT_PATH):
         raise CompilerError("proposal was compiled with a different Codex compiler prompt")
     approver = _identity(approved_by, "approved_by")
-    if approver in {proposal["author"], critique_record["reviewer"], revision["author"]}:
-        raise CompilerError("approver identity must be independent from proposal, critique, and revision identities")
     if approval_scope not in {"ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED"}:
         raise CompilerError("approval_scope must be ENGINEERING_ACCEPTANCE or OWNER_REVIEWED")
+    if approval_scope == "ENGINEERING_ACCEPTANCE":
+        if not engineering_test:
+            raise CompilerError("ENGINEERING_ACCEPTANCE is test-only and requires the explicit engineering_test flag")
+        if approver in {proposal["author"], critique_record["reviewer"], revision["author"]}:
+            raise CompilerError("engineering approver identity must be independent from proposal, critique, and revision identities")
+    else:
+        _require_owner_identity(critique_record["reviewer"], "OWNER_REVIEWED critique reviewer")
+        _require_owner_identity(approver, "OWNER_REVIEWED approver")
+        if approver in {proposal["author"], revision["author"]}:
+            raise CompilerError("owner approver identity must differ from proposal and revision author identities")
     if not isinstance(approval_note, str) or len(approval_note.strip()) < 12:
         raise CompilerError("approval_note must explain the approval boundary")
     approval_time = _recorded_at(approved_at)
@@ -954,6 +971,12 @@ def freeze(
 def verify_freeze(*, receipt_path: Path, store: Path, check_paths: bool = False) -> dict[str, str]:
     receipt, receipt_digest = _load_addressed(receipt_path, expected_kind=None)
     _validate_receipt(receipt)
+    if receipt["research_ir_schema_sha256"] != sha256_file(SCHEMA_PATH):
+        raise CompilerError("freeze receipt was created with a different Research IR schema")
+    if receipt["compiler_prompt_sha256"] != sha256_file(COMPILER_PROMPT_PATH):
+        raise CompilerError("freeze receipt was created with a different Codex compiler prompt")
+    if receipt["semantic_validator_sha256"] != sha256_file(VALIDATOR_PATH):
+        raise CompilerError("freeze receipt was created with a different semantic validator")
     if receipt_path.resolve() != _receipt_path(store, receipt_digest).resolve():
         raise CompilerError("freeze receipt is not located at its content address in the supplied store")
     proposal = _load_object(store, receipt["proposal_sha256"], expected_kind="research-ir-proposal/v1")
@@ -964,8 +987,13 @@ def verify_freeze(*, receipt_path: Path, store: Path, check_paths: bool = False)
     _validate_revision_record(revision)
     if critique_record["reviewer"] == proposal["author"]:
         raise CompilerError("freeze reviewer identity matches the proposal author")
-    if receipt["approved_by"] in {proposal["author"], critique_record["reviewer"], revision["author"]}:
-        raise CompilerError("freeze approver identity is not independent")
+    if receipt["approval_scope"] == "OWNER_REVIEWED":
+        _require_owner_identity(critique_record["reviewer"], "OWNER_REVIEWED critique reviewer")
+        _require_owner_identity(receipt["approved_by"], "OWNER_REVIEWED approver")
+        if receipt["approved_by"] in {proposal["author"], revision["author"]}:
+            raise CompilerError("owner freeze approver identity matches an AI author identity")
+    elif receipt["approved_by"] in {proposal["author"], critique_record["reviewer"], revision["author"]}:
+        raise CompilerError("engineering freeze approver identity is not independent")
     ir = _load_object(store, receipt["research_ir_sha256"])
     if critique_record["proposal_sha256"] != receipt["proposal_sha256"]:
         raise CompilerError("freeze critique does not bind the freeze proposal")
@@ -1029,6 +1057,11 @@ def _parser() -> argparse.ArgumentParser:
     freeze_parser.add_argument("--approval-scope", choices=("ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED"), required=True)
     freeze_parser.add_argument("--approval-note", required=True)
     freeze_parser.add_argument("--approved-at")
+    freeze_parser.add_argument(
+        "--engineering-test",
+        action="store_true",
+        help="allow test-fixture ENGINEERING_ACCEPTANCE; never use for interactive research",
+    )
 
     verify_parser = subparsers.add_parser("verify-freeze", help="replay a freeze receipt and its lineage")
     verify_parser.add_argument("--receipt", type=Path, required=True)
@@ -1052,7 +1085,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "revise":
             _emit(revise(proposal_path=args.proposal, critique_record_path=args.critique_record, revision_path=args.revision, store=args.store, author=args.author, recorded_at=args.recorded_at))
         elif args.command == "freeze":
-            _emit(freeze(revision_path=args.revision, store=args.store, approved_by=args.approved_by, approval_scope=args.approval_scope, approval_note=args.approval_note, approved_at=args.approved_at))
+            _emit(freeze(revision_path=args.revision, store=args.store, approved_by=args.approved_by, approval_scope=args.approval_scope, approval_note=args.approval_note, approved_at=args.approved_at, engineering_test=args.engineering_test))
         elif args.command == "verify-freeze":
             _emit(verify_freeze(receipt_path=args.receipt, store=args.store, check_paths=args.check_paths))
         return 0
