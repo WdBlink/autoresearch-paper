@@ -372,10 +372,17 @@ class RuntimeContracts(unittest.TestCase):
             self.assertEqual(argv[argv.index("--model") + 1], "MiniMax-M3-test")
             self.assertIn("--json-schema", argv)
             self.assertIn("--add-dir", argv)
-            self.assertEqual(
-                Path(argv[argv.index("--add-dir") + 1]).resolve(),
-                plan.resolve(),
+            declared_input_sandbox = Path(
+                argv[argv.index("--add-dir") + 1]
+            ).resolve()
+            self.assertEqual(declared_input_sandbox.name, "declared-input-sandbox")
+            self.assertTrue(declared_input_sandbox.is_dir())
+            self.assertTrue(
+                declared_input_sandbox.is_relative_to(
+                    (plan / "state" / "worker_runs").resolve()
+                )
             )
+            self.assertNotEqual(declared_input_sandbox, plan.resolve())
             self.assertNotIn("mavis", " ".join(argv).lower())
             prompt = json.loads(prompt_log.read_text())
             self.assertEqual(
