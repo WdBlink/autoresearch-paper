@@ -1,0 +1,529 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WdBlink/autoresearch-paper/schemas/mvp/experiment-receipt-v1.json",
+  "title": "Autoresearch Paper MVP-0 Experiment Receipt v1",
+  "description": "One Host-reconstructed, content-addressed record of a P2 Worker turn. It preserves provenance but makes no Evidence Gate decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "sequence",
+    "previous_receipt_sha256",
+    "recorded_at",
+    "research_ir",
+    "experiment",
+    "task",
+    "execution",
+    "provenance",
+    "artifacts",
+    "observations",
+    "usage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "experiment-receipt/v1"
+    },
+    "ledger_id": {
+      "$ref": "#/$defs/id"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_receipt_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "recorded_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "research_ir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "ir_id",
+        "version"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ir_id": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "stage",
+        "hypothesis",
+        "expected_observation"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "stage": {
+          "enum": [
+            "EVALUATOR_BUILD",
+            "BASELINE",
+            "METHOD"
+          ]
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 24
+        },
+        "expected_observation": {
+          "type": "string",
+          "minLength": 16
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "contract_path",
+        "contract_sha256",
+        "objective",
+        "command_argv",
+        "config",
+        "seeds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "contract_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 24
+        },
+        "command_argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "config": {
+          "type": "object"
+        },
+        "seeds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "failure_type",
+        "summary",
+        "started_at",
+        "completed_at",
+        "planned_command_reported",
+        "reported_commands"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "COMPLETED",
+            "BLOCKED",
+            "FAILED"
+          ]
+        },
+        "failure_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "completed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "planned_command_reported": {
+          "type": "boolean"
+        },
+        "reported_commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "argv",
+              "exit_code",
+              "summary"
+            ],
+            "properties": {
+              "argv": {
+                "$ref": "#/$defs/argv"
+              },
+              "exit_code": {
+                "type": "integer"
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 4
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "adapter_manifest_sha256",
+        "freeze_receipt_sha256",
+        "worker_turn_receipt_path",
+        "worker_turn_receipt_sha256",
+        "worker_result_path",
+        "worker_result_sha256",
+        "change_manifest_path",
+        "change_manifest_sha256",
+        "source_commit",
+        "worktree_root",
+        "worktree_head",
+        "session_id",
+        "worker_model_argument",
+        "worker_model_verified",
+        "input_artifacts",
+        "data_artifacts",
+        "environment"
+      ],
+      "properties": {
+        "adapter_id": {
+          "type": "string",
+          "minLength": 8
+        },
+        "adapter_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "freeze_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "worker_turn_receipt_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "worker_turn_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "worker_result_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^/"
+        },
+        "worker_result_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "change_manifest_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "change_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "worktree_root": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "worktree_head": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "worker_model_argument": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worker_model_verified": {
+          "type": "boolean"
+        },
+        "input_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/archived_input"
+          }
+        },
+        "data_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/archived_versioned_input"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "description",
+            "artifacts"
+          ],
+          "properties": {
+            "description": {
+              "type": "string",
+              "minLength": 8
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/archived_versioned_input"
+              }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/archived_output"
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statement",
+          "evidence"
+        ],
+        "properties": {
+          "statement": {
+            "type": "string",
+            "minLength": 12
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/archived_evidence"
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "complete"
+      ],
+      "properties": {
+        "input_tokens": {
+          "$ref": "#/$defs/token_count"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/token_count"
+        },
+        "cache_creation_input_tokens": {
+          "$ref": "#/$defs/token_count"
+        },
+        "cache_read_input_tokens": {
+          "$ref": "#/$defs/token_count"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "absolute_path": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "token_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "archived_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "blob_path",
+        "purpose"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blob_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 8
+        }
+      }
+    },
+    "archived_versioned_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "blob_path",
+        "version",
+        "purpose"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blob_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 8
+        }
+      }
+    },
+    "archived_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "change_type",
+        "sha256",
+        "blob_path",
+        "purpose"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "change_type": {
+          "enum": [
+            "CREATED",
+            "MODIFIED"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blob_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 8
+        }
+      }
+    },
+    "archived_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "blob_path"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blob_path": {
+          "$ref": "#/$defs/absolute_path"
+        }
+      }
+    }
+  }
+}

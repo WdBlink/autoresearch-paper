@@ -37,9 +37,9 @@ except ImportError:  # pragma: no cover - direct script execution
 MVP_ROOT = Path(__file__).resolve().parent
 TASK_SCHEMA_PATH = MVP_ROOT / "schemas" / "worker-task-contract.schema.json"
 RESULT_SCHEMA_PATH = MVP_ROOT / "schemas" / "worker-result.schema.json"
-ADAPTER_VERSION = "worker-adapter/v1"
+ADAPTER_VERSION = "worker-adapter/v2"
 SESSION_VERSION = "worker-session/v1"
-RECEIPT_VERSION = "worker-identity-usage-receipt/v1"
+RECEIPT_VERSION = "worker-identity-usage-receipt/v2"
 ALLOWED_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit", "Bash")
 PERMISSION_MODE = "dontAsk"
 GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -135,6 +135,39 @@ def _validate_against_schema(value: Any, schema_path: Path, label: str) -> None:
             f"{issue.code} at {issue.path}: {issue.message}" for issue in issues
         )
         raise AdapterError(f"{label} violates its closed schema: {rendered}")
+
+
+def _claude_transport_schema(value: Any) -> Any:
+    """Translate the authoritative 2020-12 subset to Claude's draft-07 subset.
+
+    Claude Code 2.1.205 asks its bundled validator to resolve any declared
+    ``$schema`` URI but does not register the 2020-12 metaschema.  Keep the
+    repository's 2020-12 schema authoritative for Host validation, while
+    sending a declaration-free draft-07-compatible projection over the CLI.
+    """
+
+    if isinstance(value, list):
+        return [_claude_transport_schema(item) for item in value]
+    if isinstance(value, str):
+        return value.replace("#/$defs/", "#/definitions/")
+    if not isinstance(value, dict):
+        return value
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"$schema", "$id"}:
+            continue
+        projected["definitions" if key == "$defs" else key] = _claude_transport_schema(item)
+    return projected
+
+
+def _result_transport_schema() -> dict[str, Any]:
+    schema = _claude_transport_schema(_load_json(RESULT_SCHEMA_PATH))
+    if not isinstance(schema, dict):
+        raise AdapterError("Worker result transport schema root must be an object")
+    rendered = _canonical_bytes(schema)
+    if b"2020-12" in rendered or b"#/$defs/" in rendered or b'"$defs"' in rendered:
+        raise AdapterError("Worker result transport schema is not Claude-compatible")
+    return schema
 
 
 def _resolve_executable(command: str) -> Path:
@@ -274,6 +307,7 @@ def _adapter_manifest(adapter_dir: Path) -> dict[str, Any]:
         "research_ir_path",
         "research_ir_sha256",
         "result_schema_sha256",
+        "result_transport_schema_sha256",
         "schema_version",
         "session_id",
         "source_repo",
@@ -294,6 +328,8 @@ def _adapter_manifest(adapter_dir: Path) -> dict[str, Any]:
             raise AdapterError("Worker task schema drifted")
         if _sha256_file(RESULT_SCHEMA_PATH) != value["result_schema_sha256"]:
             raise AdapterError("Worker result schema drifted")
+        if _sha256_bytes(_canonical_bytes(_result_transport_schema())) != value["result_transport_schema_sha256"]:
+            raise AdapterError("Worker result transport schema drifted")
     except OSError as exc:
         raise AdapterError(f"adapter identity artifact is unavailable: {exc}") from exc
     try:
@@ -438,6 +474,9 @@ def initialize_adapter(
             ),
             "research_ir_sha256": ir_digest,
             "result_schema_sha256": _sha256_file(RESULT_SCHEMA_PATH),
+            "result_transport_schema_sha256": _sha256_bytes(
+                _canonical_bytes(_result_transport_schema())
+            ),
             "schema_version": ADAPTER_VERSION,
             "session_id": session_id,
             "source_repo": str(source_repo),
@@ -539,11 +578,28 @@ def validate_task_contract(contract: Any, manifest: Mapping[str, Any], ir: Mappi
     if contract["command_argv"] != experiment.get("command_argv"):
         raise AdapterError("Worker task command_argv must equal the frozen experiment command")
     input_paths: set[str] = set()
+    input_digests: dict[str, str] = {}
     for item in contract["input_artifacts"]:
         path = _safe_relative_path(item["path"], "Worker task input artifact")
         if path in input_paths:
             raise AdapterError("Worker task input_artifacts contain duplicate paths")
         input_paths.add(path)
+        input_digests[path] = item["sha256"]
+    context = contract["experiment_context"]
+    for label, artifacts in (
+        ("data", context["data_artifacts"]),
+        ("environment", context["environment"]["artifacts"]),
+    ):
+        seen: set[str] = set()
+        for item in artifacts:
+            path = _safe_relative_path(item["path"], f"Worker task {label} artifact")
+            if path in seen:
+                raise AdapterError(f"Worker task {label} artifacts contain duplicate paths")
+            seen.add(path)
+            if input_digests.get(path) != item["sha256"]:
+                raise AdapterError(
+                    f"Worker task {label} provenance must name an exact input_artifact: {path}"
+                )
     return contract
 
 
@@ -971,6 +1027,42 @@ def _write_rejected_change_manifest(
     return path
 
 
+def _archive_turn_inputs(
+    *,
+    run_dir: Path,
+    worktree: Path,
+    contract: Mapping[str, Any],
+) -> Path:
+    """Snapshot verified pre-execution inputs for later experiment provenance."""
+
+    entries: list[dict[str, str]] = []
+    for item in contract["input_artifacts"]:
+        source = worktree / item["path"]
+        digest = item["sha256"]
+        blob = run_dir / "input-blobs" / "sha256" / digest
+        if _sha256_file(source) != digest:
+            raise AdapterError(f"task input changed before archival: {item['path']}")
+        if blob.exists() or blob.is_symlink():
+            if (
+                blob.is_symlink()
+                or not blob.is_file()
+                or blob.stat().st_mode & 0o777 != 0o444
+                or _sha256_file(blob) != digest
+            ):
+                raise AdapterError(f"task input archive collision: {item['path']}")
+        else:
+            _atomic_write(blob, source.read_bytes(), immutable=True)
+        entries.append({
+            "blob_path": str(blob),
+            "path": item["path"],
+            "purpose": item["purpose"],
+            "sha256": digest,
+        })
+    archive_path = run_dir / "input-archive.json"
+    _write_json(archive_path, {"artifacts": entries}, immutable=True)
+    return archive_path
+
+
 def _run_transport(
     command: Sequence[str],
     *,
@@ -995,10 +1087,41 @@ def _run_transport(
         )
         return proc.returncode, stdout, stderr, False
     except subprocess.TimeoutExpired:
+        # Capture descendants before terminating the direct process; after it
+        # exits, orphaned children may be reparented and no longer discoverable.
+        descendants: list[int] = []
+        try:
+            listing = subprocess.run(
+                ["ps", "-axo", "pid=,ppid="],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            children: dict[int, list[int]] = {}
+            for line in listing.splitlines():
+                fields = line.split()
+                if len(fields) == 2 and all(field.isdigit() for field in fields):
+                    child, parent = map(int, fields)
+                    children.setdefault(parent, []).append(child)
+            pending = list(children.get(proc.pid, []))
+            while pending:
+                child = pending.pop()
+                if child not in descendants:
+                    descendants.append(child)
+                    pending.extend(children.get(child, []))
+        except (OSError, subprocess.SubprocessError):
+            descendants = []
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            proc.terminate()
+            for child in descendants:
+                try:
+                    os.kill(child, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
         try:
             stdout, stderr = proc.communicate(timeout=1)
         except subprocess.TimeoutExpired:
@@ -1011,6 +1134,8 @@ def _run_transport(
             os.killpg(proc.pid, 0)
         except ProcessLookupError:
             group_exists = False
+        except PermissionError:
+            group_exists = True
         else:
             group_exists = True
         if group_exists:
@@ -1018,6 +1143,13 @@ def _run_transport(
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                proc.kill()
+                for child in descendants:
+                    try:
+                        os.kill(child, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
         final_stdout, final_stderr = proc.communicate()
         if final_stdout:
             stdout = final_stdout
@@ -1031,6 +1163,19 @@ def _run_transport(
                 os.killpg(proc.pid, 0)
             except ProcessLookupError:
                 break
+            except PermissionError:
+                living = []
+                for child in descendants:
+                    try:
+                        os.kill(child, 0)
+                    except ProcessLookupError:
+                        continue
+                    except PermissionError:
+                        living.append(child)
+                    else:
+                        living.append(child)
+                if not living:
+                    break
             time.sleep(0.02)
         return proc.returncode, stdout, stderr, True
 
@@ -1072,6 +1217,8 @@ def _finalize_turn(
         "failure": failure,
         "freeze_receipt_sha256": manifest["freeze_receipt_sha256"],
         "invocation_mode": invocation_mode,
+        "input_archive_path": str(run_dir / "input-archive.json"),
+        "input_archive_sha256": _sha256_file(run_dir / "input-archive.json"),
         "outcome": outcome,
         "prompt_sha256": prompt_sha256,
         "raw_stderr_sha256": _sha256_file(run_dir / "transport.stderr"),
@@ -1175,6 +1322,7 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
         before = _inventory(worktree, contract["allowed_paths"])
         _reject_writable_symlinks(before, contract["allowed_paths"])
         run_dir.mkdir(parents=True, exist_ok=False)
+        _archive_turn_inputs(run_dir=run_dir, worktree=worktree, contract=contract)
         _write_json(run_dir / "before-inventory.json", before, immutable=True)
         prompt = _prompt(manifest=manifest, contract=contract, contract_digest=contract_digest)
         prompt_sha256 = _sha256_bytes(prompt.encode("utf-8"))
@@ -1188,7 +1336,7 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
             "stream-json",
             "--verbose",
             "--json-schema",
-            json.dumps(_load_json(RESULT_SCHEMA_PATH), separators=(",", ":")),
+            json.dumps(_result_transport_schema(), separators=(",", ":")),
             "--max-budget-usd",
             str(manifest["max_budget_usd_per_turn"]),
             "--permission-mode",

@@ -104,7 +104,15 @@ for path in \
   "${ROOT_DIR}/SKILL.md" \
   "${ROOT_DIR}/mvp/README.md" \
   "${ROOT_DIR}/mvp/research_compiler.py" \
+  "${ROOT_DIR}/mvp/worker_adapter.py" \
+  "${ROOT_DIR}/mvp/experiment_ledger.py" \
+  "${ROOT_DIR}/mvp/evidence_gate.py" \
   "${ROOT_DIR}/mvp/schemas/research-ir.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/worker-task-contract.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/worker-result.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/experiment-receipt.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/evaluator-report.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/evidence-gate-decision.schema.json" \
   "${ROOT_DIR}/mvp/prompts/codex-research-compiler.md" \
   "${ROOT_DIR}/assets/task-prompt-snippets.md" \
   "${ROOT_DIR}/assets/first-action-last-seen-hook.md" \

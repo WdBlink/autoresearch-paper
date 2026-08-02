@@ -54,8 +54,85 @@ class WorkerAdapterContracts(unittest.TestCase):
             check=True,
         )
         subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "base"], check=True)
+        base_digest = hashlib.sha256((self.source / "src" / "base.txt").read_bytes()).hexdigest()
         self.ir = {
+            "ir_id": "unit-research",
+            "version": 1,
             "source": {"code_root": str(self.source)},
+            "central_claim": {
+                "baseline_id": "unit-baseline",
+                "primary_metric_id": "quality",
+            },
+            "baseline_contract": {
+                "baseline_id": "unit-baseline",
+                "status": "READY",
+            },
+            "metric_contract": {
+                "primary_metric": {
+                    "metric_id": "quality",
+                    "name": "Fixture quality",
+                    "direction": "maximize",
+                    "unit": "ratio",
+                    "acceptance": {
+                        "aggregation": "ci_lower",
+                        "operator": ">=",
+                        "value": 0.7,
+                        "confidence_level": 0.95,
+                        "minimum_seeds": 1,
+                    },
+                },
+                "guardrails": [
+                    {
+                        "metric_id": "latency",
+                        "name": "Fixture latency",
+                        "direction": "minimize",
+                        "unit": "ms",
+                        "acceptance": {
+                            "aggregation": "ci_upper",
+                            "operator": "<=",
+                            "value": 100.0,
+                            "confidence_level": 0.95,
+                            "minimum_seeds": 1,
+                        },
+                    }
+                ],
+            },
+            "falsification_conditions": [
+                {
+                    "id": "quality-collapse",
+                    "metric_id": "quality",
+                    "aggregation": "ci_upper",
+                    "operator": "<",
+                    "value": 0.4,
+                    "decision": "REJECT_CLAIM",
+                }
+            ],
+            "evaluator_spec": {
+                "status": "READY",
+                "working_directory": str(self.source),
+                "command_argv": ["python3", "evaluate.py", "--json"],
+                "implementation_artifact": str(self.source / "src" / "base.txt"),
+                "implementation_sha256": base_digest,
+            },
+            "budget": {
+                "max_experiments": 8,
+                "max_failed_experiments": 2,
+                "max_wall_clock_seconds": 3600,
+            },
+            "stop_rules": [
+                {
+                    "id": "catastrophic-safety",
+                    "condition": "A frozen catastrophic safety condition is observed.",
+                    "action": "STOP",
+                    "evidence_required": ["safety-log"],
+                },
+                {
+                    "id": "contract-drift",
+                    "condition": "The frozen evaluator contract cannot represent the observation.",
+                    "action": "RECOMPILE",
+                    "evidence_required": ["schema-drift"],
+                },
+            ],
             "allowed_search_space": [
                 {
                     "id": "implementation",
@@ -66,6 +143,9 @@ class WorkerAdapterContracts(unittest.TestCase):
             "experiment_plan": [
                 {
                     "id": "exp-one",
+                    "stage": "METHOD",
+                    "hypothesis": "The bounded unit intervention produces one verifiable artifact.",
+                    "expected_observation": "One content-addressed artifact is present.",
                     "search_space_ids": ["implementation"],
                     "command_argv": ["python3", "run.py", "--stage", "one"],
                     "expected_artifacts": ["artifacts/**"],
@@ -158,7 +238,7 @@ class WorkerAdapterContracts(unittest.TestCase):
             "  'status': 'BLOCKED' if mode == 'blocked' else 'COMPLETED',\n"
             "  'summary': 'Bounded task completed with controller-verifiable output.',\n"
             "  'artifacts': artifacts,\n"
-            "  'commands_run': [],\n"
+            "  'commands_run': ([{'argv': task['command_argv'], 'exit_code': 0, 'summary': 'Frozen experiment command completed.'}] if os.environ.get('MVP0_FAKE_REPORT_COMMAND') == '1' else []),\n"
             "  'observations': observations,\n"
             "  'proposed_next_actions': [],\n"
             "}\n"
@@ -193,6 +273,29 @@ class WorkerAdapterContracts(unittest.TestCase):
                 }
             ],
             "command_argv": ["python3", "run.py", "--stage", "one"],
+            "experiment_context": {
+                "config": {"stage": "one", "optimizer": "test-only"},
+                "seeds": [7],
+                "data_artifacts": [
+                    {
+                        "path": "src/base.txt",
+                        "sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
+                        "version": "fixture-v1",
+                        "purpose": "Synthetic unit-test dataset",
+                    }
+                ],
+                "environment": {
+                    "description": "Deterministic unit-test environment",
+                    "artifacts": [
+                        {
+                            "path": "src/base.txt",
+                            "sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
+                            "version": "fixture-env-v1",
+                            "purpose": "Synthetic environment lock",
+                        }
+                    ],
+                },
+            },
             "acceptance_checks": [
                 {"argv": ["python3", "-m", "unittest"], "purpose": "Run deterministic tests"}
             ],
@@ -240,6 +343,22 @@ class WorkerAdapterContracts(unittest.TestCase):
         self.assertEqual(inspected["turn_count"], 0)
         self.assertIn("not an OS sandbox", inspected["isolation_assurance"])
 
+    def test_claude_transport_schema_drops_unsupported_2020_12_metaschema(self) -> None:
+        schema = adapter._result_transport_schema()  # noqa: SLF001
+        rendered = json.dumps(schema, sort_keys=True)
+        self.assertNotIn("$schema", schema)
+        self.assertNotIn("$id", schema)
+        self.assertNotIn("$defs", rendered)
+        self.assertNotIn("#/$defs/", rendered)
+        self.assertNotIn("2020-12", rendered)
+        self.assertIn("definitions", schema)
+
+        delivered = self.dispatch("task-one")
+        self.assertEqual(delivered["outcome"], "COMPLETED")
+        argv = json.loads(self.log.read_text().splitlines()[0])
+        transported = json.loads(argv[argv.index("--json-schema") + 1])
+        self.assertEqual(transported, schema)
+
     def test_fixed_session_creates_then_resumes_and_records_usage(self) -> None:
         first = self.dispatch("task-one")
         second = self.dispatch("task-two", env={"MVP0_FAKE_INPUT": "0", "MVP0_FAKE_OUTPUT": "0"})
@@ -263,6 +382,18 @@ class WorkerAdapterContracts(unittest.TestCase):
         second_result = json.loads(Path(second["result_path"]).read_text())
         self.assertEqual(second_result["artifacts"][0]["path"], "artifacts/two.json")
         receipt = json.loads(Path(second["receipt_path"]).read_text())
+        input_archive = Path(receipt["input_archive_path"])
+        self.assertEqual(input_archive.stat().st_mode & 0o777, 0o444)
+        self.assertEqual(
+            hashlib.sha256(input_archive.read_bytes()).hexdigest(),
+            receipt["input_archive_sha256"],
+        )
+        archived = json.loads(input_archive.read_text())["artifacts"][0]
+        self.assertEqual(archived["path"], "src/base.txt")
+        self.assertEqual(
+            hashlib.sha256(Path(archived["blob_path"]).read_bytes()).hexdigest(),
+            archived["sha256"],
+        )
         self.assertEqual(receipt["usage"]["input_tokens"], 0)
         self.assertEqual(receipt["usage"]["output_tokens"], 0)
         self.assertEqual(receipt["usage"]["cache_read_input_tokens"], 31)
@@ -347,6 +478,8 @@ class WorkerAdapterContracts(unittest.TestCase):
             "sha256": hashlib.sha256(secret.read_bytes()).hexdigest(),
             "purpose": "Must not traverse a worktree symlink",
         }]
+        contract["experiment_context"]["data_artifacts"] = []
+        contract["experiment_context"]["environment"]["artifacts"] = []
         contract_path = write_json(self.root / "symlink-input.json", contract)
         with self.assertRaisesRegex(adapter.AdapterError, "traverses a symbolic link"):
             adapter.dispatch_task(adapter_dir=self.adapter_dir, task_contract=contract_path)
@@ -425,6 +558,8 @@ class WorkerAdapterContracts(unittest.TestCase):
     def test_task_contract_input_hash_is_checked_before_transport(self) -> None:
         contract = self.task("task-one")
         contract["input_artifacts"][0]["sha256"] = "0" * 64
+        contract["experiment_context"]["data_artifacts"][0]["sha256"] = "0" * 64
+        contract["experiment_context"]["environment"]["artifacts"][0]["sha256"] = "0" * 64
         contract_path = write_json(self.root / "wrong-input.json", contract)
         with mock.patch.dict(os.environ, {"MVP0_CLAUDE_ARGV_LOG": str(self.log)}, clear=False):
             with self.assertRaisesRegex(adapter.AdapterError, "input hash changed"):

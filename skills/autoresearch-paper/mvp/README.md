@@ -1,10 +1,13 @@
-# MVP-0 P1–P2 — Research Compiler and Minimal Worker Adapter
+# MVP-0 P1–P4 — Research Compiler, Worker, Receipts, and Evidence Gate
 
 This directory is the new Thin Loop implementation path. P1 compiles an open
 research idea into one immutable, executable, and falsifiable Research IR. P2
 binds an owner-reviewed IR to one detached research worktree and one exact
-Claude Code/MiniMax session, then accepts only closed JSON Worker results. The
-implementation does not import or call the Legacy v0.20 Harness.
+Claude Code/MiniMax session, then accepts only closed JSON Worker results. P3
+turns each terminal P2 delivery into an ordered, content-addressed Experiment
+Receipt with archived input/output evidence. The implementation does not import
+or call the Legacy v0.20 Harness. P4 validates the frozen evaluator's closed
+report and emits one deterministic Gate decision for each P3 receipt.
 
 ## Boundary
 
@@ -20,7 +23,9 @@ It deliberately excludes model routing, Claude/MiniMax sessions, Codex call
 budgets, watchdogs, cron, dashboard state, paper templates, and lifecycle
 slots. Those concerns cannot change what constitutes scientific success. P2
 adds the Worker transport beside the IR; it does not add transport fields to
-the scientific contract.
+the scientific contract. P3 adds provenance beside both. P4 decides only
+whether current evidence supports KEEP, PIVOT, STOP, or RECOMPILE; it does not
+perform the recompile.
 
 ## Workflow
 
@@ -173,6 +178,13 @@ source commit, worktree, Research IR, Claude executable bytes, MiniMax model
 argument, result/task schemas, tool list, and session UUID. `session.json`
 stores only the current fixed-session turn count and `READY/BUSY/PAUSED` state.
 
+The repository's Draft 2020-12 Worker Result schema remains the authoritative
+Host validator. Claude Code 2.1.205 cannot resolve that metaschema through
+`--json-schema`, so the Adapter deterministically removes `$schema`/`$id`, maps
+`$defs` to `definitions`, rewrites local references, and sends only that
+Draft-07-compatible projection at the transport edge. The manifest binds both
+authoritative and projected schema hashes.
+
 ### Write and validate one task contract
 
 Use [`schemas/worker-task-contract.schema.json`](schemas/worker-task-contract.schema.json).
@@ -186,7 +198,10 @@ The Adapter additionally requires:
 - `command_argv` exactly equals the frozen experiment command;
 - every input is a repository-relative regular worktree file with the declared
   digest. Inputs are read evidence and need not be inside the narrower write
-  boundary in `allowed_paths`.
+  boundary in `allowed_paths`;
+- `experiment_context` freezes the configuration, explicit seed list, data
+  versions, and environment artifact versions before dispatch. Every data or
+  environment artifact must be an exact declared input artifact.
 
 ```bash
 python3 mvp/worker_adapter.py validate-task \
@@ -221,6 +236,10 @@ malformed output, timeout, or transport failure creates an immutable failed
 receipt and pauses the session. P2 intentionally has no automatic recovery or
 retry path.
 
+Before launch, P2 also archives every verified task input under the immutable
+turn run directory. This prevents P3 from reconstructing a pre-execution input
+using bytes that a completed experiment may already have modified.
+
 Each successful or failed launched turn stores:
 
 ```text
@@ -230,6 +249,8 @@ adapter-dir/
 ├── contracts/sha256/*.json        immutable task contracts
 ├── runs/000001-task-id/
 │   ├── instruction.json
+│   ├── input-archive.json
+│   ├── input-blobs/sha256/*
 │   ├── before-inventory.json
 │   ├── after-inventory.json       successful response only
 │   ├── change-manifest.json       or rejected-change-manifest.json
@@ -256,5 +277,131 @@ only on a trusted machine and treat a paused worktree as evidence to inspect,
 not something to auto-reset.
 
 No watchdog, checkpoint protocol, Dashboard, cron, launchd, paper-writing
-workflow, autonomous loop, recovery controller, or production/24h/7×24 claim
-is part of P2.
+workflow, autonomous loop, P5 recompile controller, or production/24h/7×24
+claim is part of P2–P4.
+
+## P3 Experiment Receipt ledger
+
+P3 records what happened; it does not judge whether the result is scientifically
+good. Initialize one new ledger outside the source repository, research
+worktree, and Adapter directory:
+
+```bash
+python3 mvp/experiment_ledger.py init \
+  --adapter-dir /absolute/run/mvp0-worker \
+  --ledger-dir /absolute/run/mvp0-experiment-ledger
+```
+
+After every terminal P2 dispatch, record that exact turn before dispatching the
+next task:
+
+```bash
+python3 mvp/experiment_ledger.py record \
+  --ledger-dir /absolute/run/mvp0-experiment-ledger \
+  --turn-receipt /absolute/run/mvp0-worker/turns/000001-task-id.json
+
+python3 mvp/experiment_ledger.py verify \
+  --ledger-dir /absolute/run/mvp0-experiment-ledger
+```
+
+The ledger requires P2 turns in exact sequence and makes exact duplicate
+recording idempotent. A `COMPLETED` experiment must report the frozen
+`command_argv` with exit code zero; creating files without reporting successful
+execution is a Worker delivery, not an Experiment Receipt. `BLOCKED` and
+`FAILED` turns are still recorded without upgrading their identity or outcome.
+Public `verify` also requires the JSONL ledger to cover every terminal P2 turn
+and rejects any receipt object not named by the index, so a deleted log suffix
+cannot be mistaken for complete history. If a process stops after publishing
+the immutable receipt object but before appending its JSONL entry, retrying the
+same turn reuses that exact object and completes the append; unrelated orphan
+objects remain fail-closed.
+
+Each record binds:
+
+- frozen Research IR, experiment hypothesis, stage, and expected observation;
+- task contract, exact command, configuration, seeds, data versions, and
+  environment versions;
+- Adapter, fixed Claude session, MiniMax identity result, source commit,
+  worktree HEAD observation, change manifest, and raw P2 turn/result hashes;
+- immutable pre-execution input blobs plus result and observation-evidence
+  blobs;
+- exact Worker outcome and nullable/zero-preserving usage observations.
+
+`recorded_at` is the bound P2 terminal timestamp rather than a new wall-clock
+sample. That makes the content-addressed receipt deterministic across recovery
+from an interrupted index append.
+
+`experiment-receipts.jsonl` appends the complete closed receipt and its digest.
+The same receipt is stored immutably at
+`objects/sha256/<receipt-sha256>.json`; evidence bytes live at
+`blobs/sha256/<artifact-sha256>`. Every receipt names the previous digest, and
+`verify` replays the JSONL/object equality, chain, P2 lineage, frozen task/IR,
+and all blobs.
+
+P3 deliberately has no evaluator and emits no KEEP, PIVOT, STOP, RECOMPILE,
+claim acceptance, SOTA, or paper-readiness decision. Those are P4 Evidence Gate
+concerns.
+
+## P4 deterministic Evidence Gate
+
+P4 consumes the complete P3 ledger and, for a `READY` evaluator, one closed
+[`evaluator-report/v1`](schemas/evaluator-report.schema.json). The report must
+bind the exact Research IR and Experiment Receipt, frozen evaluator executable
+hash and argv, baseline, task seeds, every primary/guardrail metric, every
+frozen stop rule, and source blobs already archived by P3. The evaluator report
+contains measurements, never a decision.
+
+Initialize a separate Gate store, then decide exactly once for a receipt:
+
+```bash
+python3 mvp/evidence_gate.py init \
+  --ledger-dir /absolute/run/mvp0-experiment-ledger \
+  --store-dir /absolute/run/mvp0-evidence-gate
+
+python3 mvp/evidence_gate.py decide \
+  --store-dir /absolute/run/mvp0-evidence-gate \
+  --experiment-receipt-sha256 RECEIPT_SHA256 \
+  --evaluator-report /absolute/run/evaluator-report.json
+
+python3 mvp/evidence_gate.py verify \
+  --store-dir /absolute/run/mvp0-evidence-gate
+```
+
+Process receipts in P3 sequence. Gate records must remain a contiguous prefix
+of the P3 ledger, so a later receipt cannot be decided while an earlier one is
+still undecided. P4 validates and archives the closed evaluator report; it does
+not launch the domain evaluator process itself.
+
+For `BLOCKED` or `FAILED` receipts, omit `--evaluator-report`; the result is
+PIVOT unless a frozen budget is exhausted, in which case it is STOP. A
+completed receipt under a `PLANNED` evaluator yields RECOMPILE so P5 can
+propose a new IR that binds the evaluator implementation. P4 never treats a
+Worker-authored statement as evaluator output.
+
+For a completed receipt with a `READY` evaluator, the deterministic priority is:
+
+1. frozen falsification, triggered STOP rule, or exhausted budget → `STOP`;
+2. triggered RECOMPILE rule → `RECOMPILE`;
+3. all seed, primary threshold, primary baseline non-inferiority, and guardrail
+   checks pass → `KEEP`;
+4. otherwise → `PIVOT`.
+
+Falsification requires the metric's frozen minimum seed count. Baseline
+comparison uses the primary metric's frozen aggregation and direction; P4
+requires non-inferiority but invents no unfrozen superiority margin. Reaching a
+hard budget can produce STOP while preserving `candidate_accepted=true`, so the
+evidence assessment is not erased by the execution cap.
+
+The Gate canonicalizes and archives the evaluator report and evaluator
+implementation, publishes a content-addressed
+[`evidence-gate-decision/v1`](schemas/evidence-gate-decision.schema.json), and
+creates one immutable record keyed by Experiment Receipt SHA-256. A second
+report for the same receipt is rejected, limiting adaptive Gate queries. Full
+verification rebuilds every decision from the frozen IR, complete P3 lineage,
+archived evaluator, report, metric truth table, stop rules, and historical
+budget prefix. Exact publication interruption is recoverable; unrelated orphan
+objects fail closed.
+
+P4 does not judge novelty, paper quality, SOTA, or publication readiness. It
+does not generate failure analysis, `recompile_request.json`, a revised IR, or
+the next Worker task. Those are P5 Recompile Loop responsibilities.

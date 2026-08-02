@@ -21,7 +21,8 @@ start writing.
 ## Status
 
 - **Current version:** v0.20.1
-- **MVP-0 migration track:** P1 Research Compiler and P2 Minimal Worker Adapter
+- **MVP-0 migration track:** P1 Research Compiler, P2 Minimal Worker Adapter,
+  P3 Experiment Receipt ledger, and P4 Evidence Gate
   are implemented on the `codex/mvp0-thin-loop` feature branch. P1 provides an
   isolated Research IR v1 schema, deterministic semantic validator,
   strongest-Codex compiler prompt, proposal/critique/revision workflow, two
@@ -29,13 +30,25 @@ start writing.
   content-addressed freeze receipts. P2 binds an owner-reviewed IR to one clean
   detached research worktree and one exact Claude Code/MiniMax session, then
   validates a closed task contract, closed JSON result, Git-visible change
-  boundary, and immutable identity/usage receipt.
+  boundary, and immutable identity/usage receipt. P3 consumes terminal P2
+  turns in exact order, archives pre-execution inputs and result/evidence bytes,
+  publishes a closed content-addressed Experiment Receipt, and appends the full
+  receipt plus digest to a replayable hash-chained JSONL ledger.
+  P4 validates a closed report from the evaluator frozen in Research IR, binds
+  it to exact P3 evidence, archives the evaluator implementation, and publishes
+  one replayable KEEP/PIVOT/STOP/RECOMPILE decision per Experiment Receipt.
+  P2 now keeps the repository's Draft 2020-12 result schema authoritative while
+  projecting a declaration-free Draft-07-compatible schema only at the Claude
+  Code `--json-schema` boundary. This fixes Claude Code 2.1.205 rejecting the
+  2020-12 metaschema before a MiniMax request is launched.
   `ENGINEERING_ACCEPTANCE` is test-only; a live freeze requires recorded owner
   critique and later explicit owner approval.
   This track does not import or extend the Legacy Harness runtime and does not
-  change the released v0.20.1 product claim. P2 does not add watchdogs,
-  checkpoints, Dashboard, launchd, promotion, scientific acceptance, or an
-  autonomous loop. See
+  change the released v0.20.1 product claim. P4 makes bounded evidence
+  decisions but does not analyze failures, revise Research IR, or run the P5
+  recompile loop. The track does not add
+  watchdogs, checkpoints, Dashboard, launchd, promotion, scientific acceptance,
+  or an autonomous loop. See
   [`mvp/README.md`](skills/autoresearch-paper/mvp/README.md).
 - **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
   bounded T032 field-lineage acceptance
