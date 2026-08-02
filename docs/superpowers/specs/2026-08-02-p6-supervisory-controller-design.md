@@ -1,6 +1,6 @@
 # P6 Supervisory Controller and Codex Thread Watchdog
 
-Status: approved design
+Status: approved design, amended after full-Watchdog review
 
 Date: 2026-08-02
 
@@ -8,9 +8,12 @@ Date: 2026-08-02
 
 Add a bounded P6 control layer above the implemented MVP-0 P1–P5 transactions.
 P6 must keep one research run moving without requiring a person to send
-"continue" after every terminal Codex turn. It must use a Codex scheduled task
-inside the existing research chat, appear in the Codex App Scheduled view, and
-bind exactly one automation to one Codex thread and one research run.
+"continue" after every terminal Codex turn. It must restore the accepted
+three-layer runtime-assurance closure: an independent zero-model L0 health
+supervisor, a Codex scheduled L1 task inside the existing research chat, and
+controller-owned L2 heartbeats from the fixed Claude/MiniMax Worker. L1 must
+appear in the Codex App Scheduled view and bind exactly one automation to one
+Codex thread and one research run.
 
 The first live acceptance target is:
 
@@ -27,37 +30,57 @@ P6 adds:
 
 - a single canonical supervisor state for a run;
 - one-idempotent-tick transition logic over P2–P5 durable artifacts;
-- Codex thread-heartbeat automation registration;
+- an independently registered L0 launchd health supervisor with zero model
+  calls;
+- a Codex thread-heartbeat L1 automation registration;
+- a controller-owned L2 Worker-heartbeat contract and receipt stream;
+- one immutable activation receipt binding exact L0/L1/L2 identities,
+  intervals, thresholds, logs, and functional probes;
 - automatic recovery from a completed or interrupted Host turn;
+- deterministic L0 repair of a missing or stopped L1 registration;
 - automatic delegated review for execution-only Research IR revisions;
 - automatic creation of the next authorized P2 lineage;
+- exact-once pause/stop with owned-resource and residual reporting;
+- a read-only runtime snapshot suitable for the existing Dashboard projection;
 - explicit pause, terminal, and human-review states.
 
 P6 does not add:
 
 - a second research truth outside the P1–P5 stores;
-- a generic process daemon or system `cron`/`launchd` supervisor;
-- a Dashboard or paper-writing loop;
+- a generic machine-wide process daemon or system `cron` entry unrelated to
+  one exact research run;
+- a new Dashboard implementation or paper-writing loop; P6 supplies the
+  canonical runtime snapshot consumed by the existing Dashboard;
 - automatic modification of scientific claims, metrics, baselines, fairness,
   falsification, or safety boundaries;
 - silent retry of the same failed Worker contract;
 - promotion of rejected Worker changes into accepted source state.
 
-The Legacy v0.20 Harness remains isolated. P6 uses only the MVP-0 P1–P5
-contracts and Codex scheduled tasks.
+The Legacy v0.20 Harness remains isolated. P6 may port its already-tested
+runtime-assurance contracts and deterministic algorithms into independent MVP0
+modules, but it must not import the legacy Harness runtime or restore legacy
+research state as a second source of truth.
 
 ## Chosen architecture
 
-Use a Codex scheduled task inside the existing chat, backed by a deterministic
-P6 controller.
+Use a three-layer hybrid watchdog backed by a deterministic P6 controller.
 
 ```text
-Codex App Scheduled
-  -> thread heartbeat (exact target_thread_id)
+L0 launchd health supervisor (session-independent, metadata-only, zero model)
+  -> verifies and, under frozen recovery authority, restores exact L1
+
+L1 Codex App Scheduled heartbeat (exact target_thread_id)
   -> durable prompt (exact controller path and identity)
   -> supervisor tick (one transition only)
   -> P2 / P3 / P4 / P5 / delegated review / child P2
   -> immutable tick receipt and updated canonical state
+
+L2 fixed Claude/MiniMax Worker
+  -> sequenced identity-bound heartbeat receipts
+  -> supervisor liveness and stale-worker decisions
+
+read-only runtime inspection
+  -> existing loopback Dashboard projection
 ```
 
 Rejected alternatives:
@@ -65,12 +88,17 @@ Rejected alternatives:
 1. A standalone scheduled task that later relays to the research chat adds a
    second chat, loses the original context, and needs an extra thread-messaging
    bridge.
-2. A system cron or launchd job cannot be managed from the Codex App and does
-   not satisfy the requested product surface.
+2. Codex-only scheduling cannot detect or repair the loss of its own
+   registration and cannot satisfy the accepted requirement that runtime
+   assurance remain meaningful when the Codex foreground task is absent.
+3. A launchd-only research scheduler loses the required same-thread Codex Host
+   continuity and App management surface. Launchd is therefore restricted to
+   L0 health supervision; it is not the model-bearing research scheduler.
 
 The Codex manual explicitly distinguishes standalone scheduled tasks from
-scheduled tasks inside a chat. P6 uses the latter because continuity with the
-existing research context is required.
+scheduled tasks inside a chat. P6 uses the latter for L1 because continuity
+with the existing research context is required. L0 remains deliberately
+outside that failure domain and never invokes Codex, Claude, or MiniMax.
 
 ## Canonical supervisor store
 
@@ -82,6 +110,15 @@ Create one store outside the source repository:
 ├── supervisor-state.json          # canonical mutable state
 ├── ticks.jsonl                    # append-only ordered tick index
 ├── objects/sha256/<digest>.json   # immutable tick and review objects
+├── assurance/
+│   ├── activation-receipt.json   # immutable L0/L1/L2 closure
+│   ├── l0-registration.json     # immutable scheduler binding
+│   ├── l1-registration.json     # immutable Codex automation binding
+│   ├── l2-heartbeat-contract.json
+│   ├── l0-observations.jsonl
+│   └── l2-heartbeats.jsonl
+├── runtime/resource-manifest.json # owned external resources only
+├── runtime/shutdown-journal.json  # restart-safe exact-once stop
 ├── leases/tick.lock               # local overlap exclusion
 └── reports/latest.md              # derived human-readable status
 ```
@@ -94,7 +131,11 @@ Create one store outside the source repository:
 - current compiler, Adapter, P3, P4, and P5 store paths;
 - initial Research IR and freeze receipt digests;
 - expected automation id and automation file path;
-- automation cadence and engineering delegation policy;
+- exact L0 service identity and command digest;
+- L1 automation cadence, L0 health cadence, L2 heartbeat cadence, and all stale
+  thresholds;
+- bound stdout/stderr paths and owned-resource manifest;
+- engineering delegation policy;
 - hashes of the P6 code, schemas, prompt, and policy used at initialization.
 
 `supervisor-state.json` is the only P6 runtime truth. It contains the current
@@ -108,7 +149,7 @@ lineage, writes an immutable content-addressed tick object, appends its digest
 to `ticks.jsonl`, and atomically replaces the canonical state. A repeated tick
 over the same verified state is a no-op with no duplicate transition.
 
-## Codex automation binding
+## L1 Codex automation binding
 
 Register a local Codex automation at:
 
@@ -134,7 +175,8 @@ updated_at = <unix milliseconds>
 Use the Codex scheduled-task update capability when it is callable. When it is
 not exposed, write the exact app-compatible TOML, normalize it with
 `codex-automation-registration`, and require a Codex App refresh only if it is
-not visible. Do not register a system crontab entry.
+not visible. Do not register a system crontab entry. This file is L1, not the
+entire Watchdog.
 
 The prompt includes the exact controller id, supervisor manifest path, expected
 thread id, and run path. On every run it invokes `$autoresearch-paper-mvp0`,
@@ -147,6 +189,59 @@ The default cadence is ten minutes. Users can pause, resume, change cadence, or
 inspect run history from the Codex App Scheduled view. P6 automatically pauses
 the automation on terminal or human-review states and reactivates it only after
 the corresponding state has been explicitly resolved.
+
+## L0 independent health supervisor
+
+Register one plan-bound macOS launchd service with a scheduler label and
+controller-command digest distinct from L1. Its command may read only the
+supervisor manifest, activation receipt, scheduler metadata, controller lease,
+Worker status, heartbeat metadata, and owned-resource manifest. It must not read
+Research IR content, experiment results, prompts, or model responses and must
+never invoke a model.
+
+Each L0 tick writes one typed, deduplicated observation. It may perform only
+frozen deterministic recovery, initially limited to restoring the exact L1
+automation file when it is missing, disabled, or byte-mismatched and no stop or
+pause authority is active. It must not execute a research transition itself.
+Unknown drift, stale controller state, or mismatched identity produces a
+recovery proposal and a fail-closed runtime status rather than a guessed repair.
+
+The health interval must be no greater than both 3600 seconds and one half of
+the shortest frozen stale threshold. Registration binds absolute stdout and
+stderr paths. A schedule file on disk is not proof that L0 is loaded.
+
+## L2 Worker heartbeat
+
+Every running P2 Worker emits sequenced immutable heartbeat receipts through a
+least-authority controller callback. Each receipt binds controller id, Adapter
+id, turn id, session UUID, model, process identity, task-contract digest,
+sequence, observation time, and predecessor heartbeat digest. Heartbeats carry
+no hidden reasoning and do not imply scientific progress or success.
+
+The controller accepts a heartbeat only for the currently bound running Worker
+and rejects stale, duplicate-with-different-bytes, out-of-order, wrong-session,
+wrong-process, or wrong-contract receipts. A stale L2 heartbeat is a runtime
+fault. It may trigger bounded process inspection and P5 recovery, but it cannot
+force a scientific decision.
+
+## Activation closure
+
+Unattended Worker dispatch is forbidden until one immutable activation receipt
+replays successfully against:
+
+- loaded and distinct L0 and L1 identities;
+- exact L0 and L1 command/configuration digests;
+- the L2 heartbeat contract;
+- frozen intervals and stale thresholds;
+- one non-due L1 functional probe with zero model calls;
+- one L0 drill that removes L1 and proves exact restoration with zero model
+  calls;
+- one L2 conformance heartbeat bound to the same controller and authority;
+- bound logs and the owned-resource manifest.
+
+Activation is invalidated by an unloaded, stale, altered, mismatched, or
+legacy-only layer. Bootstrap is restart-safe and commits `READY` only after all
+three probes pass.
 
 ## Controller states
 
@@ -252,12 +347,16 @@ that string is insufficient.
 
 ## Watchdog and recovery semantics
 
-The outer watchdog is the Codex thread heartbeat. The inner watchdog is the P6
-tick's deterministic inspection of the current Worker and durable stores.
+The Watchdog is the combined L0/L1/L2 closure, not the Codex heartbeat alone.
+L0 supervises scheduler health, L1 resumes and advances the Codex Host, and L2
+proves liveness of the active Claude/MiniMax Worker. The deterministic P6
+controller reconciles their evidence without turning runtime health into a
+scientific verdict.
 
 The watchdog may:
 
 - resume the exact target chat after a Host turn completes;
+- detect and restore the exact missing L1 registration without a model call;
 - advance a committed state to its next authorized transition;
 - detect a missing terminal receipt, dead Worker process, timeout, or paused
   Adapter;
@@ -275,6 +374,12 @@ It may not:
 - perform more than one state transition per scheduled run;
 - run concurrently with another tick for the same controller.
 
+Applying a valid stop first blocks new controller work, then disables L0 before
+L1, disables any bound retry trigger, terminates only identity-matching Worker
+process groups with bounded TERM/KILL, and reports every residual. It deletes no
+research artifact and grants no broader cleanup authority. Repeated stop calls
+converge on the same receipt after a crash.
+
 Transient Codex transport errors leave the last committed state intact and are
 eligible for the next heartbeat. Three consecutive identical deterministic
 blockers create `BLOCKED`, write a report, and pause the automation to avoid
@@ -283,7 +388,7 @@ controller without deleting its history.
 
 ## App visibility and operator controls
 
-The automation must be visible in Codex App Scheduled with a unique name that
+The L1 automation must be visible in Codex App Scheduled with a unique name that
 includes the research run. Operators can:
 
 - inspect recent heartbeat runs in the original research chat;
@@ -292,9 +397,12 @@ includes the research run. Operators can:
 - manually trigger a run;
 - follow the latest derived supervisor report.
 
-P6 also exposes read-only `inspect` and `verify` commands plus explicit `pause`
-and `resume` commands. `resume` verifies the automation, target thread, and full
-lineage before changing status to active.
+P6 also exposes read-only `inspect-runtime` and `verify` commands plus explicit
+`pause`, `resume`, and `stop` commands. `inspect-runtime` correlates canonical
+state with discovered L0/L1/L2, process, log, and residual state without any
+mutation and feeds the existing loopback Dashboard. `resume` verifies the
+automation, target thread, full lineage, and current activation closure before
+changing status to active.
 
 ## Interfaces
 
@@ -306,14 +414,21 @@ inspect
 tick
 verify
 render-automation
+bootstrap-assurance
+l0-health-tick
+record-worker-heartbeat
+inspect-runtime
 pause
 resume
+stop
 ```
 
-Add closed JSON schemas for the supervisor manifest/state, tick receipt, and
-delegated engineering review. Add one durable heartbeat prompt under
-`mvp/prompts/`. Keep registration normalization in a small deterministic helper
-rather than embedding TOML generation in `SKILL.md`.
+Add closed JSON schemas for the supervisor manifest/state, tick receipt,
+delegated engineering review, activation receipt, L0 observation, L2 heartbeat,
+runtime snapshot, shutdown journal, and resource manifest. Add one durable
+heartbeat prompt under `mvp/prompts/`. Keep L0/L1 registration and validation in
+small deterministic helpers rather than embedding scheduler logic in
+`SKILL.md`.
 
 Update the installed MVP0 skill to describe P6, its automation boundary, its
 human/scientific pause rule, and the exact one-tick semantics. Keep the skill
@@ -331,13 +446,19 @@ Fail closed on:
 - overlapping tick leases;
 - stale or unknown Claude session/model identity;
 - source HEAD or worktree provenance drift;
-- an automation file that is missing required App-visible fields.
+- an automation file that is missing required App-visible fields;
+- any missing, unloaded, stale, mismatched, or legacy-only L0/L1/L2 layer;
+- a shared L0/L1 scheduler identity or controller-command digest;
+- L0 attempting to read research content or dispatch a model;
+- heartbeat identity, order, contract, or process drift;
+- pause/resume/stop without matching authority and restart-safe journal state.
 
 Scheduled runs use unattended permissions. The prompt and controller use the
 narrowest workspace and exact commands needed for the run. P6 does not grant a
-generic shell allowlist to the Worker. The Codex App must be running and the
-machine available for local scheduled tasks; P6 reports this operational
-dependency rather than claiming an external always-on service.
+generic shell allowlist to the Worker. The machine and user launchd domain must
+remain available for L0. Codex App availability is required for L1 research
+advancement but not for L0 health observation; the runtime snapshot reports
+these dependencies separately rather than inferring health from either UI.
 
 ## Test strategy
 
@@ -364,6 +485,16 @@ Required deterministic cases:
     `target_thread_id`;
 15. P1–P5 regression suites remain green;
 16. the installed Skill and bundled P6 resources match repository content.
+17. activation fails until loaded, distinct L0/L1 plus L2 contract and all
+    three functional probes agree;
+18. removing L1 causes one deduplicated zero-model L0 restoration;
+19. stale, wrong-session, wrong-process, or out-of-order L2 heartbeats fail
+    closed and never alter scientific state;
+20. read-only runtime inspection exposes missing/stale/mismatched layers without
+    mutating repository, scheduler, or controller state;
+21. crash-interrupted stop resumes exactly once, disables L0 before L1, targets
+    only bound Workers, preserves research artifacts, and reports residuals;
+22. L0 remains useful when Codex App and Claude foreground processes are absent.
 
 ## Field acceptance
 
@@ -372,16 +503,24 @@ After deterministic tests pass:
 1. install the P6 preview into the shared `~/.agents` skill so Codex and Claude
    Code symlinked installations see the same version;
 2. initialize a P6 supervisor for the existing Fixed-Wing Visual Guidance run;
-3. register one ten-minute thread heartbeat bound to
+3. register one ten-minute L1 thread heartbeat bound to
    `019fc053-ab31-7333-b5da-85b03372ec24`;
-4. verify the automation TOML and visibility-compatible schema;
-5. run one bounded manual heartbeat tick;
-6. observe one App-scheduled heartbeat returning to the same chat;
-7. prove it advances from the current durable state without replaying the
+4. register one independent L0 launchd health service and freeze the L2
+   heartbeat contract;
+5. execute the non-due L1 probe, destructive-but-restored L0-to-L1 recovery
+   drill, and L2 conformance heartbeat, then commit one activation receipt;
+6. verify App-visible L1 plus loaded/distinct L0 and current L2 evidence through
+   read-only runtime inspection;
+7. run one bounded manual heartbeat tick;
+8. observe one App-scheduled heartbeat returning to the same chat;
+9. prove it advances from the current durable state without replaying the
    failed `$2` contract;
-8. leave the automation active only if the next state is authorized and healthy;
+10. stop one disposable acceptance registration and prove ordered exact-once
+    cleanup with no undeclared residuals;
+11. leave the real automation active only if the next state is authorized and healthy;
    otherwise leave it paused with an exact report.
 
-Success means the real target chat is correctly bound and can resume one
-authorized transition from durable state. It does not yet prove 24-hour or
-7-by-24 stability.
+Success means the real target chat is correctly bound, the independent
+L0/L1/L2 closure is active and observable, deterministic recovery and stop
+drills pass, and the Host can resume one authorized transition from durable
+state. It does not yet prove 24-hour or 7-by-24 stability.
