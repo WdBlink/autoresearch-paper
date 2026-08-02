@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/supervisor-state.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "active_adapter_dir", "active_gate_store", "active_ledger_dir", "active_p5_store",
+    "automation_pause_required", "blocker", "controller_id", "generation",
+    "latest_tick_sha256", "phase", "schema_version", "sequence", "updated_at"
+  ],
+  "properties": {
+    "active_adapter_dir": {"type": "string", "minLength": 1},
+    "active_gate_store": {"type": ["string", "null"]},
+    "active_ledger_dir": {"type": "string", "minLength": 1},
+    "active_p5_store": {"type": ["string", "null"]},
+    "automation_pause_required": {"type": "boolean"},
+    "blocker": {"type": ["string", "null"]},
+    "controller_id": {"type": "string", "pattern": "^mvp0-supervisor-[0-9a-f]{16}$"},
+    "generation": {"type": "integer", "minimum": 1},
+    "latest_tick_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "phase": {"enum": ["READY", "WORKER_RUNNING", "NEEDS_P3", "NEEDS_P4", "NEEDS_P5", "NEEDS_ENGINEERING_REVIEW", "NEEDS_CHILD_P2", "WAITING_HUMAN", "BLOCKED", "STOPPED", "COMPLETED"]},
+    "schema_version": {"const": "mvp0-supervisor-state/v1"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

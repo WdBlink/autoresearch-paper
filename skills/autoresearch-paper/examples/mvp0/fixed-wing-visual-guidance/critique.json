@@ -1,0 +1,20 @@
+{
+  "summary": "The proposal is executable and falsifiable, but its central evaluation scope omits FastSAM even though the source goal, evaluator bindings, detector-retention guardrail, and final experiment all require a real-detector condition.",
+  "verdict": "REVISE",
+  "findings": [
+    {
+      "finding_id": "bind-fastsam-scope",
+      "severity": "major",
+      "path": "$.central_claim.evaluation_scope",
+      "message": "The claim scope freezes only truth and synthetic degraded-truth rollouts, so success could be declared without testing the real detector requested by the source brief.",
+      "required_change": "Add the frozen FastSAM condition to central_claim.evaluation_scope while keeping non-perception environment, reward, seed, and budget variables paired."
+    },
+    {
+      "finding_id": "retain-provisional-novelty",
+      "severity": "note",
+      "path": "$.related_work_gap.statement",
+      "message": "The gap is correctly marked provisional because the cited works have not yet passed a frozen comparator audit.",
+      "required_change": "Preserve the provisional language; do not compile a SOTA claim from the current source brief."
+    }
+  ]
+}

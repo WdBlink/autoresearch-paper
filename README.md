@@ -21,6 +21,44 @@ start writing.
 ## Status
 
 - **Current version:** v0.20.1
+- **MVP-0 migration track:** P1 Research Compiler, P2 Minimal Worker Adapter,
+  P3 Experiment Receipt ledger, P4 Evidence Gate, P5 Recompile Loop, and the
+  P6 Supervisory Controller with complete L0/L1/L2 Watchdog closure
+  are implemented on the `codex/mvp0-thin-loop` feature branch. P1 provides an
+  isolated Research IR v1 schema, deterministic semantic validator,
+  strongest-Codex compiler prompt, proposal/critique/revision workflow, two
+  mandatory interactive Human Critique/Human Approval stops, and
+  content-addressed freeze receipts. P2 binds an owner-reviewed IR to one clean
+  detached research worktree and one exact Claude Code/MiniMax session, then
+  validates a closed task contract, closed JSON result, Git-visible change
+  boundary, and immutable identity/usage receipt. P3 consumes terminal P2
+  turns in exact order, archives pre-execution inputs and result/evidence bytes,
+  publishes a closed content-addressed Experiment Receipt, and appends the full
+  receipt plus digest to a replayable hash-chained JSONL ledger.
+  P4 validates a closed report from the evaluator frozen in Research IR, binds
+  it to exact P3 evidence, archives the evaluator implementation, and publishes
+  one replayable KEEP/PIVOT/STOP/RECOMPILE decision per Experiment Receipt.
+  P5 freezes one eligible P4 prefix, publishes one evidence-bound failure
+  analysis and continuation/recompile request, and compiles an explicitly
+  scoped Research IR N+1 back into P1 human review. A later P1 freeze is bound
+  to the complete parent IR → Gate → analysis → request → child IR lineage.
+  P6 derives one transition at a time from replayed P1–P5 truth, supports a
+  fresh non-MiniMax delegated review only for deterministically bounded
+  execution changes, resumes a failed predecessor through the exact fixed
+  Claude/MiniMax session, and binds an independent zero-model launchd L0, an
+  exact-thread Codex App heartbeat L1, and identity-bound Worker heartbeats L2.
+  P2 now keeps the repository's Draft 2020-12 result schema authoritative while
+  projecting a declaration-free Draft-07-compatible schema only at the Claude
+  Code `--json-schema` boundary. This fixes Claude Code 2.1.205 rejecting the
+  2020-12 metaschema before a MiniMax request is launched.
+  `ENGINEERING_ACCEPTANCE` is test-only; a live freeze requires recorded owner
+  critique and later explicit owner approval.
+  This track does not import or extend the Legacy Harness runtime and does not
+  change the released v0.20.1 product claim. Dashboard remains a read-only
+  projection and paper writing is not yet migrated into MVP-0. P6 deterministic
+  and bounded field acceptance does not claim 24h, 7×24, production readiness,
+  SOTA, or full autonomous-paper completion. See
+  [`mvp/README.md`](skills/autoresearch-paper/mvp/README.md).
 - **Stability:** Experimental; Codex Host switched (`Codex Host 已切换`) after
   bounded T032 field-lineage acceptance
 - **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)

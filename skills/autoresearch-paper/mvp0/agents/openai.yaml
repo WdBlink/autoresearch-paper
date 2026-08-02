@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoresearch Paper MVP0"
+  short_description: "Run a supervised Codex-hosted research loop"
+  default_prompt: "Use $autoresearch-paper-mvp0 to compile and freeze my research contract, run bounded Claude/MiniMax experiments, decide evidence gates, and supervise one transition per Codex heartbeat with the full L0/L1/L2 Watchdog."

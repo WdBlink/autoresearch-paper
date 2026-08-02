@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WdBlink/autoresearch-paper/schemas/mvp/worker-task-contract-v1.json",
+  "title": "Autoresearch Paper MVP-0 Worker Task Contract v1",
+  "description": "One bounded task for the fixed Claude Code/MiniMax worker session. Authority remains with the Codex host and frozen Research IR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "research_ir_sha256",
+    "experiment_id",
+    "objective",
+    "search_space_ids",
+    "allowed_paths",
+    "allowed_operations",
+    "input_artifacts",
+    "command_argv",
+    "experiment_context",
+    "acceptance_checks",
+    "stop_conditions",
+    "max_runtime_seconds"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "worker-task-contract/v1"
+    },
+    "task_id": {
+      "$ref": "#/$defs/id"
+    },
+    "research_ir_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "experiment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 24
+    },
+    "search_space_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "allowed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/relative_path"
+      }
+    },
+    "allowed_operations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "READ",
+          "CREATE",
+          "MODIFY",
+          "EXECUTE"
+        ]
+      }
+    },
+    "input_artifacts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "purpose"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      }
+    },
+    "command_argv": {
+      "$ref": "#/$defs/argv"
+    },
+    "experiment_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "seeds",
+        "data_artifacts",
+        "environment"
+      ],
+      "properties": {
+        "config": {
+          "type": "object"
+        },
+        "seeds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        },
+        "data_artifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/versioned_input"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "description",
+            "artifacts"
+          ],
+          "properties": {
+            "description": {
+              "type": "string",
+              "minLength": 8
+            },
+            "artifacts": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/versioned_input"
+              }
+            }
+          }
+        }
+      }
+    },
+    "acceptance_checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "argv",
+          "purpose"
+        ],
+        "properties": {
+          "argv": {
+            "$ref": "#/$defs/argv"
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      }
+    },
+    "stop_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 8
+      }
+    },
+    "max_runtime_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "versioned_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "version",
+        "purpose"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 8
+        }
+      }
+    }
+  }
+}

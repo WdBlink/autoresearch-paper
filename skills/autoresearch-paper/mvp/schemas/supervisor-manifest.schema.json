@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/supervisor-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "automation_path", "controller_id", "created_at", "heartbeat_prompt_path",
+    "heartbeat_prompt_sha256", "initial_adapter_dir", "initial_freeze_receipt_sha256",
+    "initial_gate_store", "initial_ir_sha256", "initial_ledger_dir", "initial_p5_store",
+    "run_dir", "schema_version", "source_repo", "supervisor_store", "target_thread_id"
+  ],
+  "properties": {
+    "automation_path": {"type": "string", "minLength": 1},
+    "controller_id": {"type": "string", "pattern": "^mvp0-supervisor-[0-9a-f]{16}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "heartbeat_prompt_path": {"type": "string", "minLength": 1},
+    "heartbeat_prompt_sha256": {"$ref": "#/$defs/sha256"},
+    "initial_adapter_dir": {"type": "string", "minLength": 1},
+    "initial_freeze_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "initial_gate_store": {"type": "string", "minLength": 1},
+    "initial_ir_sha256": {"$ref": "#/$defs/sha256"},
+    "initial_ledger_dir": {"type": "string", "minLength": 1},
+    "initial_p5_store": {"type": "string", "minLength": 1},
+    "run_dir": {"type": "string", "minLength": 1},
+    "schema_version": {"const": "mvp0-supervisor-manifest/v1"},
+    "source_repo": {"type": "string", "minLength": 1},
+    "supervisor_store": {"type": "string", "minLength": 1},
+    "target_thread_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

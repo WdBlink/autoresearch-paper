@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/resource-manifest.schema.json",
+  "title": "MVP-0 owned runtime resources",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["controller_id", "owned_resources", "schema_version"],
+  "properties": {
+    "controller_id": {"type": "string"},
+    "owned_resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["identity", "kind", "layer"],
+        "properties": {
+          "identity": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["launchd", "codex_automation", "worker_process", "retry_trigger"]},
+          "layer": {"enum": ["L0", "L1", "L2", "RETRY"]}
+        }
+      }
+    },
+    "schema_version": {"const": "mvp0-resource-manifest/v1"}
+  }
+}
