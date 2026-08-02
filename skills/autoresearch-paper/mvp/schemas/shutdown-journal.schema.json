@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/shutdown-journal.schema.json",
+  "title": "MVP-0 restart-safe shutdown journal",
+  "type": "object",
+  "required": ["authority_id", "controller_id", "phase", "prepared_at", "schema_version", "steps"],
+  "properties": {
+    "authority_id": {"type": "string", "minLength": 1},
+    "controller_id": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["PREPARED", "BLOCKED_NEW_WORK", "L0_DISABLED", "L1_DISABLED", "WORKERS_STOPPED", "COMMITTED"]},
+    "prepared_at": {"type": "string", "format": "date-time"},
+    "schema_version": {"const": "mvp0-runtime-shutdown-journal/v1"},
+    "steps": {"type": "object"},
+    "shutdown_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/runtime-activation.schema.json",
+  "title": "MVP-0 runtime activation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["activated_at", "controller_id", "l0", "l1", "l2", "probes", "resource_manifest_path", "resource_manifest_sha256", "schema_version", "target_thread_id"],
+  "properties": {
+    "activated_at": {"type": "string", "format": "date-time"},
+    "controller_id": {"type": "string", "pattern": "^mvp0-supervisor-[0-9a-f]{16,64}$"},
+    "l0": {"type": "object"},
+    "l1": {"type": "object"},
+    "l2": {"type": "object"},
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["l0", "l1", "l2"],
+      "properties": {
+        "l0": {"$ref": "#/$defs/zeroModelProbe"},
+        "l1": {"$ref": "#/$defs/zeroModelProbe"},
+        "l2": {"$ref": "#/$defs/zeroModelProbe"}
+      }
+    },
+    "resource_manifest_path": {"type": "string", "minLength": 1},
+    "resource_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "schema_version": {"const": "mvp0-runtime-activation/v1"},
+    "target_thread_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "zeroModelProbe": {
+      "type": "object",
+      "required": ["model_dispatches"],
+      "properties": {"model_dispatches": {"const": 0}}
+    }
+  }
+}

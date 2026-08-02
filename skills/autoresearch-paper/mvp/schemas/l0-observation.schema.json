@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/l0-observation.schema.json",
+  "title": "MVP-0 L0 metadata observation",
+  "type": "object",
+  "required": ["action", "controller_id", "l0_loaded", "l1_path", "lifecycle_state", "model_dispatches", "observed_at", "reason", "schema_version"],
+  "properties": {
+    "action": {"enum": ["HEALTHY", "RESTORED_L1", "RECOVERY_PROPOSED", "NOOP"]},
+    "controller_id": {"type": "string"},
+    "l0_loaded": {"type": "boolean"},
+    "l1_path": {"type": "string"},
+    "lifecycle_state": {"enum": ["ACTIVE", "PAUSED", "STOPPING", "STOPPED"]},
+    "model_dispatches": {"const": 0},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "reason": {"type": ["string", "null"]},
+    "schema_version": {"const": "mvp0-l0-observation/v1"},
+    "deduplicated": {"type": "boolean"},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

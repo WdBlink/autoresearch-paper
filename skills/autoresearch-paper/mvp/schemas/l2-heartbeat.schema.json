@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/l2-heartbeat.schema.json",
+  "title": "MVP-0 L2 Worker heartbeat",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adapter_id", "binding_sha256", "controller_id", "observed_at", "predecessor_sha256", "process_id", "process_identity", "schema_version", "sequence", "session_id", "task_contract_sha256", "turn_id", "worker_model"],
+  "properties": {
+    "adapter_id": {"type": "string", "minLength": 1},
+    "binding_sha256": {"$ref": "#/$defs/sha256"},
+    "controller_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "predecessor_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "process_id": {"type": "integer", "minimum": 1},
+    "process_identity": {"type": "string", "minLength": 1},
+    "schema_version": {"const": "mvp0-l2-heartbeat/v1"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "session_id": {"type": "string", "format": "uuid"},
+    "task_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "turn_id": {"type": "string", "minLength": 1},
+    "worker_model": {"type": "string", "minLength": 1}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

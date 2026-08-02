@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/runtime-snapshot.schema.json",
+  "title": "MVP-0 read-only runtime snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["controller_id", "l0", "l1", "l2", "lifecycle", "observed_at", "schema_version", "scientific_state_mutations", "worker"],
+  "properties": {
+    "controller_id": {"type": "string"},
+    "l0": {"type": "object"},
+    "l1": {"type": "object"},
+    "l2": {"type": "object"},
+    "lifecycle": {"enum": ["ACTIVE", "PAUSED", "STOPPING", "STOPPED"]},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "schema_version": {"const": "mvp0-runtime-snapshot/v1"},
+    "scientific_state_mutations": {"const": 0},
+    "worker": {"type": "object"}
+  }
+}
