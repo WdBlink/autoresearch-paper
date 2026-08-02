@@ -483,6 +483,36 @@ class WorkerAdapterContracts(unittest.TestCase):
         self.assertEqual(inspected["turn_count"], 0)
         self.assertIn("not an OS sandbox", inspected["isolation_assurance"])
 
+    def test_prompt_requires_exact_noninteractive_bash_capabilities(self) -> None:
+        contract = self.task("task-exact-bash")
+        rendered = adapter._prompt(  # noqa: SLF001
+            manifest=adapter._adapter_manifest(self.adapter_dir),  # noqa: SLF001
+            contract=contract,
+            contract_digest=canonical_digest(contract),
+        )
+        self.assertIn("Do not append 2>&1", rendered)
+        self.assertIn("do not run extra Bash diagnostic commands", rendered)
+        self.assertIn("Host already verified every input_artifact", rendered)
+
+    def test_inventory_excludes_interpreter_and_pytest_caches(self) -> None:
+        pycache = self.worktree / "src" / "__pycache__"
+        pycache.mkdir()
+        (pycache / "module.cpython-312.pyc").write_bytes(b"cache")
+        pytest_cache = self.worktree / "src" / ".pytest_cache"
+        pytest_cache.mkdir()
+        (pytest_cache / "README.md").write_text("cache\n", encoding="utf-8")
+        observed = adapter._inventory(self.worktree, ("src/**",))  # noqa: SLF001
+        self.assertNotIn("src/__pycache__/module.cpython-312.pyc", observed)
+        self.assertNotIn("src/.pytest_cache/README.md", observed)
+
+    def test_transport_result_classifies_adapter_turn_budget(self) -> None:
+        failure = adapter._classify_failure(  # noqa: SLF001
+            1,
+            "",
+            ({"type": "result", "subtype": "error_max_budget_usd"},),
+        )
+        self.assertEqual(failure, "adapter_turn_budget_exhausted")
+
     def test_claude_transport_schema_drops_unsupported_2020_12_metaschema(self) -> None:
         schema = adapter._result_transport_schema()  # noqa: SLF001
         rendered = json.dumps(schema, sort_keys=True)
@@ -541,6 +571,129 @@ class WorkerAdapterContracts(unittest.TestCase):
         session = json.loads((self.adapter_dir / "session.json").read_text())
         self.assertEqual(session["state"], "READY")
         self.assertEqual(session["turn_count"], 2)
+
+    def test_failed_predecessor_session_is_resumed_by_successor_adapter(self) -> None:
+        failed = self.dispatch("task-one", env={"MVP0_FAKE_MODE": "out-of-scope"})
+        child_ir = json.loads(json.dumps(self.ir))
+        child_ir["version"] = 2
+        child_ir["parent_ir_sha256"] = self.ir_digest
+        child_ir["budget"]["max_experiments"] += 1
+        proposal = compiler.propose(
+            ir_path=write_json(self.root / "successor-ir.json", child_ir),
+            store=self.store,
+            author="codex/successor-compiler",
+            recorded_at="2026-08-01T01:00:00Z",
+        )
+        critique = compiler.critique(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_path=write_json(
+                self.root / "successor-critique.json",
+                {
+                    "summary": "Request an explicit confirmation of the bounded successor budget.",
+                    "verdict": "REVISE",
+                    "findings": [
+                        {
+                            "finding_id": "confirm-budget",
+                            "severity": "minor",
+                            "path": "$.budget.max_experiments",
+                            "message": "The bounded budget should be explicitly confirmed.",
+                            "required_change": "Confirm the exact successor experiment count.",
+                        }
+                    ],
+                },
+            ),
+            store=self.store,
+            reviewer="owner/successor-critic",
+            recorded_at="2026-08-01T01:00:01Z",
+        )
+        revision = compiler.revise(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_record_path=Path(critique["critique_path"]),
+            revision_path=write_json(
+                self.root / "successor-revision.json",
+                {
+                    "summary": "Confirm the exact bounded successor experiment count.",
+                    "addressed_finding_ids": ["confirm-budget"],
+                    "changes": [
+                        {
+                            "op": "replace",
+                            "path": "/budget/max_experiments",
+                            "value": child_ir["budget"]["max_experiments"],
+                        }
+                    ],
+                },
+            ),
+            store=self.store,
+            author="codex/successor-reviser",
+            recorded_at="2026-08-01T01:00:02Z",
+        )
+        frozen = compiler.freeze(
+            revision_path=Path(revision["revision_path"]),
+            store=self.store,
+            approved_by="owner/successor-approver",
+            approval_scope="OWNER_REVIEWED",
+            approval_note="Approve the bounded successor for fixed-session resume testing.",
+            approved_at="2026-08-01T01:00:03Z",
+        )
+        p5_store = self.root / "p5"
+        freeze_root = p5_store / "freezes" / "sha256"
+        freeze_root.mkdir(parents=True)
+        p5_value = {
+            "approval_scope": "OWNER_REVIEWED",
+            "bound_at": "2026-08-01T01:00:03Z",
+            "child_freeze_receipt_path": frozen["freeze_receipt_path"],
+            "child_freeze_receipt_sha256": frozen["freeze_receipt_sha256"],
+            "child_ir_sha256": frozen["research_ir_sha256"],
+            "child_ir_version": 2,
+            "parent_freeze_receipt_sha256": self.freeze_digest,
+            "parent_ir_sha256": self.ir_digest,
+            "proposal_sha256": "1" * 64,
+            "request_sha256": "2" * 64,
+            "schema_version": "recompile-freeze/v1",
+        }
+        p5_payload = adapter._canonical_bytes(p5_value)  # noqa: SLF001
+        p5_digest = hashlib.sha256(p5_payload).hexdigest()
+        p5_path = freeze_root / f"{p5_digest}.json"
+        p5_path.write_bytes(p5_payload)
+        p5_path.chmod(0o444)
+        child_adapter = self.root / "successor-adapter"
+        child_worktree = self.root / "successor-worktree"
+        with mock.patch("mvp.recompile_loop.verify_store", return_value={"stage": "FROZEN"}):
+            initialized = adapter.initialize_adapter(
+                freeze_receipt=Path(frozen["freeze_receipt_path"]),
+                compiler_store=self.store,
+                source_repo=self.source,
+                adapter_dir=child_adapter,
+                worktree=child_worktree,
+                claude_bin=str(self.claude),
+                worker_model="MiniMax-M3",
+                max_budget_usd_per_turn=2.0,
+                predecessor_turn_receipt=Path(failed["receipt_path"]),
+                p5_store=p5_store,
+                p5_freeze_binding=p5_path,
+            )
+        self.assertEqual(initialized["session_id"], failed["session_id"])
+        child_manifest = adapter._adapter_manifest(child_adapter)  # noqa: SLF001
+        self.assertEqual(child_manifest["session_start_mode"], "RESUME_PREDECESSOR")
+        child_contract = self.task("task-successor")
+        child_contract["research_ir_sha256"] = frozen["research_ir_sha256"]
+        child_contract["input_artifacts"][0]["sha256"] = hashlib.sha256(
+            (child_worktree / "src" / "base.txt").read_bytes()
+        ).hexdigest()
+        child_contract["experiment_context"]["data_artifacts"][0]["sha256"] = child_contract["input_artifacts"][0]["sha256"]
+        child_contract["experiment_context"]["environment"]["artifacts"][0]["sha256"] = child_contract["input_artifacts"][0]["sha256"]
+        with mock.patch.dict(
+            os.environ, {"MVP0_CLAUDE_ARGV_LOG": str(self.log)}, clear=False
+        ):
+            delivered = adapter.dispatch_task(
+                adapter_dir=child_adapter,
+                task_contract=write_json(self.root / "successor-task.json", child_contract),
+            )
+        argv = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertEqual(delivered["outcome"], "COMPLETED")
+        self.assertIn("--resume", argv)
+        self.assertEqual(argv[argv.index("--resume") + 1], failed["session_id"])
+        self.assertNotIn("--session-id", argv)
 
     def test_blocked_result_preserves_ready_session_without_changes(self) -> None:
         delivered = self.dispatch("task-one", env={"MVP0_FAKE_MODE": "blocked"})
@@ -706,6 +859,68 @@ class WorkerAdapterContracts(unittest.TestCase):
                 adapter.dispatch_task(adapter_dir=self.adapter_dir, task_contract=contract_path)
         self.assertFalse(self.log.exists())
         self.assertEqual(adapter.inspect_adapter(adapter_dir=self.adapter_dir)["turn_count"], 0)
+
+    def test_unattended_dispatch_requires_runtime_assurance(self) -> None:
+        contract_path = write_json(self.root / "unattended.json", self.task("task-one"))
+        with self.assertRaisesRegex(adapter.AdapterError, "runtime assurance"):
+            adapter.dispatch_task(
+                adapter_dir=self.adapter_dir,
+                task_contract=contract_path,
+                unattended=True,
+            )
+        self.assertFalse(self.log.exists())
+        self.assertEqual(adapter.inspect_adapter(adapter_dir=self.adapter_dir)["turn_count"], 0)
+
+    def test_unattended_dispatch_fails_before_transport_when_activation_is_invalid(self) -> None:
+        contract_path = write_json(self.root / "invalid-activation.json", self.task("task-one"))
+        with mock.patch.object(
+            adapter.runtime_assurance,
+            "verify_activation",
+            side_effect=adapter.runtime_assurance.AssuranceError("L0 service is unloaded"),
+        ) as verify:
+            with self.assertRaisesRegex(adapter.AdapterError, "L0 service is unloaded"):
+                adapter.dispatch_task(
+                    adapter_dir=self.adapter_dir,
+                    task_contract=contract_path,
+                    unattended=True,
+                    runtime_store=self.root / "runtime",
+                    scheduler=object(),
+                )
+        verify.assert_called_once()
+        self.assertFalse(self.log.exists())
+        self.assertEqual(adapter.inspect_adapter(adapter_dir=self.adapter_dir)["turn_count"], 0)
+
+    def test_unattended_dispatch_emits_identity_bound_l2_heartbeat(self) -> None:
+        contract_path = write_json(self.root / "heartbeat-task.json", self.task("task-one"))
+        binding_path = self.root / "runtime" / "assurance" / "workers" / "binding.json"
+        binding_path.parent.mkdir(parents=True)
+        binding_path.write_text("{}\n", encoding="utf-8")
+        with (
+            mock.patch.object(adapter.runtime_assurance, "verify_activation", return_value={"status": "VERIFIED"}),
+            mock.patch.object(adapter.runtime_assurance, "heartbeat_interval_seconds", return_value=60),
+            mock.patch.object(
+                adapter.runtime_assurance,
+                "bind_worker",
+                return_value={"worker_binding_path": str(binding_path)},
+            ) as bind,
+            mock.patch.object(adapter.runtime_assurance, "record_worker_heartbeat", return_value={}) as pulse,
+            mock.patch.object(adapter.runtime_assurance, "complete_worker", return_value={}) as complete,
+            mock.patch.object(adapter, "_process_identity", return_value="pid-start-token"),
+            mock.patch.dict(os.environ, {"MVP0_CLAUDE_ARGV_LOG": str(self.log)}, clear=False),
+        ):
+            delivered = adapter.dispatch_task(
+                adapter_dir=self.adapter_dir,
+                task_contract=contract_path,
+                unattended=True,
+                runtime_store=self.root / "runtime",
+                scheduler=object(),
+            )
+        self.assertEqual(delivered["outcome"], "COMPLETED")
+        self.assertEqual(bind.call_count, 1)
+        self.assertGreaterEqual(pulse.call_count, 1)
+        self.assertEqual(complete.call_count, 1)
+        self.assertEqual(pulse.call_args_list[0].kwargs["sequence"], 1)
+        self.assertEqual(pulse.call_args_list[0].kwargs["process_identity"], "pid-start-token")
 
     def test_source_repo_must_be_clean_before_init(self) -> None:
         second_adapter = self.root / "second-adapter"

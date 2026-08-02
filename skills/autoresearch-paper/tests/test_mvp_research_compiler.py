@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
@@ -15,6 +16,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_ROOT))
 
 from mvp import research_compiler as compiler  # noqa: E402
+from mvp import delegated_review  # noqa: E402
 
 
 def write_json(path: Path, value: object) -> Path:
@@ -423,6 +425,86 @@ class ResearchCompilerContracts(unittest.TestCase):
         )
         self.assertEqual(verified["approval_scope"], "OWNER_REVIEWED")
 
+    def test_delegated_execution_only_review_can_confirm_and_freeze_successor_ir(self) -> None:
+        parent = copy.deepcopy(self.ir)
+        parent_path = self.root / "parent-ir.json"
+        parent_path.write_bytes(delegated_review.canonical_bytes(parent))
+        parent_digest = hashlib.sha256(compiler.canonical_json_bytes(parent)).hexdigest()
+        child = copy.deepcopy(parent)
+        child["version"] = 2
+        child["parent_ir_sha256"] = parent_digest
+        child["budget"]["max_experiments"] += 1
+        child_path = write_json(self.root / "child-ir.json", child)
+        proposal = compiler.propose(
+            ir_path=child_path,
+            store=self.store,
+            author="codex/recompile-compiler",
+            recorded_at="2026-08-01T10:00:00Z",
+        )
+        critique = compiler.critique(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_path=write_json(
+                self.root / "delegated-critique.json",
+                {
+                    "summary": "Independent frontier review found the bounded budget-only successor acceptable.",
+                    "verdict": "ACCEPT",
+                    "findings": [],
+                },
+            ),
+            store=self.store,
+            reviewer="codex/frontier-reviewer",
+            recorded_at="2026-08-01T10:10:00Z",
+        )
+        revision = compiler.confirm_revision(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_record_path=Path(critique["critique_path"]),
+            store=self.store,
+            author="codex/recompile-revision",
+            summary="Confirm the independently accepted budget-only successor without changing its bytes.",
+            recorded_at="2026-08-01T10:20:00Z",
+        )
+        request_path = self.root / "delegated-request.json"
+        request_path.write_bytes(
+            delegated_review.canonical_bytes({"requested_changes": [{"path": "/budget"}]})
+        )
+        p5_proposal_path = self.root / "delegated-p5-proposal.json"
+        p5_proposal_path.write_bytes(
+            delegated_review.canonical_bytes(
+                {
+                    "changed_roots": ["/budget"],
+                    "child_ir_sha256": proposal["research_ir_sha256"],
+                }
+            )
+        )
+        review = delegated_review.publish_review(
+            store_dir=self.root / "delegated-reviews",
+            parent_ir_path=parent_path,
+            child_ir_path=Path(proposal["research_ir_path"]),
+            request_path=request_path,
+            proposal_path=p5_proposal_path,
+            compiler_author="codex/recompile-compiler",
+            reviewer="codex/frontier-reviewer",
+            revision_author="codex/recompile-revision",
+            approver="codex/frontier-approver",
+            verdict="ACCEPT",
+            summary="Independent strong review confirms the successor changes execution budget only.",
+            reviewed_at="2026-08-01T10:25:00Z",
+        )
+        frozen = compiler.freeze(
+            revision_path=Path(revision["revision_path"]),
+            store=self.store,
+            approved_by="codex/frontier-approver",
+            approval_scope="DELEGATED_ENGINEERING_REVIEW",
+            approval_note="Approve only the replayable execution-only successor under the delegated review receipt.",
+            approved_at="2026-08-01T10:30:00Z",
+            delegated_review_receipt=Path(review["review_receipt_path"]),
+        )
+        verified = compiler.verify_freeze(
+            receipt_path=Path(frozen["freeze_receipt_path"]),
+            store=self.store,
+        )
+        self.assertEqual(verified["approval_scope"], "DELEGATED_ENGINEERING_REVIEW")
+
     def test_revision_cannot_skip_major_finding(self) -> None:
         proposal = self.publish_proposal()
         critique = self.publish_critique(proposal)
@@ -543,7 +625,7 @@ class ResearchCompilerContracts(unittest.TestCase):
         )
         self.assertEqual(receipt["research_ir_schema_sha256"], compiler.sha256_file(compiler.SCHEMA_PATH))
         self.assertEqual(receipt["compiler_prompt_sha256"], compiler.sha256_file(compiler.COMPILER_PROMPT_PATH))
-        self.assertEqual(receipt["semantic_validator_sha256"], compiler.sha256_file(compiler.VALIDATOR_PATH))
+        self.assertEqual(receipt["semantic_validator_sha256"], compiler.semantic_validator_sha256())
 
 
 if __name__ == "__main__":

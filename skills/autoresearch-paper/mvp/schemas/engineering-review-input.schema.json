@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoresearch-paper.local/schemas/engineering-review-input.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approval_note", "approved_at", "approver", "critique", "recorded_at", "review_summary", "reviewed_at", "reviewer", "revision_author", "revision_recorded_at", "revision_summary", "schema_version"],
+  "properties": {
+    "approval_note": {"type": "string", "minLength": 12},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "approver": {"$ref": "#/$defs/codexIdentity"},
+    "critique": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["findings", "summary", "verdict"],
+      "properties": {
+        "findings": {"type": "array", "maxItems": 0},
+        "summary": {"type": "string", "minLength": 12},
+        "verdict": {"const": "ACCEPT"}
+      }
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "review_summary": {"type": "string", "minLength": 20},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewer": {"$ref": "#/$defs/codexIdentity"},
+    "revision_author": {"$ref": "#/$defs/codexIdentity"},
+    "revision_recorded_at": {"type": "string", "format": "date-time"},
+    "revision_summary": {"type": "string", "minLength": 12},
+    "schema_version": {"const": "mvp0-engineering-review-input/v1"}
+  },
+  "$defs": {"codexIdentity": {"type": "string", "pattern": "^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$"}}
+}

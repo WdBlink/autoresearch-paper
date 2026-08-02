@@ -22,22 +22,28 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 try:
     from . import research_compiler as compiler
+    from . import runtime_assurance
+    from .launchd_registration import LaunchctlScheduler
 except ImportError:  # pragma: no cover - direct script execution
     import research_compiler as compiler  # type: ignore[no-redef]
+    import runtime_assurance  # type: ignore[no-redef]
+    from launchd_registration import LaunchctlScheduler  # type: ignore[no-redef]
 
 
 MVP_ROOT = Path(__file__).resolve().parent
 TASK_SCHEMA_PATH = MVP_ROOT / "schemas" / "worker-task-contract.schema.json"
 RESULT_SCHEMA_PATH = MVP_ROOT / "schemas" / "worker-result.schema.json"
 ADAPTER_VERSION = "worker-adapter/v2"
+SUCCESSOR_ADAPTER_VERSION = "worker-adapter/v3"
 SESSION_VERSION = "worker-session/v1"
 RECEIPT_VERSION = "worker-identity-usage-receipt/v2"
 ALLOWED_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit", "Bash")
@@ -269,11 +275,11 @@ def _load_verified_ir(
         raise AdapterError(f"Research IR freeze replay failed: {exc}") from exc
     receipt = _load_json(freeze_receipt)
     scope = receipt.get("approval_scope") if isinstance(receipt, dict) else None
-    if scope != "OWNER_REVIEWED" and not (
+    if scope not in {"OWNER_REVIEWED", "DELEGATED_ENGINEERING_REVIEW"} and not (
         allow_engineering_fixture and scope == "ENGINEERING_ACCEPTANCE"
     ):
         raise AdapterError(
-            "Worker Adapter requires an OWNER_REVIEWED Research IR freeze; "
+            "Worker Adapter requires an OWNER_REVIEWED or DELEGATED_ENGINEERING_REVIEW Research IR freeze; "
             "ENGINEERING_ACCEPTANCE is allowed only with --engineering-test"
         )
     ir_digest = verified["research_ir_sha256"]
@@ -316,8 +322,19 @@ def _adapter_manifest(adapter_dir: Path) -> dict[str, Any]:
         "worker_model",
         "worktree_root",
     }
+    if value.get("schema_version") == SUCCESSOR_ADAPTER_VERSION:
+        expected |= {
+            "p5_freeze_binding_path",
+            "p5_freeze_binding_sha256",
+            "p5_store",
+            "predecessor_adapter_id",
+            "predecessor_task_contract_sha256",
+            "predecessor_turn_receipt_path",
+            "predecessor_turn_receipt_sha256",
+            "session_start_mode",
+        }
     _exact_keys(value, expected, "adapter manifest")
-    if value["schema_version"] != ADAPTER_VERSION:
+    if value["schema_version"] not in {ADAPTER_VERSION, SUCCESSOR_ADAPTER_VERSION}:
         raise AdapterError("adapter manifest version is unsupported")
     try:
         if _sha256_file(Path(value["claude_executable"])) != value["claude_executable_sha256"]:
@@ -338,6 +355,16 @@ def _adapter_manifest(adapter_dir: Path) -> dict[str, Any]:
         raise AdapterError("adapter session_id is not a UUID") from exc
     if value["tools"] != list(ALLOWED_TOOLS) or value["permission_mode"] != PERMISSION_MODE:
         raise AdapterError("adapter tool or permission boundary drifted")
+    if value["schema_version"] == SUCCESSOR_ADAPTER_VERSION:
+        if value["session_start_mode"] != "RESUME_PREDECESSOR":
+            raise AdapterError("successor adapter has an invalid session_start_mode")
+        for path_field, digest_field in (
+            ("predecessor_turn_receipt_path", "predecessor_turn_receipt_sha256"),
+            ("p5_freeze_binding_path", "p5_freeze_binding_sha256"),
+        ):
+            path = Path(value[path_field])
+            if not path.is_absolute() or _sha256_file(path) != value[digest_field]:
+                raise AdapterError(f"successor adapter {path_field} binding drifted")
     return value
 
 
@@ -395,6 +422,92 @@ def _session_state(adapter_dir: Path, manifest: Mapping[str, Any]) -> dict[str, 
     return value
 
 
+def _successor_bindings(
+    *,
+    predecessor_turn_receipt: Path,
+    p5_store: Path,
+    p5_freeze_binding: Path,
+    freeze_digest: str,
+    ir_digest: str,
+    source_repo: Path,
+    worker_model: str,
+    base_commit: str,
+) -> dict[str, Any]:
+    """Replay the exact terminal predecessor and P5 child-freeze lineage."""
+
+    predecessor_turn_receipt = predecessor_turn_receipt.resolve()
+    if (
+        predecessor_turn_receipt.is_symlink()
+        or not predecessor_turn_receipt.is_file()
+        or predecessor_turn_receipt.stat().st_mode & 0o777 != 0o444
+    ):
+        raise AdapterError("predecessor turn receipt is missing, mutable, or a symlink")
+    predecessor = _load_json(predecessor_turn_receipt)
+    if not isinstance(predecessor, dict) or predecessor.get("schema_version") != RECEIPT_VERSION:
+        raise AdapterError("predecessor turn receipt version is unsupported")
+    predecessor_adapter_dir = predecessor_turn_receipt.parent.parent
+    predecessor_manifest = _adapter_manifest(predecessor_adapter_dir)
+    predecessor_session = _session_state(predecessor_adapter_dir, predecessor_manifest)
+    if (
+        predecessor_session["last_receipt_path"] != str(predecessor_turn_receipt)
+        or predecessor_session["state"] != "PAUSED"
+        or predecessor.get("outcome") != "FAILED"
+    ):
+        raise AdapterError("successor requires the latest failed, paused predecessor turn")
+    if (
+        predecessor.get("adapter_id") != predecessor_manifest["adapter_id"]
+        or predecessor.get("session_id") != predecessor_manifest["session_id"]
+        or predecessor.get("task_contract_sha256") is None
+        or predecessor_manifest["source_repo"] != str(source_repo)
+        or predecessor_manifest["base_commit"] != base_commit
+        or _normalize_model(predecessor_manifest["worker_model"])
+        != _normalize_model(worker_model)
+    ):
+        raise AdapterError("predecessor Worker identity differs from the successor binding")
+
+    p5_store = p5_store.resolve()
+    p5_freeze_binding = p5_freeze_binding.resolve()
+    try:
+        from . import recompile_loop as p5
+    except ImportError:  # pragma: no cover - direct script execution
+        import recompile_loop as p5  # type: ignore[no-redef]
+    try:
+        verified_p5 = p5.verify_store(store_dir=p5_store)
+    except p5.RecompileError as exc:
+        raise AdapterError(f"successor P5 replay failed: {exc}") from exc
+    if verified_p5.get("stage") != "FROZEN":
+        raise AdapterError("successor P5 store is not frozen")
+    if (
+        p5_freeze_binding.is_symlink()
+        or not p5_freeze_binding.is_file()
+        or p5_freeze_binding.stat().st_mode & 0o777 != 0o444
+        or p5_freeze_binding.parent != p5_store / "freezes" / "sha256"
+        or p5_freeze_binding.name != f"{_sha256_file(p5_freeze_binding)}.json"
+    ):
+        raise AdapterError("successor P5 freeze binding is not content addressed")
+    p5_binding = _load_json(p5_freeze_binding)
+    if not isinstance(p5_binding, dict) or (
+        p5_binding.get("child_freeze_receipt_sha256") != freeze_digest
+        or p5_binding.get("child_ir_sha256") != ir_digest
+        or p5_binding.get("parent_freeze_receipt_sha256")
+        != predecessor_manifest["freeze_receipt_sha256"]
+        or p5_binding.get("parent_ir_sha256")
+        != predecessor_manifest["research_ir_sha256"]
+    ):
+        raise AdapterError("successor P5 freeze does not descend from the predecessor")
+    return {
+        "p5_freeze_binding_path": str(p5_freeze_binding),
+        "p5_freeze_binding_sha256": _sha256_file(p5_freeze_binding),
+        "p5_store": str(p5_store),
+        "predecessor_adapter_id": predecessor_manifest["adapter_id"],
+        "predecessor_task_contract_sha256": predecessor["task_contract_sha256"],
+        "predecessor_turn_receipt_path": str(predecessor_turn_receipt),
+        "predecessor_turn_receipt_sha256": _sha256_file(predecessor_turn_receipt),
+        "session_id": predecessor_manifest["session_id"],
+        "session_start_mode": "RESUME_PREDECESSOR",
+    }
+
+
 def initialize_adapter(
     *,
     freeze_receipt: Path,
@@ -406,6 +519,9 @@ def initialize_adapter(
     worker_model: str,
     max_budget_usd_per_turn: float,
     engineering_test: bool = False,
+    predecessor_turn_receipt: Path | None = None,
+    p5_store: Path | None = None,
+    p5_freeze_binding: Path | None = None,
 ) -> dict[str, Any]:
     """Create exactly one detached worktree and exact persistent session binding."""
 
@@ -450,7 +566,31 @@ def initialize_adapter(
     adapter_dir.parent.mkdir(parents=True, exist_ok=True)
     worktree.parent.mkdir(parents=True, exist_ok=True)
     claude = _resolve_executable(claude_bin)
-    session_id = str(uuid.uuid4())
+    successor_inputs = (
+        predecessor_turn_receipt,
+        p5_store,
+        p5_freeze_binding,
+    )
+    if any(item is not None for item in successor_inputs) and not all(
+        item is not None for item in successor_inputs
+    ):
+        raise AdapterError(
+            "successor initialization requires predecessor turn, P5 store, and P5 freeze binding together"
+        )
+    successor: dict[str, Any] | None = None
+    if predecessor_turn_receipt is not None:
+        assert p5_store is not None and p5_freeze_binding is not None
+        successor = _successor_bindings(
+            predecessor_turn_receipt=predecessor_turn_receipt,
+            p5_store=p5_store,
+            p5_freeze_binding=p5_freeze_binding,
+            freeze_digest=freeze_digest,
+            ir_digest=ir_digest,
+            source_repo=source_repo,
+            worker_model=worker_model.strip(),
+            base_commit=base_commit,
+        )
+    session_id = str(uuid.uuid4()) if successor is None else successor["session_id"]
     adapter_id = "mvp0-worker-" + uuid.uuid4().hex[:16]
 
     _run_git(source_repo, "worktree", "add", "--detach", str(worktree), base_commit)
@@ -477,7 +617,9 @@ def initialize_adapter(
             "result_transport_schema_sha256": _sha256_bytes(
                 _canonical_bytes(_result_transport_schema())
             ),
-            "schema_version": ADAPTER_VERSION,
+            "schema_version": (
+                ADAPTER_VERSION if successor is None else SUCCESSOR_ADAPTER_VERSION
+            ),
             "session_id": session_id,
             "source_repo": str(source_repo),
             "task_schema_sha256": _sha256_file(TASK_SCHEMA_PATH),
@@ -485,6 +627,8 @@ def initialize_adapter(
             "worker_model": worker_model.strip(),
             "worktree_root": str(worktree),
         }
+        if successor is not None:
+            manifest.update({key: value for key, value in successor.items() if key != "session_id"})
         _write_json(adapter_dir / "adapter-manifest.json", manifest, immutable=True)
         session = {
             "adapter_manifest_sha256": _sha256_file(adapter_dir / "adapter-manifest.json"),
@@ -653,6 +797,7 @@ def _inventory(
     paths = {
         item.decode("utf-8", errors="strict") for item in raw.split(b"\0") if item
     }
+    paths = {path for path in paths if not _is_ephemeral_runtime_path(path)}
     # Git intentionally hides ignored files.  Explicit task paths are a stronger
     # boundary than ignore policy, so scan only their static roots and add any
     # matching ignored files to the per-turn inventory.
@@ -680,7 +825,7 @@ def _inventory(
             directory_path = Path(directory)
             retained_names: list[str] = []
             for name in names:
-                if name == ".git":
+                if name in {".git", ".pytest_cache", "__pycache__"}:
                     continue
                 candidate = directory_path / name
                 relative = candidate.relative_to(worktree).as_posix()
@@ -692,7 +837,10 @@ def _inventory(
             for filename in filenames:
                 candidate = directory_path / filename
                 relative = candidate.relative_to(worktree).as_posix()
-                if _matches(relative, patterns):
+                if (
+                    not _is_ephemeral_runtime_path(relative)
+                    and _matches(relative, patterns)
+                ):
                     paths.add(relative)
     result: dict[str, dict[str, str]] = {}
     for raw_path in sorted(paths):
@@ -706,6 +854,15 @@ def _inventory(
         kind, digest = _file_digest(worktree / path)
         result[path] = {"kind": kind, "sha256": digest}
     return result
+
+
+def _is_ephemeral_runtime_path(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    return (
+        path.endswith((".pyc", ".pyo"))
+        or "__pycache__" in parts
+        or ".pytest_cache" in parts
+    )
 
 
 def _inventory_delta(
@@ -948,6 +1105,18 @@ def _prompt(
             "Work only in the supplied current working directory.",
             "Treat allowed_paths as the complete write boundary.",
             "Use only command_argv and acceptance_checks for material experiment execution.",
+            (
+                "Invoke every authorized Bash command as exactly the shell-joined argv "
+                "provided by command_argv or acceptance_checks. Do not append 2>&1, "
+                "echo, semicolons, pipes, redirects, cd, environment assignments, or "
+                "any other wrapper because the non-interactive permission rule is an "
+                "exact command capability."
+            ),
+            (
+                "The Host already verified every input_artifact path and SHA-256 before "
+                "dispatch. Inspect them with Read, Glob, or Grep; do not run extra Bash "
+                "diagnostic commands such as sha256sum or ls."
+            ),
             "Return BLOCKED without file changes when the task cannot be completed honestly.",
             "Return every file changed in this turn and its exact lowercase SHA-256.",
             "Your JSON is a proposal; the Host validates bytes and retains all acceptance authority.",
@@ -957,7 +1126,24 @@ def _prompt(
     return json.dumps(envelope, ensure_ascii=False, indent=2) + "\n"
 
 
-def _classify_failure(returncode: int, stderr: str) -> str:
+def _classify_failure(
+    returncode: int,
+    stderr: str,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    result_subtypes = {
+        str(event.get("subtype", "")).lower()
+        for event in events
+        if event.get("type") == "result"
+    }
+    if any("max_budget" in subtype for subtype in result_subtypes):
+        return "adapter_turn_budget_exhausted"
+    if any(
+        marker in subtype
+        for subtype in result_subtypes
+        for marker in ("rate_limit", "usage_limit", "quota")
+    ):
+        return "provider_quota"
     normalized = stderr.lower()
     if any(marker in normalized for marker in (
         "rate limit", "usage limit", "quota", "5-hour", "5 hour", "token plan", "retry after"
@@ -1069,6 +1255,8 @@ def _run_transport(
     prompt: str,
     worktree: Path,
     timeout_seconds: int,
+    heartbeat_callback: Callable[[int, str, int], None] | None = None,
+    heartbeat_interval_seconds: float | None = None,
 ) -> tuple[int, bytes, bytes, bool]:
     """Run Claude in a new process group and quiesce the group on timeout."""
 
@@ -1080,12 +1268,48 @@ def _run_transport(
         cwd=worktree,
         start_new_session=True,
     )
+    heartbeat_stop = threading.Event()
+    heartbeat_errors: list[BaseException] = []
+    heartbeat_thread: threading.Thread | None = None
+    if heartbeat_callback is not None:
+        if heartbeat_interval_seconds is None or heartbeat_interval_seconds <= 0:
+            proc.terminate()
+            proc.communicate()
+            raise OSError("runtime heartbeat interval is invalid")
+        try:
+            process_identity = _process_identity(proc.pid)
+            heartbeat_callback(proc.pid, process_identity, 1)
+        except BaseException as exc:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                proc.terminate()
+            proc.communicate()
+            raise OSError(f"initial runtime heartbeat failed: {exc}") from exc
+
+        def pulse() -> None:
+            sequence = 2
+            while not heartbeat_stop.wait(heartbeat_interval_seconds):
+                try:
+                    heartbeat_callback(proc.pid, process_identity, sequence)
+                except BaseException as exc:  # forwarded to the owning Host thread
+                    heartbeat_errors.append(exc)
+                    heartbeat_stop.set()
+                    return
+                sequence += 1
+
+        heartbeat_thread = threading.Thread(
+            target=pulse,
+            name=f"mvp0-l2-heartbeat-{proc.pid}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
     try:
         stdout, stderr = proc.communicate(
             input=prompt.encode("utf-8"),
             timeout=timeout_seconds,
         )
-        return proc.returncode, stdout, stderr, False
+        result = (proc.returncode, stdout, stderr, False)
     except subprocess.TimeoutExpired:
         # Capture descendants before terminating the direct process; after it
         # exits, orphaned children may be reparented and no longer discoverable.
@@ -1177,7 +1401,33 @@ def _run_transport(
                 if not living:
                     break
             time.sleep(0.02)
-        return proc.returncode, stdout, stderr, True
+        result = (proc.returncode, stdout, stderr, True)
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
+    if heartbeat_errors:
+        raise OSError(f"runtime heartbeat failed: {heartbeat_errors[0]}")
+    return result
+
+
+def _process_identity(pid: int) -> str:
+    """Return a reuse-resistant identity for the exact launched process."""
+
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=,command=", "-p", str(pid)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise AdapterError(f"cannot inspect Worker process identity: {exc}") from exc
+    rendered = proc.stdout.strip()
+    if proc.returncode != 0 or not rendered:
+        raise AdapterError("cannot prove Worker process start identity")
+    return _sha256_bytes(_canonical_bytes({"pid": pid, "ps_identity": rendered}))
 
 
 def _finalize_turn(
@@ -1197,6 +1447,8 @@ def _finalize_turn(
     failure: str | None,
     result_path: Path | None,
     change_manifest_path: Path | None,
+    runtime_store: Path | None = None,
+    worker_binding_path: Path | None = None,
 ) -> dict[str, Any]:
     turn_index = session["turn_count"] + 1
     usage = _transport_usage(events)
@@ -1254,10 +1506,23 @@ def _finalize_turn(
         last_receipt_sha256=_sha256_file(receipt_path),
         paused_reason=paused_reason,
     )
+    receipt_digest = _sha256_file(receipt_path)
+    if runtime_store is not None and worker_binding_path is not None:
+        try:
+            runtime_assurance.complete_worker(
+                store_dir=runtime_store,
+                worker_binding_path=worker_binding_path,
+                outcome=outcome,
+                turn_receipt_path=receipt_path,
+                turn_receipt_sha256=receipt_digest,
+                completed_at=receipt["completed_at"],
+            )
+        except runtime_assurance.AssuranceError as exc:
+            raise AdapterError(f"runtime Worker completion failed: {exc}") from exc
     return {
         "outcome": outcome,
         "receipt_path": str(receipt_path),
-        "receipt_sha256": _sha256_file(receipt_path),
+        "receipt_sha256": receipt_digest,
         "result_path": None if result_path is None else str(result_path),
         "session_id": manifest["session_id"],
         "session_state": next_state,
@@ -1267,12 +1532,33 @@ def _finalize_turn(
     }
 
 
-def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
+def dispatch_task(
+    *,
+    adapter_dir: Path,
+    task_contract: Path,
+    unattended: bool = False,
+    runtime_store: Path | None = None,
+    scheduler: Any | None = None,
+) -> dict[str, Any]:
     """Deliver one validated task to the exact persistent Claude session."""
 
     adapter_dir = adapter_dir.resolve()
     if not adapter_dir.is_dir():
         raise AdapterError("adapter_dir does not exist")
+    runtime_store_resolved: Path | None = None
+    if unattended:
+        if runtime_store is None:
+            raise AdapterError("unattended dispatch requires a runtime assurance store")
+        runtime_store_resolved = runtime_store.resolve()
+        resolved_scheduler = LaunchctlScheduler() if scheduler is None else scheduler
+        try:
+            runtime_assurance.verify_activation(
+                store_dir=runtime_store_resolved,
+                scheduler=resolved_scheduler,
+                now=_now(),
+            )
+        except runtime_assurance.AssuranceError as exc:
+            raise AdapterError(f"runtime assurance activation is invalid: {exc}") from exc
     lock_path = adapter_dir / ".delivery.lock"
     lock_handle = lock_path.open("a+")
     try:
@@ -1298,6 +1584,11 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
             ir,
         )
         contract_digest, contract_path = _publish_contract(adapter_dir, contract)
+        if (
+            manifest["schema_version"] == SUCCESSOR_ADAPTER_VERSION
+            and contract_digest == manifest["predecessor_task_contract_sha256"]
+        ):
+            raise AdapterError("successor task contract must differ from the failed predecessor")
         for receipt_path in (
             (adapter_dir / "turns").glob("*.json")
             if (adapter_dir / "turns").exists()
@@ -1326,7 +1617,11 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
         _write_json(run_dir / "before-inventory.json", before, immutable=True)
         prompt = _prompt(manifest=manifest, contract=contract, contract_digest=contract_digest)
         prompt_sha256 = _sha256_bytes(prompt.encode("utf-8"))
-        invocation_mode = "created" if turn_index == 1 else "resumed"
+        invocation_mode = (
+            "created"
+            if turn_index == 1 and manifest["schema_version"] == ADAPTER_VERSION
+            else "resumed"
+        )
         command = [
             manifest["claude_executable"],
             "-p",
@@ -1355,7 +1650,7 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
             "--name",
             manifest["adapter_id"],
         ]
-        if turn_index == 1:
+        if turn_index == 1 and manifest["schema_version"] == ADAPTER_VERSION:
             command.extend(["--session-id", manifest["session_id"]])
         else:
             command.extend(["--resume", manifest["session_id"]])
@@ -1380,12 +1675,54 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
             state="BUSY",
             paused_reason=None,
         )
+        heartbeat_callback: Callable[[int, str, int], None] | None = None
+        heartbeat_interval: float | None = None
+        binding_path: Path | None = None
+        if unattended:
+            assert runtime_store_resolved is not None
+            heartbeat_interval = float(
+                runtime_assurance.heartbeat_interval_seconds(
+                    store_dir=runtime_store_resolved,
+                )
+            )
+            def publish_heartbeat(pid: int, process_identity: str, sequence: int) -> None:
+                nonlocal binding_path
+                observed_at = _now()
+                if sequence == 1:
+                    bound = runtime_assurance.bind_worker(
+                        store_dir=runtime_store_resolved,
+                        adapter_id=manifest["adapter_id"],
+                        turn_id=f"{manifest['adapter_id']}:{turn_index:06d}:{contract['task_id']}",
+                        session_id=manifest["session_id"],
+                        worker_model=manifest["worker_model"],
+                        task_contract_sha256=contract_digest,
+                        process_id=pid,
+                        process_identity=process_identity,
+                        now=observed_at,
+                    )
+                    binding_path = Path(bound["worker_binding_path"])
+                if binding_path is None:
+                    raise AdapterError("runtime Worker binding was not established")
+                runtime_assurance.record_worker_heartbeat(
+                    store_dir=runtime_store_resolved,
+                    worker_binding_path=binding_path,
+                    sequence=sequence,
+                    session_id=manifest["session_id"],
+                    process_id=pid,
+                    process_identity=process_identity,
+                    task_contract_sha256=contract_digest,
+                    observed_at=observed_at,
+                )
+
+            heartbeat_callback = publish_heartbeat
         try:
             returncode, stdout_bytes, stderr_bytes, timed_out = _run_transport(
                 command,
                 prompt=prompt,
                 worktree=worktree,
                 timeout_seconds=contract["max_runtime_seconds"],
+                heartbeat_callback=heartbeat_callback,
+                heartbeat_interval_seconds=heartbeat_interval,
             )
         except OSError as exc:
             stdout_bytes = b""
@@ -1418,6 +1755,8 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure=f"transport_launch_failure:{str(exc)[:200]}",
                 result_path=None,
                 change_manifest_path=rejected_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
         if timed_out:
             _atomic_write(run_dir / "transport.jsonl", stdout_bytes, immutable=True)
@@ -1448,6 +1787,8 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure="worker_timeout",
                 result_path=None,
                 change_manifest_path=rejected_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
         _atomic_write(run_dir / "transport.jsonl", stdout_bytes, immutable=True)
         _atomic_write(run_dir / "transport.stderr", stderr_bytes, immutable=True)
@@ -1481,13 +1822,15 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure=f"invalid_transport_encoding:{str(exc)[:160]}",
                 result_path=None,
                 change_manifest_path=rejected_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
         try:
             events = _parse_stream(stdout)
         except AdapterError:
             events = []
         if returncode != 0:
-            failure = _classify_failure(returncode, stderr)
+            failure = _classify_failure(returncode, stderr, events)
             rejected_path = _write_rejected_change_manifest(
                 run_dir=run_dir,
                 worktree=worktree,
@@ -1514,6 +1857,8 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure=failure,
                 result_path=None,
                 change_manifest_path=rejected_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
         try:
             events = _parse_stream(stdout)
@@ -1567,6 +1912,8 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure=None,
                 result_path=result_path,
                 change_manifest_path=change_manifest_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
         except Exception as exc:
             change_manifest_path = _write_rejected_change_manifest(
@@ -1595,6 +1942,8 @@ def dispatch_task(*, adapter_dir: Path, task_contract: Path) -> dict[str, Any]:
                 failure=f"invalid_worker_delivery:{str(exc)[:240]}",
                 result_path=None,
                 change_manifest_path=change_manifest_path,
+                runtime_store=runtime_store_resolved,
+                worker_binding_path=binding_path,
             )
     finally:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
@@ -1637,6 +1986,9 @@ def _parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--worker-model", default="MiniMax-M3")
     init_parser.add_argument("--max-budget-usd-per-turn", type=float, default=2.0)
     init_parser.add_argument("--engineering-test", action="store_true")
+    init_parser.add_argument("--predecessor-turn-receipt", type=Path)
+    init_parser.add_argument("--p5-store", type=Path)
+    init_parser.add_argument("--p5-freeze-binding", type=Path)
 
     validate_parser = subparsers.add_parser("validate-task", help="validate one task against the frozen IR")
     validate_parser.add_argument("--adapter-dir", type=Path, required=True)
@@ -1645,6 +1997,8 @@ def _parser() -> argparse.ArgumentParser:
     dispatch_parser = subparsers.add_parser("dispatch", help="send one task through the exact Claude session")
     dispatch_parser.add_argument("--adapter-dir", type=Path, required=True)
     dispatch_parser.add_argument("--task-contract", type=Path, required=True)
+    dispatch_parser.add_argument("--unattended", action="store_true")
+    dispatch_parser.add_argument("--runtime-store", type=Path)
 
     inspect_parser = subparsers.add_parser("inspect", help="read the minimal adapter/session state")
     inspect_parser.add_argument("--adapter-dir", type=Path, required=True)
@@ -1665,6 +2019,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 worker_model=args.worker_model,
                 max_budget_usd_per_turn=args.max_budget_usd_per_turn,
                 engineering_test=args.engineering_test,
+                predecessor_turn_receipt=args.predecessor_turn_receipt,
+                p5_store=args.p5_store,
+                p5_freeze_binding=args.p5_freeze_binding,
             )
         elif args.command == "validate-task":
             manifest = _adapter_manifest(args.adapter_dir.resolve())
@@ -1680,6 +2037,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = dispatch_task(
                 adapter_dir=args.adapter_dir,
                 task_contract=args.task_contract,
+                unattended=args.unattended,
+                runtime_store=args.runtime_store,
             )
         else:
             result = inspect_adapter(adapter_dir=args.adapter_dir)

@@ -47,6 +47,7 @@ REQUEST_RECORD_VERSION = "recompile-request-record/v1"
 PROPOSAL_VERSION = "recompile-proposal/v1"
 PROPOSAL_RECORD_VERSION = "recompile-proposal-record/v1"
 FREEZE_VERSION = "recompile-freeze/v1"
+DELEGATED_FREEZE_VERSION = "recompile-freeze/v2"
 FREEZE_RECORD_VERSION = "recompile-freeze-record/v1"
 
 IDENTITY_ROOTS = {"/schema_version", "/ir_id", "/version", "/parent_ir_sha256"}
@@ -275,7 +276,7 @@ def initialize_store(*, gate_store: Path, store_dir: Path) -> dict[str, Any]:
             "request_schema_sha256": _sha256_file(REQUEST_SCHEMA_PATH),
             "research_ir_schema_sha256": _sha256_file(compiler.SCHEMA_PATH),
             "schema_version": STORE_VERSION,
-            "semantic_validator_sha256": _sha256_file(compiler.VALIDATOR_PATH),
+            "semantic_validator_sha256": compiler.semantic_validator_sha256(),
         }
         _publish_json(store_dir / "recompile-manifest.json", manifest)
         for relative in (
@@ -337,7 +338,7 @@ def _manifest(store_dir: Path) -> tuple[dict[str, Any], dict[str, Any], list[dic
         "recompile_prompt_sha256": _sha256_file(RECOMPILE_PROMPT_PATH),
         "request_schema_sha256": _sha256_file(REQUEST_SCHEMA_PATH),
         "research_ir_schema_sha256": _sha256_file(compiler.SCHEMA_PATH),
-        "semantic_validator_sha256": _sha256_file(compiler.VALIDATOR_PATH),
+        "semantic_validator_sha256": compiler.semantic_validator_sha256(),
     }
     if any(manifest[key] != value for key, value in local_hashes.items()):
         raise RecompileError("P5 compiler, prompt, or schema drifted after initialization")
@@ -1033,10 +1034,15 @@ def _bind_freeze_unlocked(
         compiler._validate_receipt(receipt)  # noqa: SLF001
     except compiler.CompilerError as exc:
         raise RecompileError(f"child P1 freeze replay failed: {exc}") from exc
-    if receipt["approval_scope"] != "OWNER_REVIEWED" and not (
+    if receipt["approval_scope"] not in {
+        "OWNER_REVIEWED",
+        "DELEGATED_ENGINEERING_REVIEW",
+    } and not (
         engineering_test and receipt["approval_scope"] == "ENGINEERING_ACCEPTANCE"
     ):
-        raise RecompileError("live P5 requires an OWNER_REVIEWED child freeze")
+        raise RecompileError(
+            "live P5 requires an OWNER_REVIEWED or DELEGATED_ENGINEERING_REVIEW child freeze"
+        )
     request, _request_record = _load_request(store_dir, proposal["request_sha256"])
     final_ir, final_ir_digest = compiler._load_addressed(  # noqa: SLF001
         Path(manifest["compiler_store"])
@@ -1070,8 +1076,15 @@ def _bind_freeze_unlocked(
         "parent_ir_sha256": manifest["parent_ir_sha256"],
         "proposal_sha256": proposal_sha256,
         "request_sha256": proposal["request_sha256"],
-        "schema_version": FREEZE_VERSION,
+        "schema_version": (
+            DELEGATED_FREEZE_VERSION
+            if receipt["approval_scope"] == "DELEGATED_ENGINEERING_REVIEW"
+            else FREEZE_VERSION
+        ),
     }
+    if receipt["approval_scope"] == "DELEGATED_ENGINEERING_REVIEW":
+        value["delegated_review_path"] = receipt["delegated_review_path"]
+        value["delegated_review_sha256"] = receipt["delegated_review_sha256"]
     digest = _sha256_bytes(_canonical_bytes(value))
     object_path = store_dir / "freezes" / "sha256" / f"{digest}.json"
     mapping_path = (
@@ -1209,7 +1222,7 @@ def _verify_store(*, store_dir: Path, strict_inventory: bool) -> dict[str, Any]:
         value, digest = _immutable_json(Path(mapping["freeze_path"]), "Recompile freeze")
         if digest != mapping["freeze_sha256"]:
             raise RecompileError("Recompile freeze is not content addressed")
-        _exact_keys(value, {
+        expected_freeze_keys = {
             "approval_scope",
             "bound_at",
             "child_freeze_receipt_path",
@@ -1221,7 +1234,13 @@ def _verify_store(*, store_dir: Path, strict_inventory: bool) -> dict[str, Any]:
             "proposal_sha256",
             "request_sha256",
             "schema_version",
-        }, "Recompile freeze")
+        }
+        if value.get("schema_version") == DELEGATED_FREEZE_VERSION:
+            expected_freeze_keys |= {
+                "delegated_review_path",
+                "delegated_review_sha256",
+            }
+        _exact_keys(value, expected_freeze_keys, "Recompile freeze")
         try:
             verified = compiler.verify_freeze(
                 receipt_path=Path(value["child_freeze_receipt_path"]),
@@ -1249,7 +1268,8 @@ def _verify_store(*, store_dir: Path, strict_inventory: bool) -> dict[str, Any]:
             manifest=manifest,
         )
         if (
-            value["schema_version"] != FREEZE_VERSION
+            value["schema_version"]
+            not in {FREEZE_VERSION, DELEGATED_FREEZE_VERSION}
             or value["proposal_sha256"] != proposal_digest
             or value["request_sha256"] != proposal["request_sha256"]
             or value["parent_ir_sha256"] != manifest["parent_ir_sha256"]
@@ -1265,6 +1285,16 @@ def _verify_store(*, store_dir: Path, strict_inventory: bool) -> dict[str, Any]:
             or verified["research_ir_sha256"] != value["child_ir_sha256"]
         ):
             raise RecompileError("Recompile freeze lineage differs")
+        if receipt["approval_scope"] == "DELEGATED_ENGINEERING_REVIEW":
+            if (
+                value["schema_version"] != DELEGATED_FREEZE_VERSION
+                or value["delegated_review_path"] != receipt["delegated_review_path"]
+                or value["delegated_review_sha256"]
+                != receipt["delegated_review_sha256"]
+            ):
+                raise RecompileError("delegated review binding differs in P5 freeze")
+        elif value["schema_version"] != FREEZE_VERSION:
+            raise RecompileError("non-delegated P5 freeze uses the delegated schema")
         expected_freezes.add(digest)
 
     if strict_inventory:

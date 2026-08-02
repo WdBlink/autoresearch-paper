@@ -10,8 +10,11 @@ observable and recoverable and binds it to Worker liveness evidence.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -35,10 +38,51 @@ WORKER_BINDING_VERSION = "mvp0-runtime-worker-binding/v1"
 SNAPSHOT_VERSION = "mvp0-runtime-snapshot/v1"
 SHUTDOWN_VERSION = "mvp0-runtime-shutdown/v1"
 HEX64 = set("0123456789abcdef")
+L1_STABLE_FIELDS = (
+    "version",
+    "id",
+    "kind",
+    "name",
+    "rrule",
+    "target_thread_id",
+    "created_at",
+)
 
 
 class AssuranceError(RuntimeError):
     """A fail-closed runtime-assurance contract error."""
+
+
+def _l1_registration_matches(
+    expected: bytes,
+    observed: bytes,
+    *,
+    lifecycle_state: str,
+) -> bool:
+    """Accept only Codex App's documented persistence normalization.
+
+    The App owns ``updated_at`` and removes one terminal newline from prompt
+    values when it rewrites an automation.  Those representation changes must
+    not invalidate an otherwise exact activation.  Every stable routing field,
+    the complete prompt content, and the lifecycle status remain fail-closed.
+    """
+
+    try:
+        expected_value = automation.parse_thread_automation(expected)
+        observed_value = automation.parse_thread_automation(observed)
+    except automation.AutomationError:
+        return False
+    if any(
+        observed_value[field] != expected_value[field]
+        for field in L1_STABLE_FIELDS
+    ):
+        return False
+    if observed_value["prompt"].rstrip() != expected_value["prompt"].rstrip():
+        return False
+    required_status = "ACTIVE" if lifecycle_state == "ACTIVE" else "PAUSED"
+    if observed_value["status"] != required_status:
+        return False
+    return observed_value["updated_at"] >= expected_value["created_at"]
 
 
 class ProcessInspector(Protocol):
@@ -47,6 +91,41 @@ class ProcessInspector(Protocol):
     def terminate(self, pid: int) -> None: ...
 
     def kill(self, pid: int) -> None: ...
+
+
+class LocalProcessInspector:
+    """Inspect and signal the exact process-group leader launched by P2."""
+
+    def identity(self, pid: int) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["/bin/ps", "-o", "lstart=,command=", "-p", str(pid)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            raise AssuranceError(f"cannot inspect Worker process identity: {exc}") from exc
+        rendered = proc.stdout.strip()
+        if proc.returncode != 0 or not rendered:
+            return None
+        return _sha256_bytes(_canonical_bytes({"pid": pid, "ps_identity": rendered}))
+
+    @staticmethod
+    def _signal_group(pid: int, signum: int) -> None:
+        try:
+            os.killpg(pid, signum)
+        except ProcessLookupError:
+            return
+        except PermissionError as exc:
+            raise AssuranceError(f"cannot signal Worker process group {pid}: {exc}") from exc
+
+    def terminate(self, pid: int) -> None:
+        self._signal_group(pid, signal.SIGTERM)
+
+    def kill(self, pid: int) -> None:
+        self._signal_group(pid, signal.SIGKILL)
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -165,6 +244,29 @@ def _lifecycle_path(store_dir: Path) -> Path:
     return store_dir / "runtime" / "lifecycle.json"
 
 
+def _l1_latest_path(store_dir: Path) -> Path:
+    return store_dir / "assurance" / "l1-latest.json"
+
+
+def _tick_lease_status(store_dir: Path) -> str:
+    path = store_dir / "leases" / "tick.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "HELD"
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        return "FREE"
+    finally:
+        handle.close()
+
+
 def _load_contract(store_dir: Path) -> dict[str, Any]:
     value = _read_json(_contract_path(store_dir))
     if not isinstance(value, dict) or value.get("schema_version") != ASSURANCE_VERSION:
@@ -188,11 +290,89 @@ def _append_jsonl(path: Path, value: Mapping[str, Any]) -> None:
     path.chmod(0o644)
 
 
+def record_l1_heartbeat(
+    *,
+    store_dir: Path,
+    controller_id: str,
+    target_thread_id: str,
+    observed_at: str,
+    source: str = "SCHEDULED_CODEX_TASK",
+) -> dict[str, Any]:
+    """Publish proof that the exact L1 task returned to its bound controller."""
+
+    store_dir = store_dir.resolve()
+    _parse_time(observed_at)
+    if source not in {"ACTIVATION_PROBE", "SCHEDULED_CODEX_TASK", "MANUAL_BOUND_TICK"}:
+        raise AssuranceError("L1 heartbeat source is invalid")
+    contract = _load_contract(store_dir)
+    lifecycle = _load_lifecycle(store_dir)
+    if controller_id != contract["controller_id"]:
+        raise AssuranceError("L1 heartbeat controller mismatch")
+    if target_thread_id != contract["l1"]["target_thread_id"]:
+        raise AssuranceError("L1 heartbeat target thread mismatch")
+    if source != "ACTIVATION_PROBE" and lifecycle["state"] != "ACTIVE":
+        raise AssuranceError(f"L1 heartbeat refused in lifecycle {lifecycle['state']}")
+    lock_path = store_dir / "assurance" / "l1-heartbeat.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        latest_path = _l1_latest_path(store_dir)
+        latest = _read_json(latest_path) if latest_path.is_file() else None
+        sequence = 1 if not isinstance(latest, dict) else int(latest["sequence"]) + 1
+        predecessor = None if not isinstance(latest, dict) else latest["heartbeat_sha256"]
+        heartbeat = {
+            "controller_id": controller_id,
+            "model_dispatches": 0 if source == "ACTIVATION_PROBE" else 1,
+            "observed_at": observed_at,
+            "predecessor_sha256": predecessor,
+            "schema_version": "mvp0-l1-heartbeat/v1",
+            "sequence": sequence,
+            "source": source,
+            "target_thread_id": target_thread_id,
+        }
+        payload = _canonical_bytes(heartbeat)
+        digest = _sha256_bytes(payload)
+        object_path = store_dir / "assurance" / "l1-heartbeats" / f"{digest}.json"
+        already = _write_immutable_idempotent(object_path, payload)
+        if not already:
+            _append_jsonl(
+                store_dir / "assurance" / "l1-heartbeats.jsonl",
+                {"heartbeat_path": str(object_path), "sequence": sequence, "sha256": digest},
+            )
+        _write_json(
+            latest_path,
+            {
+                "heartbeat_path": str(object_path),
+                "heartbeat_sha256": digest,
+                "observed_at": observed_at,
+                "sequence": sequence,
+                "source": source,
+            },
+        )
+    finally:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+    return {
+        "already_applied": already,
+        "heartbeat_path": str(object_path),
+        "heartbeat_sha256": digest,
+        "sequence": sequence,
+        "source": source,
+    }
+
+
 def _publish_l0_observation(store_dir: Path, observation: dict[str, Any]) -> dict[str, Any]:
     fingerprint_value = {
         key: value
         for key, value in observation.items()
-        if key not in {"observed_at", "deduplicated", "observation_sha256"}
+        if key not in {
+            "observed_at",
+            "deduplicated",
+            "observation_sha256",
+            "l1_heartbeat_age_seconds",
+            "l2_heartbeat_age_seconds",
+        }
     }
     fingerprint = _sha256_bytes(_canonical_bytes(fingerprint_value))
     index_path = store_dir / "assurance" / "l0-observations.jsonl"
@@ -206,12 +386,12 @@ def _publish_l0_observation(store_dir: Path, observation: dict[str, Any]) -> dic
     payload["deduplicated"] = False
     payload["fingerprint"] = fingerprint
     object_digest = _sha256_bytes(_canonical_bytes(payload))
-    payload["observation_sha256"] = object_digest
     object_path = store_dir / "assurance" / "l0-objects" / f"{object_digest}.json"
     _write_immutable_idempotent(object_path, _canonical_bytes(payload))
     _append_jsonl(index_path, {"observation_path": str(object_path), "sha256": object_digest})
-    _write_json(latest_path, {"fingerprint": fingerprint, "observation": payload})
-    return payload
+    returned = {**payload, "observation_sha256": object_digest}
+    _write_json(latest_path, {"fingerprint": fingerprint, "observation": returned})
+    return returned
 
 
 def _validate_intervals(
@@ -254,6 +434,7 @@ def bootstrap_assurance(
     python_executable: Path,
     now: str,
     l0_script_path: Path | None = None,
+    simulate_crash_after: str | None = None,
 ) -> dict[str, Any]:
     """Create and functionally prove one complete runtime-assurance generation."""
 
@@ -268,7 +449,54 @@ def bootstrap_assurance(
         heartbeat_stale_seconds=heartbeat_stale_seconds,
     )
     if _activation_path(store_dir).is_file():
-        return verify_activation(store_dir=store_dir, scheduler=scheduler, now=now)
+        verified_existing = verify_activation(store_dir=store_dir, scheduler=scheduler, now=now)
+        journal_path = store_dir / "runtime" / "bootstrap-journal.json"
+        if journal_path.is_file():
+            journal = _read_json(journal_path)
+            if isinstance(journal, dict) and journal.get("phase") != "COMMITTED":
+                _write_json(
+                    journal_path,
+                    {
+                        "activation_receipt_sha256": verified_existing["activation_receipt_sha256"],
+                        "controller_id": verified_existing["controller_id"],
+                        "phase": "COMMITTED",
+                        "prepared_at": journal.get("prepared_at", now),
+                        "schema_version": "mvp0-runtime-bootstrap-journal/v1",
+                    },
+                )
+        return verified_existing
+    partial_contract: dict[str, Any] | None = None
+    if _contract_path(store_dir).is_file():
+        partial = _load_contract(store_dir)
+        partial_contract = partial
+        expected_partial = {
+            "controller_id": controller_id,
+            "target_thread_id": target_thread_id,
+            "l0_interval_seconds": l0_interval_seconds,
+            "l1_interval_seconds": l1_interval_seconds,
+            "l2_interval_seconds": l2_interval_seconds,
+            "heartbeat_stale_seconds": heartbeat_stale_seconds,
+        }
+        observed_partial = {
+            "controller_id": partial.get("controller_id"),
+            "target_thread_id": partial.get("l1", {}).get("target_thread_id"),
+            "l0_interval_seconds": partial.get("l0", {}).get("interval_seconds"),
+            "l1_interval_seconds": partial.get("l1", {}).get("interval_seconds"),
+            "l2_interval_seconds": partial.get("l2", {}).get("heartbeat_interval_seconds"),
+            "heartbeat_stale_seconds": partial.get("heartbeat_stale_seconds"),
+        }
+        if observed_partial != expected_partial:
+            raise AssuranceError("partial bootstrap contract differs from requested activation")
+        partial_backup = Path(partial["l1"]["backup_path"])
+        if not partial_backup.is_file() or partial_backup.is_symlink():
+            raise AssuranceError("partial bootstrap L1 backup is missing or unsafe")
+        expected_partial_bytes = partial_backup.read_bytes()
+        if _sha256_bytes(expected_partial_bytes) != partial["l1"]["expected_sha256"]:
+            raise AssuranceError("partial bootstrap L1 backup drifted")
+        if not l1_automation_path.exists():
+            _atomic_write(l1_automation_path, expected_partial_bytes)
+        elif l1_automation_path.is_symlink() or l1_automation_path.read_bytes() != expected_partial_bytes:
+            raise AssuranceError("partial bootstrap L1 registration drifted")
     parsed_l1 = automation.validate_thread_automation(
         l1_automation_path,
         expected_thread_id=target_thread_id,
@@ -316,9 +544,12 @@ def bootstrap_assurance(
     plist_evidence_path = assurance_dir / f"{l0_label}.plist"
     installed_plist_path = launch_agents_dir / f"{l0_label}.plist"
     heartbeat_contract_path = assurance_dir / "l2-heartbeat-contract.json"
+    generation_created_at = (
+        partial_contract["created_at"] if partial_contract is not None else now
+    )
     runtime_contract = {
         "controller_id": controller_id,
-        "created_at": now,
+        "created_at": generation_created_at,
         "heartbeat_stale_seconds": heartbeat_stale_seconds,
         "l0": {
             "command_argv": l0_argv,
@@ -336,6 +567,7 @@ def bootstrap_assurance(
             "command_sha256": l1_command_digest,
             "expected_sha256": l1_digest,
             "interval_seconds": l1_interval_seconds,
+            "stale_seconds": max(l1_interval_seconds * 2, heartbeat_stale_seconds),
             "target_thread_id": target_thread_id,
         },
         "l2": {
@@ -348,7 +580,7 @@ def bootstrap_assurance(
     heartbeat_contract = {
         "callback": "mvp.runtime_assurance.record_worker_heartbeat",
         "controller_id": controller_id,
-        "created_at": now,
+        "created_at": generation_created_at,
         "heartbeat_interval_seconds": l2_interval_seconds,
         "heartbeat_stale_seconds": heartbeat_stale_seconds,
         "model_dispatches": 0,
@@ -367,27 +599,69 @@ def bootstrap_assurance(
         path.mkdir(parents=True, exist_ok=True)
     stdout_path.touch(exist_ok=True)
     stderr_path.touch(exist_ok=True)
-    _atomic_write(backup_path, l1_bytes, immutable=True)
-    _atomic_write(plist_evidence_path, plist_bytes, immutable=True)
+    bootstrap_journal_path = store_dir / "runtime" / "bootstrap-journal.json"
+    _write_json(
+        bootstrap_journal_path,
+        {
+            "controller_id": controller_id,
+            "phase": "PREPARED",
+            "prepared_at": now,
+            "schema_version": "mvp0-runtime-bootstrap-journal/v1",
+        },
+    )
+    _write_immutable_idempotent(backup_path, l1_bytes)
+    _write_immutable_idempotent(plist_evidence_path, plist_bytes)
     _atomic_write(installed_plist_path, plist_bytes)
-    _write_json(heartbeat_contract_path, heartbeat_contract, immutable=True)
-    _write_json(_contract_path(store_dir), runtime_contract, immutable=True)
-    _write_json(store_dir / "runtime" / "resource-manifest.json", resource_manifest, immutable=True)
+    _write_immutable_idempotent(heartbeat_contract_path, _canonical_bytes(heartbeat_contract))
+    _write_immutable_idempotent(_contract_path(store_dir), _canonical_bytes(runtime_contract))
+    _write_immutable_idempotent(
+        store_dir / "runtime" / "resource-manifest.json",
+        _canonical_bytes(resource_manifest),
+    )
     _write_json(
         _lifecycle_path(store_dir),
         {"controller_id": controller_id, "state": "ACTIVE", "updated_at": now},
     )
-    scheduler.load(l0_label, installed_plist_path)
+    if not scheduler.is_loaded(l0_label):
+        scheduler.load(l0_label, installed_plist_path)
     if not scheduler.is_loaded(l0_label):
         raise AssuranceError("L0 service did not become loaded")
+    _write_json(
+        bootstrap_journal_path,
+        {
+            "controller_id": controller_id,
+            "phase": "L0_LOADED",
+            "prepared_at": now,
+            "schema_version": "mvp0-runtime-bootstrap-journal/v1",
+        },
+    )
 
+    l1_heartbeat_probe = record_l1_heartbeat(
+        store_dir=store_dir,
+        controller_id=controller_id,
+        target_thread_id=target_thread_id,
+        observed_at=now,
+        source="ACTIVATION_PROBE",
+    )
     l1_probe = {
         "due": False,
+        "heartbeat_sha256": l1_heartbeat_probe["heartbeat_sha256"],
         "model_dispatches": 0,
         "observed_at": now,
         "registration_sha256": l1_digest,
     }
     l1_automation_path.unlink()
+    _write_json(
+        bootstrap_journal_path,
+        {
+            "controller_id": controller_id,
+            "phase": "L1_REMOVED",
+            "prepared_at": now,
+            "schema_version": "mvp0-runtime-bootstrap-journal/v1",
+        },
+    )
+    if simulate_crash_after == "L1_REMOVED":
+        raise AssuranceError("simulated bootstrap crash after L1_REMOVED")
     l0_probe_result = run_l0_health_tick(store_dir=store_dir, scheduler=scheduler, now=now)
     if l0_probe_result.get("action") != "RESTORED_L1" or l1_automation_path.read_bytes() != l1_bytes:
         raise AssuranceError("L0 failed the exact L1 restoration probe")
@@ -397,9 +671,43 @@ def bootstrap_assurance(
         "model_dispatches": l0_probe_result["model_dispatches"],
         "observation_sha256": l0_probe_result["observation_sha256"],
     }
+    l2_probe_store = store_dir / "runtime" / "bootstrap-probes" / "l2"
+    (l2_probe_store / "assurance").mkdir(parents=True, exist_ok=True)
+    (l2_probe_store / "runtime").mkdir(parents=True, exist_ok=True)
+    _write_immutable_idempotent(
+        _contract_path(l2_probe_store), _canonical_bytes(runtime_contract)
+    )
+    _write_json(
+        _lifecycle_path(l2_probe_store),
+        {"controller_id": controller_id, "state": "ACTIVE", "updated_at": now},
+    )
+    probe_binding = bind_worker(
+        store_dir=l2_probe_store,
+        adapter_id=f"{controller_id}-activation-probe",
+        turn_id="activation-probe",
+        session_id="00000000-0000-4000-8000-000000000000",
+        worker_model="activation-probe/no-model",
+        task_contract_sha256=_sha256_bytes(controller_id.encode("utf-8")),
+        process_id=1,
+        process_identity="activation-probe/no-process",
+        now=now,
+    )
+    probe_heartbeat = record_worker_heartbeat(
+        store_dir=l2_probe_store,
+        worker_binding_path=Path(probe_binding["worker_binding_path"]),
+        sequence=1,
+        session_id="00000000-0000-4000-8000-000000000000",
+        process_id=1,
+        process_identity="activation-probe/no-process",
+        task_contract_sha256=_sha256_bytes(controller_id.encode("utf-8")),
+        observed_at=now,
+    )
     l2_probe = {
+        "binding_sha256": probe_binding["binding_sha256"],
         "contract_sha256": _sha256_file(heartbeat_contract_path),
         "contract_verified": True,
+        "heartbeat_path": probe_heartbeat["heartbeat_path"],
+        "heartbeat_sha256": probe_heartbeat["heartbeat_sha256"],
         "model_dispatches": 0,
         "observed_at": now,
     }
@@ -426,6 +734,16 @@ def bootstrap_assurance(
         "target_thread_id": target_thread_id,
     }
     _write_json(_activation_path(store_dir), activation, immutable=True)
+    _write_json(
+        bootstrap_journal_path,
+        {
+            "activation_receipt_sha256": _sha256_file(_activation_path(store_dir)),
+            "controller_id": controller_id,
+            "phase": "COMMITTED",
+            "prepared_at": now,
+            "schema_version": "mvp0-runtime-bootstrap-journal/v1",
+        },
+    )
     verified = verify_activation(store_dir=store_dir, scheduler=scheduler, now=now)
     return verified
 
@@ -452,6 +770,7 @@ def run_l0_health_tick(
     loaded = scheduler.is_loaded(l0["scheduler_label"])
     base = {
         "controller_id": contract["controller_id"],
+        "controller_lease": _tick_lease_status(store_dir),
         "l0_loaded": loaded,
         "l1_path": str(automation_path),
         "lifecycle_state": lifecycle["state"],
@@ -481,11 +800,58 @@ def run_l0_health_tick(
             {**base, "action": "RECOVERY_PROPOSED", "reason": "L1_PATH_UNSAFE"},
         )
     observed = automation_path.read_bytes()
-    if observed != expected:
+    if not _l1_registration_matches(
+        expected, observed, lifecycle_state=lifecycle["state"]
+    ):
         return _publish_l0_observation(
             store_dir,
             {**base, "action": "RECOVERY_PROPOSED", "reason": "L1_DRIFT"},
         )
+
+    l1_latest_path = _l1_latest_path(store_dir)
+    if not l1_latest_path.is_file():
+        return _publish_l0_observation(
+            store_dir,
+            {**base, "action": "RECOVERY_PROPOSED", "reason": "L1_HEARTBEAT_MISSING"},
+        )
+    l1_latest = _read_json(l1_latest_path)
+    if not isinstance(l1_latest, dict):
+        raise AssuranceError("latest L1 heartbeat pointer is invalid")
+    l1_age = max(
+        0.0,
+        (_parse_time(now) - _parse_time(l1_latest["observed_at"])).total_seconds(),
+    )
+    base["l1_heartbeat_age_seconds"] = int(l1_age)
+    base["l1_heartbeat_sha256"] = l1_latest.get("heartbeat_sha256")
+    if l1_age >= l1["stale_seconds"]:
+        return _publish_l0_observation(
+            store_dir,
+            {**base, "action": "RECOVERY_PROPOSED", "reason": "L1_HEARTBEAT_STALE"},
+        )
+
+    pointer_path = store_dir / "assurance" / "current-worker.json"
+    if pointer_path.is_file():
+        pointer = _read_json(pointer_path)
+        if not isinstance(pointer, dict) or not _valid_sha(pointer.get("binding_sha256")):
+            raise AssuranceError("current Worker pointer is invalid")
+        if pointer.get("state") != "TERMINAL":
+            heartbeat = _latest_heartbeat(store_dir, pointer["binding_sha256"])
+            if heartbeat is None:
+                return _publish_l0_observation(
+                    store_dir,
+                    {**base, "action": "RECOVERY_PROPOSED", "reason": "L2_HEARTBEAT_MISSING"},
+                )
+            l2_age = max(
+                0.0,
+                (_parse_time(now) - _parse_time(heartbeat["observed_at"])).total_seconds(),
+            )
+            base["l2_heartbeat_age_seconds"] = int(l2_age)
+            base["l2_heartbeat_sha256"] = _sha256_bytes(_canonical_bytes(heartbeat))
+            if l2_age >= contract["heartbeat_stale_seconds"]:
+                return _publish_l0_observation(
+                    store_dir,
+                    {**base, "action": "RECOVERY_PROPOSED", "reason": "L2_HEARTBEAT_STALE"},
+                )
     return _publish_l0_observation(
         store_dir,
         {**base, "action": "HEALTHY", "reason": None},
@@ -497,6 +863,7 @@ def verify_activation(
     store_dir: Path,
     scheduler: launchd.Scheduler,
     now: str,
+    require_l1_fresh: bool = True,
 ) -> dict[str, Any]:
     store_dir = store_dir.resolve()
     _parse_time(now)
@@ -507,6 +874,9 @@ def verify_activation(
     if path.stat().st_mode & 0o777 != 0o444:
         raise AssuranceError("runtime activation receipt is mutable")
     contract = _load_contract(store_dir)
+    lifecycle = _load_lifecycle(store_dir)
+    if lifecycle["state"] != "ACTIVE":
+        raise AssuranceError(f"runtime activation is not ACTIVE: {lifecycle['state']}")
     if activation.get("controller_id") != contract.get("controller_id"):
         raise AssuranceError("runtime activation controller mismatch")
     l0 = activation["l0"]
@@ -519,13 +889,32 @@ def verify_activation(
     automation_path = Path(l1["automation_path"])
     if not automation_path.is_file() or automation_path.is_symlink():
         raise AssuranceError("runtime activation L1 registration is missing")
-    if _sha256_file(automation_path) != l1["expected_sha256"]:
+    expected_l1 = Path(contract["l1"]["backup_path"]).read_bytes()
+    if not _l1_registration_matches(
+        expected_l1, automation_path.read_bytes(), lifecycle_state=lifecycle["state"]
+    ):
         raise AssuranceError("runtime activation L1 registration drifted")
     automation.validate_thread_automation(
         automation_path,
         expected_thread_id=activation["target_thread_id"],
         expected_controller_id=activation["controller_id"],
     )
+    l1_latest = _read_json(_l1_latest_path(store_dir))
+    if not isinstance(l1_latest, dict):
+        raise AssuranceError("runtime activation L1 heartbeat pointer is invalid")
+    heartbeat_path = Path(l1_latest.get("heartbeat_path", ""))
+    if (
+        not heartbeat_path.is_file()
+        or heartbeat_path.is_symlink()
+        or _sha256_file(heartbeat_path) != l1_latest.get("heartbeat_sha256")
+    ):
+        raise AssuranceError("runtime activation L1 heartbeat evidence drifted")
+    heartbeat_age = max(
+        0.0,
+        (_parse_time(now) - _parse_time(l1_latest["observed_at"])).total_seconds(),
+    )
+    if require_l1_fresh and heartbeat_age >= contract["l1"]["stale_seconds"]:
+        raise AssuranceError("runtime activation L1 heartbeat is stale")
     contract_path = Path(l2["contract_path"])
     if not contract_path.is_file() or _sha256_file(contract_path) != l2["contract_sha256"]:
         raise AssuranceError("runtime activation L2 contract drifted")
@@ -536,12 +925,30 @@ def verify_activation(
         probe = activation["probes"].get(layer)
         if not isinstance(probe, dict) or probe.get("model_dispatches") != 0:
             raise AssuranceError(f"runtime activation {layer.upper()} probe is invalid")
+    l2_probe_path = Path(activation["probes"]["l2"].get("heartbeat_path", ""))
+    if (
+        not l2_probe_path.is_file()
+        or l2_probe_path.is_symlink()
+        or _sha256_file(l2_probe_path)
+        != activation["probes"]["l2"].get("heartbeat_sha256")
+    ):
+        raise AssuranceError("runtime activation L2 conformance heartbeat drifted")
     return {
         "activation_receipt_path": str(path),
         "activation_receipt_sha256": _sha256_file(path),
         "controller_id": activation["controller_id"],
         "status": "VERIFIED",
     }
+
+
+def heartbeat_interval_seconds(*, store_dir: Path) -> int:
+    """Return the frozen L2 cadence without exposing research state."""
+
+    contract = _load_contract(store_dir.resolve())
+    value = contract["l2"]["heartbeat_interval_seconds"]
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise AssuranceError("runtime L2 heartbeat interval is invalid")
+    return value
 
 
 def bind_worker(
@@ -678,6 +1085,63 @@ def record_worker_heartbeat(
     }
 
 
+def complete_worker(
+    *,
+    store_dir: Path,
+    worker_binding_path: Path,
+    outcome: str,
+    turn_receipt_path: Path,
+    turn_receipt_sha256: str,
+    completed_at: str,
+) -> dict[str, Any]:
+    """Bind one terminal P2 receipt so completed work is not reported stale."""
+
+    store_dir = store_dir.resolve()
+    _parse_time(completed_at)
+    if outcome not in {"COMPLETED", "BLOCKED", "FAILED"}:
+        raise AssuranceError("Worker terminal outcome is invalid")
+    binding_path = worker_binding_path.resolve()
+    pointer_path = store_dir / "assurance" / "current-worker.json"
+    pointer = _read_json(pointer_path)
+    if pointer.get("binding_path") != str(binding_path):
+        raise AssuranceError("terminal Worker binding is not current")
+    binding_digest = _sha256_file(binding_path)
+    if pointer.get("binding_sha256") != binding_digest:
+        raise AssuranceError("terminal Worker binding hash mismatch")
+    receipt_path = turn_receipt_path.resolve()
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise AssuranceError("terminal Worker receipt is missing or unsafe")
+    if not _valid_sha(turn_receipt_sha256) or _sha256_file(receipt_path) != turn_receipt_sha256:
+        raise AssuranceError("terminal Worker receipt hash mismatch")
+    completion = {
+        "binding_sha256": binding_digest,
+        "completed_at": completed_at,
+        "controller_id": pointer["controller_id"],
+        "outcome": outcome,
+        "schema_version": "mvp0-runtime-worker-completion/v1",
+        "turn_receipt_path": str(receipt_path),
+        "turn_receipt_sha256": turn_receipt_sha256,
+    }
+    digest = _sha256_bytes(_canonical_bytes(completion))
+    completion_path = store_dir / "assurance" / "worker-completions" / f"{digest}.json"
+    already = _write_immutable_idempotent(completion_path, _canonical_bytes(completion))
+    _write_json(
+        pointer_path,
+        {
+            **pointer,
+            "completion_path": str(completion_path),
+            "completion_sha256": digest,
+            "state": "TERMINAL",
+        },
+    )
+    return {
+        "already_applied": already,
+        "completion_path": str(completion_path),
+        "completion_sha256": digest,
+        "state": "TERMINAL",
+    }
+
+
 def _latest_heartbeat(store_dir: Path, binding_digest: str) -> dict[str, Any] | None:
     root = store_dir / "assurance" / "l2-heartbeats" / binding_digest
     paths = sorted(root.glob("*.json")) if root.is_dir() else []
@@ -706,7 +1170,22 @@ def inspect_runtime(
     l1 = contract["l1"]
     automation_path = Path(l1["automation_path"])
     l1_present = automation_path.is_file() and not automation_path.is_symlink()
-    l1_digest = _sha256_file(automation_path) if l1_present else None
+    expected_l1 = Path(l1["backup_path"]).read_bytes()
+    l1_matches = (
+        l1_present
+        and _l1_registration_matches(
+            expected_l1,
+            automation_path.read_bytes(),
+            lifecycle_state=lifecycle["state"],
+        )
+    )
+    l1_latest_path = _l1_latest_path(store_dir)
+    l1_latest = _read_json(l1_latest_path) if l1_latest_path.is_file() else None
+    l1_age = (
+        None
+        if not isinstance(l1_latest, dict)
+        else int(max(0.0, (observed - _parse_time(l1_latest["observed_at"])).total_seconds()))
+    )
     pointer_path = store_dir / "assurance" / "current-worker.json"
     l2: dict[str, Any] = {"binding": "MISSING", "freshness": "MISSING", "heartbeat_age_seconds": None}
     worker: dict[str, Any] = {"identity_agreement": "UNKNOWN", "process_id": None}
@@ -718,7 +1197,20 @@ def inspect_runtime(
         if binding_digest != pointer["binding_sha256"]:
             raise AssuranceError("current Worker pointer hash mismatch")
         heartbeat = _latest_heartbeat(store_dir, binding_digest)
-        if heartbeat is None:
+        if pointer.get("state") == "TERMINAL":
+            completion_path = Path(pointer.get("completion_path", ""))
+            if (
+                not completion_path.is_file()
+                or _sha256_file(completion_path) != pointer.get("completion_sha256")
+            ):
+                raise AssuranceError("terminal Worker completion pointer drifted")
+            l2 = {
+                "binding": "BOUND",
+                "freshness": "TERMINAL",
+                "heartbeat_age_seconds": None,
+                "completion_sha256": pointer["completion_sha256"],
+            }
+        elif heartbeat is None:
             l2 = {"binding": "BOUND", "freshness": "MISSING", "heartbeat_age_seconds": None}
         else:
             age = max(0.0, (observed - _parse_time(heartbeat["observed_at"])).total_seconds())
@@ -754,8 +1246,17 @@ def inspect_runtime(
             "scheduler_label": l0["scheduler_label"],
         },
         "l1": {
-            "agreement": "MATCH" if l1_digest == l1["expected_sha256"] else "MISSING" if l1_digest is None else "MISMATCH",
+            "agreement": "MATCH" if l1_matches else "MISSING" if not l1_present else "MISMATCH",
             "automation_id": l1["automation_id"],
+            "heartbeat_age_seconds": l1_age,
+            "heartbeat_freshness": (
+                "MISSING"
+                if l1_age is None
+                else "FRESH"
+                if l1_age < l1["stale_seconds"]
+                else "STALE"
+            ),
+            "heartbeat_source": None if not isinstance(l1_latest, dict) else l1_latest.get("source"),
             "path": str(automation_path),
         },
         "l2": l2,
@@ -763,6 +1264,7 @@ def inspect_runtime(
         "observed_at": now,
         "schema_version": SNAPSHOT_VERSION,
         "scientific_state_mutations": 0,
+        "supervisor_lease": _tick_lease_status(store_dir),
         "worker": worker,
     }
 
@@ -787,7 +1289,12 @@ def pause_runtime(
         raise AssuranceError("a stopping runtime cannot be paused")
     if lifecycle["state"] == "PAUSED":
         return {"authority_id": authority_id, "status": "PAUSED", "already_applied": True}
-    verify_activation(store_dir=store_dir, scheduler=scheduler, now=now)
+    verify_activation(
+        store_dir=store_dir,
+        scheduler=scheduler,
+        now=now,
+        require_l1_fresh=False,
+    )
     contract = _load_contract(store_dir)
     l1_path = Path(contract["l1"]["automation_path"])
     paused_bytes = automation.with_status(
@@ -853,6 +1360,13 @@ def resume_runtime(
             "state": "ACTIVE",
             "updated_at": now,
         },
+    )
+    record_l1_heartbeat(
+        store_dir=store_dir,
+        controller_id=contract["controller_id"],
+        target_thread_id=contract["l1"]["target_thread_id"],
+        observed_at=now,
+        source="MANUAL_BOUND_TICK",
     )
     verified = verify_activation(store_dir=store_dir, scheduler=scheduler, now=now)
     receipt = {
@@ -943,7 +1457,9 @@ def shutdown_runtime(
         binding = _read_json(Path(pointer["binding_path"]))
         pid = binding["process_id"]
         observed_identity = processes.identity(pid)
-        if observed_identity is None:
+        if pointer.get("state") == "TERMINAL" and observed_identity is None:
+            worker_results.append({"outcome": "TERMINAL_ALREADY_EXITED", "process_id": pid})
+        elif observed_identity is None:
             worker_results.append({"outcome": "ALREADY_EXITED", "process_id": pid})
         elif observed_identity != binding["process_identity"]:
             residual = {

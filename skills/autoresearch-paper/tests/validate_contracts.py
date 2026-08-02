@@ -30,11 +30,19 @@ def main() -> int:
 
     for path in [
         "mvp/README.md",
+        "mvp0/SKILL.md",
+        "mvp0/agents/openai.yaml",
         "mvp/research_compiler.py",
         "mvp/worker_adapter.py",
         "mvp/experiment_ledger.py",
         "mvp/evidence_gate.py",
         "mvp/recompile_loop.py",
+        "mvp/delegated_review.py",
+        "mvp/supervisory_controller.py",
+        "mvp/runtime_assurance.py",
+        "mvp/automation_registration.py",
+        "mvp/launchd_registration.py",
+        "mvp/l0_watchdog.py",
         "mvp/schemas/research-ir.schema.json",
         "mvp/schemas/worker-task-contract.schema.json",
         "mvp/schemas/worker-result.schema.json",
@@ -43,8 +51,20 @@ def main() -> int:
         "mvp/schemas/evidence-gate-decision.schema.json",
         "mvp/schemas/failure-analysis.schema.json",
         "mvp/schemas/recompile-request.schema.json",
+        "mvp/schemas/engineering-review-input.schema.json",
+        "mvp/schemas/supervisor-manifest.schema.json",
+        "mvp/schemas/supervisor-state.schema.json",
+        "mvp/schemas/supervisor-tick.schema.json",
+        "mvp/schemas/runtime-activation.schema.json",
+        "mvp/schemas/runtime-snapshot.schema.json",
+        "mvp/schemas/l0-observation.schema.json",
+        "mvp/schemas/l2-heartbeat.schema.json",
+        "mvp/schemas/resource-manifest.schema.json",
+        "mvp/schemas/shutdown-journal.schema.json",
         "mvp/prompts/codex-research-compiler.md",
         "mvp/prompts/codex-recompile-analyst.md",
+        "mvp/prompts/codex-supervisor-heartbeat.md",
+        "scripts/install-mvp0.sh",
         "examples/mvp0/fixed-wing-visual-guidance/README.md",
         "tests/test_mvp_research_compiler.py",
         "tests/test_mvp_worker_adapter.py",
@@ -100,6 +120,18 @@ def main() -> int:
     ]:
         require((ROOT / path).exists(), f"missing {path}", errors)
 
+    require(
+        contains(
+            "mvp0/SKILL.md",
+            "three-layer L0/L1/L2 Watchdog",
+            "DELEGATED_ENGINEERING_REVIEW",
+            "one `tick`",
+            "inspect-runtime",
+            "does not claim 24h, 7x24",
+        ),
+        "MVP0 skill must expose the complete P6 Watchdog without long-stability claims",
+        errors,
+    )
     require(
         contains("SKILL.md", "research_acceptance.md", "plan-l0-guard.py", "cleanup-plan-resources.sh", "resource_manifest.json"),
         "SKILL.md must document research gate, L0, cleanup, and resource manifest",

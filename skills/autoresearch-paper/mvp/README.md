@@ -1,4 +1,4 @@
-# MVP-0 P1–P5 — Research Compiler, Worker, Evidence, Gate, and Recompile
+# MVP-0 P1–P6 — Research Compiler, Worker, Evidence, Gate, Recompile, and Supervisor
 
 This directory is the new Thin Loop implementation path. P1 compiles an open
 research idea into one immutable, executable, and falsifiable Research IR. P2
@@ -9,7 +9,8 @@ Receipt with archived input/output evidence. The implementation does not import
 or call the Legacy v0.20 Harness. P4 validates the frozen evaluator's closed
 report and emits one deterministic Gate decision for each P3 receipt.
 P5 turns an eligible Gate result into one evidence-bound continuation or
-versioned recompile request and routes IR N+1 back through P1 human review.
+versioned recompile request. P6 adds one-transition Codex Host supervision and
+the complete L0/L1/L2 Watchdog closure without changing P1–P5 scientific truth.
 
 ## Boundary
 
@@ -29,7 +30,9 @@ the scientific contract. P3 adds provenance beside both. P4 decides only
 whether current evidence supports KEEP, PIVOT, STOP, or RECOMPILE; it does not
 perform the recompile.
 P5 can compile a new proposal, but it cannot approve that proposal or dispatch
-its next Worker.
+its next Worker by itself. P6 may freeze an execution-only successor after a
+fresh non-MiniMax Codex review and deterministic policy replay; scientific
+changes still stop for the owner.
 
 ## Workflow
 
@@ -484,3 +487,103 @@ limits post-hoc reinterpretation to one analysis and request, and replays exact
 object inventories. It does not invoke Claude Code, create a P2 Adapter for the
 child IR, select paper claims, or execute an autonomous loop. A new approved IR
 starts a new bounded P2–P5 lineage only under separate execution authority.
+
+## P6 Supervisory Controller and full Watchdog
+
+P6 makes Codex the plan-bound Host. It derives one next action from replayed
+P1–P5 artifacts, commits at most one transition per heartbeat, and then ends
+the Codex turn. Its canonical store is `<run>/supervisor`; Dashboard views are
+read-only projections of this store and the P1–P5 receipts.
+
+Initialize against one exact Codex task and existing run:
+
+```bash
+python3 mvp/supervisory_controller.py init \
+  --run-dir /absolute/run \
+  --target-thread-id TASK_UUID \
+  --adapter-dir /absolute/run/adapter \
+  --ledger-dir /absolute/run/ledger \
+  --gate-store /absolute/run/gate \
+  --p5-store /absolute/run/p5-recompile
+
+python3 mvp/supervisory_controller.py inspect \
+  --store-dir /absolute/run/supervisor
+```
+
+The closed phases are `READY`, `WORKER_RUNNING`, `NEEDS_P3`, `NEEDS_P4`,
+`NEEDS_P5`, `NEEDS_ENGINEERING_REVIEW`, `NEEDS_CHILD_P2`, `WAITING_HUMAN`,
+`BLOCKED`, `STOPPED`, and `COMPLETED`. `inspect` never mutates them. `tick`
+consumes only the returned action and one exact action-input JSON when needed.
+
+### Delegated execution review
+
+`DELEGATED_ENGINEERING_REVIEW` is a live P6 scope distinct from test-only
+`ENGINEERING_ACCEPTANCE`. It requires four distinct non-MiniMax
+`codex/<role>` identities, exact P4/P5 bindings, retained-root hashes, and a
+replayable deterministic delta policy. The policy permits bounded budget and
+execution recovery changes while freezing claim, baseline, metrics,
+falsification, evaluator command/measurement semantics, experiment
+hypotheses, frozen commands, and safety/stop rules. Anything broader becomes
+`WAITING_HUMAN`.
+
+A failed Worker contract is immutable and never retried. The child Adapter
+uses a clean worktree, binds the P5 freeze and failed predecessor receipt,
+retains the exact MiniMax model and session UUID, and uses `--resume` on its
+first turn. Unattended dispatch also requires a current runtime activation.
+
+### Three-layer runtime assurance
+
+The Watchdog is the complete closure, not the Codex schedule alone:
+
+- L0 is a plan-bound launchd supervisor. It reads runtime metadata only, makes
+  zero model calls, and may restore only the exact frozen L1 registration.
+- L1 is the Codex App `kind=heartbeat` automation with an exact
+  `target_thread_id`; its durable prompt runs one controller action.
+- L2 is a sequenced heartbeat from the exact Claude/MiniMax Worker process,
+  bound to Adapter, turn, session, model, task contract, and process identity.
+
+Render L1, place it at the returned unique automation path, validate App
+visibility, then bootstrap L0/L1/L2:
+
+```bash
+python3 mvp/supervisory_controller.py render-automation \
+  --store-dir /absolute/run/supervisor \
+  --created-at-ms 1775000000000
+
+python3 mvp/supervisory_controller.py bootstrap-assurance \
+  --store-dir /absolute/run/supervisor \
+  --launch-agents-dir "$HOME/Library/LaunchAgents" \
+  --python-executable /absolute/python3 \
+  --now 2026-08-02T00:00:00Z
+```
+
+Activation is published only after a non-due L1 probe, an L0 remove/restore
+drill, and an isolated L2 conformance heartbeat all pass with zero model calls. A file
+on disk is not evidence that L0 is loaded. Unattended P2 verifies activation
+again before transport and emits live L2 heartbeats until the terminal receipt
+is bound.
+
+Every scheduled L1 turn first publishes an exact task/controller heartbeat:
+
+```bash
+python3 mvp/supervisory_controller.py heartbeat \
+  --store-dir /absolute/run/supervisor \
+  --now 2026-08-02T00:10:00Z
+```
+
+L0 restores an exactly missing L1 registration automatically. Codex App may
+rewrite only representation metadata (`updated_at`) and remove terminal prompt
+whitespace; L0 compares the complete normalized prompt plus every stable
+routing, schedule, identity, and lifecycle field. Any semantic drift raises a
+typed recovery proposal—without making a model call or widening authority—as
+does a stopped L1 task or a missing/stale active L2 heartbeat. Thus a surviving
+TOML file is not treated as proof that the Codex task is running.
+
+Operational commands are `verify`, `heartbeat`, `l0-health-tick`,
+`inspect-runtime`, `pause`, `resume`, and `stop`. Lifecycle mutations require
+an explicit `--authority-id`. Stop is restart-safe and ordered: block new work,
+disable L0, disable L1, terminate only identity-matching Worker processes, and
+report residuals without deleting research evidence.
+
+P6 deterministic tests and one bounded live stage crossing do not establish
+24-hour or 7-by-24 stability, production readiness, SOTA, or paper completion.

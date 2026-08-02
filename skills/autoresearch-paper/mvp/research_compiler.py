@@ -21,11 +21,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+try:
+    from . import delegated_review
+except ImportError:  # pragma: no cover - direct script execution
+    import delegated_review  # type: ignore[no-redef]
+
 
 MVP_ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = MVP_ROOT / "schemas" / "research-ir.schema.json"
 COMPILER_PROMPT_PATH = MVP_ROOT / "prompts" / "codex-research-compiler.md"
 VALIDATOR_PATH = Path(__file__).resolve()
+# P1 originally published this digest from the released v1 compiler module.
+# It now names the semantic-validation contract, rather than every workflow
+# helper that happens to share this file.  Bump it only when Research IR v1
+# validation semantics change, and provide an explicit store migration.
+SEMANTIC_VALIDATOR_V1_SHA256 = (
+    "31055c87350d76328a9f5b82a185db2a44b7b4c1677260231685ec69a9687eb5"
+)
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$")
 PROTECTED_FIELDS = {
@@ -86,6 +98,10 @@ RECEIPT_KEYS = {
     "revision_sha256",
     "semantic_validator_sha256",
 }
+DELEGATED_RECEIPT_KEYS = RECEIPT_KEYS | {
+    "delegated_review_path",
+    "delegated_review_sha256",
+}
 
 
 class CompilerError(RuntimeError):
@@ -97,6 +113,12 @@ class ValidationIssue:
     code: str
     path: str
     message: str
+
+
+def semantic_validator_sha256() -> str:
+    """Return the stable identifier of the Research IR v1 semantic contract."""
+
+    return SEMANTIC_VALIDATOR_V1_SHA256
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -662,8 +684,14 @@ def _assert_revision_addresses_critique(revision: Mapping[str, Any], critique_re
 def _validate_receipt(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CompilerError("freeze receipt must be an object")
-    _exact_keys(value, RECEIPT_KEYS, "freeze receipt")
-    if value["receipt_kind"] != "research-ir-freeze/v1":
+    receipt_kind = value.get("receipt_kind")
+    expected_keys = (
+        DELEGATED_RECEIPT_KEYS
+        if receipt_kind == "research-ir-freeze/v2"
+        else RECEIPT_KEYS
+    )
+    _exact_keys(value, expected_keys, "freeze receipt")
+    if receipt_kind not in {"research-ir-freeze/v1", "research-ir-freeze/v2"}:
         raise CompilerError("unsupported freeze receipt kind")
     for field in (
         "compiler_prompt_sha256",
@@ -677,8 +705,20 @@ def _validate_receipt(value: Any) -> dict[str, Any]:
         _require_hash(value[field], f"freeze receipt {field}")
     _identity(value["approved_by"], "freeze approver")
     _validate_timestamp(value["approved_at"], "freeze approved_at")
-    if value["approval_scope"] not in {"ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED"}:
+    if value["approval_scope"] not in {
+        "ENGINEERING_ACCEPTANCE",
+        "OWNER_REVIEWED",
+        "DELEGATED_ENGINEERING_REVIEW",
+    }:
         raise CompilerError("freeze receipt has an invalid approval_scope")
+    if value["approval_scope"] == "DELEGATED_ENGINEERING_REVIEW":
+        if receipt_kind != "research-ir-freeze/v2":
+            raise CompilerError("delegated freeze must use receipt v2")
+        _require_hash(value["delegated_review_sha256"], "delegated review SHA-256")
+        if not isinstance(value["delegated_review_path"], str) or not Path(value["delegated_review_path"]).is_absolute():
+            raise CompilerError("delegated review path must be absolute")
+    elif receipt_kind != "research-ir-freeze/v1":
+        raise CompilerError("non-delegated freeze must use receipt v1")
     if not isinstance(value["approval_note"], str) or len(value["approval_note"].strip()) < 12:
         raise CompilerError("freeze receipt approval_note is too short")
     if not isinstance(value["ir_id"], str) or ID_RE.fullmatch(value["ir_id"]) is None:
@@ -897,6 +937,66 @@ def revise(
     return {"stage": "AWAITING_HUMAN_APPROVAL", "revision_sha256": digest, "revision_path": str(path), "research_ir_sha256": revised_ir_digest, "research_ir_path": str(revised_ir_object)}
 
 
+def confirm_revision(
+    *,
+    proposal_path: Path,
+    critique_record_path: Path,
+    store: Path,
+    author: str,
+    summary: str,
+    recorded_at: str | None = None,
+) -> dict[str, str]:
+    """Publish a byte-identical revision after an independent ACCEPT critique.
+
+    P6 still records proposal -> critique -> revision -> freeze.  An accepted
+    execution-only proposal does not need a fabricated JSON edit merely to
+    satisfy the lineage shape, so this confirmation record binds the exact
+    proposed IR bytes without changing them.
+    """
+
+    proposal, proposal_digest = _load_addressed(
+        proposal_path, expected_kind="research-ir-proposal/v1"
+    )
+    critique_record, critique_digest = _load_addressed(
+        critique_record_path, expected_kind="research-ir-critique/v1"
+    )
+    _validate_proposal_record(proposal)
+    _validate_critique_record(critique_record)
+    _load_object(store, proposal_digest, expected_kind="research-ir-proposal/v1")
+    _load_object(store, critique_digest, expected_kind="research-ir-critique/v1")
+    if critique_record["proposal_sha256"] != proposal_digest:
+        raise CompilerError("critique is not bound to the supplied proposal")
+    if critique_record["verdict"] != "ACCEPT":
+        raise CompilerError("confirmation revision requires an ACCEPT critique")
+    author_id = _identity(author, "author")
+    if author_id in {proposal["author"], critique_record["reviewer"]}:
+        raise CompilerError("confirmation revision author must be independent")
+    if not isinstance(summary, str) or len(summary.strip()) < 12:
+        raise CompilerError("confirmation revision summary is too short")
+    revision_time = _recorded_at(recorded_at)
+    _assert_time_order(critique_record["recorded_at"], revision_time, "revision")
+    ir = _load_object(store, proposal["research_ir_sha256"])
+    _assert_valid_ir(ir, check_paths=True)
+    record = {
+        "addressed_finding_ids": [],
+        "author": author_id,
+        "critique_sha256": critique_digest,
+        "proposal_sha256": proposal_digest,
+        "record_kind": "research-ir-revision/v1",
+        "recorded_at": revision_time,
+        "research_ir_sha256": proposal["research_ir_sha256"],
+        "summary": summary.strip(),
+    }
+    digest, path = publish_object(store, record)
+    return {
+        "stage": "AWAITING_DELEGATED_APPROVAL",
+        "revision_sha256": digest,
+        "revision_path": str(path),
+        "research_ir_sha256": proposal["research_ir_sha256"],
+        "research_ir_path": str(_object_path(store, proposal["research_ir_sha256"])),
+    }
+
+
 def freeze(
     *,
     revision_path: Path,
@@ -906,6 +1006,7 @@ def freeze(
     approval_note: str,
     approved_at: str | None = None,
     engineering_test: bool = False,
+    delegated_review_receipt: Path | None = None,
 ) -> dict[str, str]:
     revision, revision_digest = _load_addressed(revision_path, expected_kind="research-ir-revision/v1")
     _validate_revision_record(revision)
@@ -918,9 +1019,6 @@ def freeze(
         raise CompilerError("reviewer identity must differ from proposal author")
     if critique_record["proposal_sha256"] != revision["proposal_sha256"]:
         raise CompilerError("revision chain contains a critique/proposal binding mismatch")
-    if critique_record["verdict"] != "REVISE":
-        raise CompilerError("freeze revision must descend from a REVISE critique")
-    _assert_revision_addresses_critique(revision, critique_record)
     ir = _load_object(store, revision["research_ir_sha256"])
     _assert_valid_ir(ir, check_paths=True)
     proposed_ir = _load_object(store, proposal["research_ir_sha256"])
@@ -932,22 +1030,68 @@ def freeze(
     if proposal["compiler_prompt_sha256"] != sha256_file(COMPILER_PROMPT_PATH):
         raise CompilerError("proposal was compiled with a different Codex compiler prompt")
     approver = _identity(approved_by, "approved_by")
-    if approval_scope not in {"ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED"}:
-        raise CompilerError("approval_scope must be ENGINEERING_ACCEPTANCE or OWNER_REVIEWED")
+    if approval_scope not in {
+        "ENGINEERING_ACCEPTANCE",
+        "OWNER_REVIEWED",
+        "DELEGATED_ENGINEERING_REVIEW",
+    }:
+        raise CompilerError(
+            "approval_scope must be ENGINEERING_ACCEPTANCE, OWNER_REVIEWED, or DELEGATED_ENGINEERING_REVIEW"
+        )
+    delegated_record: dict[str, Any] | None = None
+    delegated_digest: str | None = None
+    if approval_scope == "DELEGATED_ENGINEERING_REVIEW":
+        if delegated_review_receipt is None:
+            raise CompilerError("delegated freeze requires a delegated review receipt")
+        if critique_record["verdict"] != "ACCEPT":
+            raise CompilerError("delegated freeze must descend from an ACCEPT critique")
+        if revision["research_ir_sha256"] != proposal["research_ir_sha256"]:
+            raise CompilerError("delegated confirmation revision must preserve the accepted proposal bytes")
+        if revision["addressed_finding_ids"]:
+            raise CompilerError("delegated confirmation revision cannot claim addressed findings")
+        try:
+            delegated_result = delegated_review.verify_review(
+                receipt_path=delegated_review_receipt
+            )
+        except delegated_review.DelegatedReviewError as exc:
+            raise CompilerError(f"delegated review replay failed: {exc}") from exc
+        delegated_record = load_json(delegated_review_receipt)
+        delegated_digest = delegated_result["review_receipt_sha256"]
+        expected_identities = {
+            "compiler_author": proposal["author"],
+            "reviewer": critique_record["reviewer"],
+            "revision_author": revision["author"],
+            "approver": approver,
+        }
+        for field, expected in expected_identities.items():
+            if delegated_record.get(field) != expected:
+                raise CompilerError(f"delegated review {field} does not bind the compiler lineage")
+        if delegated_record.get("child_ir_sha256") != revision["research_ir_sha256"]:
+            raise CompilerError("delegated review binds a different child Research IR")
+    elif delegated_review_receipt is not None:
+        raise CompilerError("delegated review receipt is only valid for delegated approval")
+    else:
+        if critique_record["verdict"] != "REVISE":
+            raise CompilerError("freeze revision must descend from a REVISE critique")
+        _assert_revision_addresses_critique(revision, critique_record)
     if approval_scope == "ENGINEERING_ACCEPTANCE":
         if not engineering_test:
             raise CompilerError("ENGINEERING_ACCEPTANCE is test-only and requires the explicit engineering_test flag")
         if approver in {proposal["author"], critique_record["reviewer"], revision["author"]}:
             raise CompilerError("engineering approver identity must be independent from proposal, critique, and revision identities")
-    else:
+    elif approval_scope == "OWNER_REVIEWED":
         _require_owner_identity(critique_record["reviewer"], "OWNER_REVIEWED critique reviewer")
         _require_owner_identity(approver, "OWNER_REVIEWED approver")
         if approver in {proposal["author"], revision["author"]}:
             raise CompilerError("owner approver identity must differ from proposal and revision author identities")
+    elif approver in {proposal["author"], critique_record["reviewer"], revision["author"]}:
+        raise CompilerError("delegated approver identity must be independent from proposal, critique, and revision identities")
     if not isinstance(approval_note, str) or len(approval_note.strip()) < 12:
         raise CompilerError("approval_note must explain the approval boundary")
     approval_time = _recorded_at(approved_at)
     _assert_time_order(revision["recorded_at"], approval_time, "approval")
+    if delegated_record is not None:
+        _assert_time_order(delegated_record["reviewed_at"], approval_time, "approval")
     receipt = {
         "approval_note": approval_note.strip(),
         "approval_scope": approval_scope,
@@ -958,12 +1102,19 @@ def freeze(
         "ir_id": ir["ir_id"],
         "ir_version": ir["version"],
         "proposal_sha256": revision["proposal_sha256"],
-        "receipt_kind": "research-ir-freeze/v1",
+        "receipt_kind": (
+            "research-ir-freeze/v2"
+            if approval_scope == "DELEGATED_ENGINEERING_REVIEW"
+            else "research-ir-freeze/v1"
+        ),
         "research_ir_schema_sha256": sha256_file(SCHEMA_PATH),
         "research_ir_sha256": revision["research_ir_sha256"],
         "revision_sha256": revision_digest,
-        "semantic_validator_sha256": sha256_file(VALIDATOR_PATH),
+        "semantic_validator_sha256": semantic_validator_sha256(),
     }
+    if delegated_record is not None and delegated_digest is not None:
+        receipt["delegated_review_path"] = str(delegated_review_receipt.resolve())
+        receipt["delegated_review_sha256"] = delegated_digest
     digest, path = publish_receipt(store, receipt)
     return {"stage": "FROZEN", "freeze_receipt_sha256": digest, "freeze_receipt_path": str(path), "research_ir_sha256": revision["research_ir_sha256"], "research_ir_path": str(_object_path(store, revision["research_ir_sha256"])), "approval_scope": approval_scope}
 
@@ -975,7 +1126,7 @@ def verify_freeze(*, receipt_path: Path, store: Path, check_paths: bool = False)
         raise CompilerError("freeze receipt was created with a different Research IR schema")
     if receipt["compiler_prompt_sha256"] != sha256_file(COMPILER_PROMPT_PATH):
         raise CompilerError("freeze receipt was created with a different Codex compiler prompt")
-    if receipt["semantic_validator_sha256"] != sha256_file(VALIDATOR_PATH):
+    if receipt["semantic_validator_sha256"] != semantic_validator_sha256():
         raise CompilerError("freeze receipt was created with a different semantic validator")
     if receipt_path.resolve() != _receipt_path(store, receipt_digest).resolve():
         raise CompilerError("freeze receipt is not located at its content address in the supplied store")
@@ -1001,12 +1152,42 @@ def verify_freeze(*, receipt_path: Path, store: Path, check_paths: bool = False)
         raise CompilerError("freeze revision lineage is inconsistent")
     if revision["research_ir_sha256"] != receipt["research_ir_sha256"]:
         raise CompilerError("freeze revision points to a different Research IR")
-    if critique_record["verdict"] != "REVISE":
-        raise CompilerError("freeze revision must descend from a REVISE critique")
-    _assert_revision_addresses_critique(revision, critique_record)
+    delegated_record: dict[str, Any] | None = None
+    if receipt["approval_scope"] == "DELEGATED_ENGINEERING_REVIEW":
+        if critique_record["verdict"] != "ACCEPT":
+            raise CompilerError("delegated freeze must descend from an ACCEPT critique")
+        if revision["research_ir_sha256"] != proposal["research_ir_sha256"]:
+            raise CompilerError("delegated confirmation revision changed the accepted proposal bytes")
+        if revision["addressed_finding_ids"]:
+            raise CompilerError("delegated confirmation revision claims addressed findings")
+        review_path = Path(receipt["delegated_review_path"])
+        try:
+            delegated_result = delegated_review.verify_review(receipt_path=review_path)
+        except delegated_review.DelegatedReviewError as exc:
+            raise CompilerError(f"delegated review replay failed: {exc}") from exc
+        if delegated_result["review_receipt_sha256"] != receipt["delegated_review_sha256"]:
+            raise CompilerError("delegated review receipt digest differs from the freeze receipt")
+        delegated_record = load_json(review_path)
+        expected_identities = {
+            "compiler_author": proposal["author"],
+            "reviewer": critique_record["reviewer"],
+            "revision_author": revision["author"],
+            "approver": receipt["approved_by"],
+        }
+        for field, expected in expected_identities.items():
+            if delegated_record.get(field) != expected:
+                raise CompilerError(f"delegated review {field} does not bind the freeze lineage")
+        if delegated_record.get("child_ir_sha256") != receipt["research_ir_sha256"]:
+            raise CompilerError("delegated review binds a different frozen Research IR")
+    else:
+        if critique_record["verdict"] != "REVISE":
+            raise CompilerError("freeze revision must descend from a REVISE critique")
+        _assert_revision_addresses_critique(revision, critique_record)
     _assert_time_order(proposal["recorded_at"], critique_record["recorded_at"], "critique")
     _assert_time_order(critique_record["recorded_at"], revision["recorded_at"], "revision")
     _assert_time_order(revision["recorded_at"], receipt["approved_at"], "approval")
+    if delegated_record is not None:
+        _assert_time_order(delegated_record["reviewed_at"], receipt["approved_at"], "approval")
     if ir["ir_id"] != receipt["ir_id"] or ir["version"] != receipt["ir_version"]:
         raise CompilerError("freeze receipt IR identity does not match the frozen bytes")
     _assert_valid_ir(ir, check_paths=check_paths)
@@ -1050,13 +1231,28 @@ def _parser() -> argparse.ArgumentParser:
     revision_parser.add_argument("--author", required=True)
     revision_parser.add_argument("--recorded-at")
 
+    confirm_parser = subparsers.add_parser(
+        "confirm", help="publish a byte-identical revision after an ACCEPT critique"
+    )
+    confirm_parser.add_argument("--proposal", type=Path, required=True)
+    confirm_parser.add_argument("--critique-record", type=Path, required=True)
+    confirm_parser.add_argument("--store", type=Path, required=True)
+    confirm_parser.add_argument("--author", required=True)
+    confirm_parser.add_argument("--summary", required=True)
+    confirm_parser.add_argument("--recorded-at")
+
     freeze_parser = subparsers.add_parser("freeze", help="publish a content-addressed freeze receipt")
     freeze_parser.add_argument("--revision", type=Path, required=True)
     freeze_parser.add_argument("--store", type=Path, required=True)
     freeze_parser.add_argument("--approved-by", required=True)
-    freeze_parser.add_argument("--approval-scope", choices=("ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED"), required=True)
+    freeze_parser.add_argument(
+        "--approval-scope",
+        choices=("ENGINEERING_ACCEPTANCE", "OWNER_REVIEWED", "DELEGATED_ENGINEERING_REVIEW"),
+        required=True,
+    )
     freeze_parser.add_argument("--approval-note", required=True)
     freeze_parser.add_argument("--approved-at")
+    freeze_parser.add_argument("--delegated-review-receipt", type=Path)
     freeze_parser.add_argument(
         "--engineering-test",
         action="store_true",
@@ -1084,8 +1280,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(critique(proposal_path=args.proposal, critique_path=args.critique, store=args.store, reviewer=args.reviewer, recorded_at=args.recorded_at))
         elif args.command == "revise":
             _emit(revise(proposal_path=args.proposal, critique_record_path=args.critique_record, revision_path=args.revision, store=args.store, author=args.author, recorded_at=args.recorded_at))
+        elif args.command == "confirm":
+            _emit(confirm_revision(proposal_path=args.proposal, critique_record_path=args.critique_record, store=args.store, author=args.author, summary=args.summary, recorded_at=args.recorded_at))
         elif args.command == "freeze":
-            _emit(freeze(revision_path=args.revision, store=args.store, approved_by=args.approved_by, approval_scope=args.approval_scope, approval_note=args.approval_note, approved_at=args.approved_at, engineering_test=args.engineering_test))
+            _emit(freeze(revision_path=args.revision, store=args.store, approved_by=args.approved_by, approval_scope=args.approval_scope, approval_note=args.approval_note, approved_at=args.approved_at, engineering_test=args.engineering_test, delegated_review_receipt=args.delegated_review_receipt))
         elif args.command == "verify-freeze":
             _emit(verify_freeze(receipt_path=args.receipt, store=args.store, check_paths=args.check_paths))
         return 0

@@ -60,6 +60,7 @@ has_pinned_skill_for_agent() {
 }
 
 need_cmd python3 "runs bundled guards and runtime tests" "install Python 3 and ensure python3 is on PATH"
+need_cmd rsync "installs one exact MVP0 skill tree without stale runtime files" "install rsync and ensure it is on PATH"
 if [[ "${MODE}" != "test" ]]; then
   need_cmd jq "validates JSON prompts and runtime state during checks" "macOS: brew install jq"
   need_cmd claude "runs the physically separate plan-pinned MiniMax worker session" "install Claude Code and ensure claude is on PATH"
@@ -89,7 +90,7 @@ if [[ "${MODE}" != "test" ]]; then
     warn "scientific-schematics not found; optional AI method-diagram proposals are unavailable, deterministic figure paths remain valid"
   fi
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    need_cmd launchctl "loads the independent Claude-native L0/L1 runtime-assurance services" "launchctl is normally present on macOS"
+    need_cmd launchctl "loads the independent zero-model MVP0 L0 health supervisor" "launchctl is normally present on macOS"
   else
     warn "launchctl is macOS-only; legacy --rescue launchd mode is unavailable"
   fi
@@ -102,12 +103,20 @@ fi
 
 for path in \
   "${ROOT_DIR}/SKILL.md" \
+  "${ROOT_DIR}/mvp0/SKILL.md" \
+  "${ROOT_DIR}/mvp0/agents/openai.yaml" \
   "${ROOT_DIR}/mvp/README.md" \
   "${ROOT_DIR}/mvp/research_compiler.py" \
   "${ROOT_DIR}/mvp/worker_adapter.py" \
   "${ROOT_DIR}/mvp/experiment_ledger.py" \
   "${ROOT_DIR}/mvp/evidence_gate.py" \
   "${ROOT_DIR}/mvp/recompile_loop.py" \
+  "${ROOT_DIR}/mvp/delegated_review.py" \
+  "${ROOT_DIR}/mvp/supervisory_controller.py" \
+  "${ROOT_DIR}/mvp/runtime_assurance.py" \
+  "${ROOT_DIR}/mvp/automation_registration.py" \
+  "${ROOT_DIR}/mvp/launchd_registration.py" \
+  "${ROOT_DIR}/mvp/l0_watchdog.py" \
   "${ROOT_DIR}/mvp/schemas/research-ir.schema.json" \
   "${ROOT_DIR}/mvp/schemas/worker-task-contract.schema.json" \
   "${ROOT_DIR}/mvp/schemas/worker-result.schema.json" \
@@ -116,8 +125,20 @@ for path in \
   "${ROOT_DIR}/mvp/schemas/evidence-gate-decision.schema.json" \
   "${ROOT_DIR}/mvp/schemas/failure-analysis.schema.json" \
   "${ROOT_DIR}/mvp/schemas/recompile-request.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/engineering-review-input.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/supervisor-manifest.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/supervisor-state.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/supervisor-tick.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/runtime-activation.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/runtime-snapshot.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/l0-observation.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/l2-heartbeat.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/resource-manifest.schema.json" \
+  "${ROOT_DIR}/mvp/schemas/shutdown-journal.schema.json" \
   "${ROOT_DIR}/mvp/prompts/codex-research-compiler.md" \
   "${ROOT_DIR}/mvp/prompts/codex-recompile-analyst.md" \
+  "${ROOT_DIR}/mvp/prompts/codex-supervisor-heartbeat.md" \
+  "${ROOT_DIR}/scripts/install-mvp0.sh" \
   "${ROOT_DIR}/assets/task-prompt-snippets.md" \
   "${ROOT_DIR}/assets/first-action-last-seen-hook.md" \
   "${ROOT_DIR}/references/bootstrap-watchdog.sh" \

@@ -19,6 +19,7 @@ sys.path.insert(0, str(TEST_ROOT))
 
 from mvp import recompile_loop as p5  # noqa: E402
 from mvp import research_compiler as compiler  # noqa: E402
+from mvp import delegated_review  # noqa: E402
 from mvp import experiment_ledger as ledger  # noqa: E402
 import test_mvp_evidence_gate as p4_tests  # noqa: E402
 import test_mvp_worker_adapter as p2_tests  # noqa: E402
@@ -325,6 +326,90 @@ class RecompileLoopContracts(unittest.TestCase):
         )
         self.assertEqual(bound["stage"], "FROZEN")
         self.assertEqual(bound["child_ir_version"], 2)
+        self.assertEqual(p5.verify_store(store_dir=self.store_dir)["stage"], "FROZEN")
+
+    def test_delegated_execution_only_freeze_binds_review_into_p5(self) -> None:
+        analysis = self.publish_analysis()
+        request = self.publish_request(analysis)
+        candidate = copy.deepcopy(self.p4.p2.ir)
+        candidate["version"] = 2
+        candidate["parent_ir_sha256"] = self.p4.p2.ir_digest
+        candidate["experiment_plan"][0]["id"] = "exp-one-recovery"
+        candidate["experiment_plan"][0]["intervention"] += " Revalidate the failed scaffold."
+        candidate["experiment_plan"][1]["depends_on"] = ["exp-one-recovery"]
+        compiled = p5.compile_candidate(
+            store_dir=self.store_dir,
+            request_sha256=str(request["request_sha256"]),
+            candidate_ir=p2_tests.write_json(
+                self.p4.p2.root / "delegated-candidate.json", candidate
+            ),
+            author="codex/recompile-compiler",
+        )
+        base_time = json.loads(Path(compiled["compiler_proposal_path"]).read_text())[
+            "recorded_at"
+        ]
+        critique = compiler.critique(
+            proposal_path=Path(compiled["compiler_proposal_path"]),
+            critique_path=p2_tests.write_json(
+                self.p4.p2.root / "delegated-critique.json",
+                {
+                    "summary": "Independent frontier review accepts the execution-plan-only successor.",
+                    "verdict": "ACCEPT",
+                    "findings": [],
+                },
+            ),
+            store=self.p4.p2.store,
+            reviewer="codex/frontier-reviewer",
+            recorded_at=plus_seconds(base_time, 1),
+        )
+        revision = compiler.confirm_revision(
+            proposal_path=Path(compiled["compiler_proposal_path"]),
+            critique_record_path=Path(critique["critique_path"]),
+            store=self.p4.p2.store,
+            author="codex/recompile-revision",
+            summary="Confirm the accepted execution-only successor without modifying its bytes.",
+            recorded_at=plus_seconds(base_time, 2),
+        )
+        review = delegated_review.publish_review(
+            store_dir=self.store_dir / "delegated-reviews",
+            parent_ir_path=(
+                self.p4.p2.store
+                / "objects"
+                / "sha256"
+                / f"{self.p4.p2.ir_digest}.json"
+            ),
+            child_ir_path=Path(compiled["research_ir_path"]),
+            request_path=Path(request["request_path"]),
+            proposal_path=Path(compiled["proposal_path"]),
+            compiler_author="codex/recompile-compiler",
+            reviewer="codex/frontier-reviewer",
+            revision_author="codex/recompile-revision",
+            approver="codex/frontier-approver",
+            verdict="ACCEPT",
+            summary="Independent review confirms only the authorized experiment plan changed.",
+            reviewed_at=plus_seconds(base_time, 3),
+        )
+        frozen = compiler.freeze(
+            revision_path=Path(revision["revision_path"]),
+            store=self.p4.p2.store,
+            approved_by="codex/frontier-approver",
+            approval_scope="DELEGATED_ENGINEERING_REVIEW",
+            approval_note="Approve the execution-only successor under its replayable delegated review.",
+            approved_at=plus_seconds(base_time, 4),
+            delegated_review_receipt=Path(review["review_receipt_path"]),
+        )
+        bound = p5.bind_freeze(
+            store_dir=self.store_dir,
+            proposal_sha256=str(compiled["proposal_sha256"]),
+            freeze_receipt=Path(frozen["freeze_receipt_path"]),
+        )
+        bound_value = json.loads(Path(bound["freeze_path"]).read_text())
+
+        self.assertEqual(bound["stage"], "FROZEN")
+        self.assertEqual(bound_value["schema_version"], "recompile-freeze/v2")
+        self.assertEqual(
+            bound_value["delegated_review_sha256"], review["review_receipt_sha256"]
+        )
         self.assertEqual(p5.verify_store(store_dir=self.store_dir)["stage"], "FROZEN")
 
     def test_keep_decision_cannot_initialize_p5(self) -> None:

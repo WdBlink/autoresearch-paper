@@ -117,6 +117,7 @@ class RuntimeAssuranceContracts(unittest.TestCase):
         self.assertFalse(receipt["probes"]["l1"]["due"])
         self.assertEqual(receipt["probes"]["l2"]["model_dispatches"], 0)
         self.assertTrue(receipt["probes"]["l2"]["contract_verified"])
+        self.assertTrue(Path(receipt["probes"]["l2"]["heartbeat_path"]).is_file())
         self.assertEqual(self.automation_path.read_bytes(), self.automation_bytes)
         self.assertEqual(Path(result["activation_receipt_path"]).stat().st_mode & 0o777, 0o444)
 
@@ -140,6 +141,30 @@ class RuntimeAssuranceContracts(unittest.TestCase):
         self.assertEqual(tree_digest(self.root), before)
         self.assertEqual(self.backend.events, [])
 
+    def test_bootstrap_recovers_after_crash_with_l1_temporarily_removed(self) -> None:
+        with self.assertRaisesRegex(assurance.AssuranceError, "simulated bootstrap crash"):
+            assurance.bootstrap_assurance(
+                store_dir=self.store,
+                controller_id=CONTROLLER_ID,
+                target_thread_id=THREAD_ID,
+                l1_automation_path=self.automation_path,
+                l0_interval_seconds=300,
+                l1_interval_seconds=600,
+                l2_interval_seconds=60,
+                heartbeat_stale_seconds=900,
+                scheduler=self.backend,
+                launch_agents_dir=self.root / "LaunchAgents",
+                python_executable=Path(sys.executable),
+                now="2026-08-02T08:00:00Z",
+                simulate_crash_after="L1_REMOVED",
+            )
+        self.assertFalse(self.automation_path.exists())
+        recovered = self.bootstrap()
+        self.assertEqual(recovered["status"], "VERIFIED")
+        self.assertEqual(self.automation_path.read_bytes(), self.automation_bytes)
+        journal = json.loads((self.store / "runtime" / "bootstrap-journal.json").read_text())
+        self.assertEqual(journal["phase"], "COMMITTED")
+
     def test_l0_restores_missing_exact_l1_and_deduplicates_healthy_observation(self) -> None:
         result = self.bootstrap()
         self.automation_path.unlink()
@@ -151,6 +176,8 @@ class RuntimeAssuranceContracts(unittest.TestCase):
         self.assertEqual(recovered["action"], "RESTORED_L1")
         self.assertEqual(recovered["model_dispatches"], 0)
         self.assertEqual(self.automation_path.read_bytes(), self.automation_bytes)
+        recovered_object = self.store / "assurance" / "l0-objects" / f"{recovered['observation_sha256']}.json"
+        self.assertEqual(hashlib.sha256(recovered_object.read_bytes()).hexdigest(), recovered["observation_sha256"])
         first = assurance.run_l0_health_tick(
             store_dir=self.store,
             scheduler=self.backend,
@@ -181,6 +208,126 @@ class RuntimeAssuranceContracts(unittest.TestCase):
         self.assertEqual(observed["action"], "RECOVERY_PROPOSED")
         self.assertEqual(observed["reason"], "L1_DRIFT")
         self.assertIn(b"foreign", self.automation_path.read_bytes())
+
+    def test_codex_app_updated_at_and_terminal_prompt_newline_are_normalized(self) -> None:
+        self.bootstrap()
+        value = automation.parse_thread_automation(self.automation_path.read_bytes())
+        normalized = automation.render_thread_automation(
+            controller_id=value["id"],
+            name=value["name"],
+            prompt=value["prompt"].rstrip(),
+            target_thread_id=value["target_thread_id"],
+            created_at_ms=value["created_at"],
+            updated_at_ms=value["created_at"] + 120_000,
+            status=value["status"],
+            rrule=value["rrule"],
+        ).encode()
+        self.automation_path.write_bytes(normalized)
+        observed = assurance.run_l0_health_tick(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:05:00Z",
+        )
+        self.assertEqual(observed["action"], "HEALTHY")
+        verified = assurance.verify_activation(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:05:00Z",
+        )
+        self.assertEqual(verified["status"], "VERIFIED")
+        snapshot = assurance.inspect_runtime(
+            store_dir=self.store,
+            scheduler=self.backend,
+            processes=self.processes,
+            now="2026-08-02T08:05:00Z",
+        )
+        self.assertEqual(snapshot["l1"]["agreement"], "MATCH")
+
+    def test_codex_app_normalization_does_not_hide_prompt_drift(self) -> None:
+        self.bootstrap()
+        value = automation.parse_thread_automation(self.automation_path.read_bytes())
+        drifted = automation.render_thread_automation(
+            controller_id=value["id"],
+            name=value["name"],
+            prompt=value["prompt"].rstrip() + " Change the research goal.",
+            target_thread_id=value["target_thread_id"],
+            created_at_ms=value["created_at"],
+            updated_at_ms=value["created_at"] + 120_000,
+            status=value["status"],
+            rrule=value["rrule"],
+        ).encode()
+        self.automation_path.write_bytes(drifted)
+        observed = assurance.run_l0_health_tick(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:05:00Z",
+        )
+        self.assertEqual(observed["reason"], "L1_DRIFT")
+        with self.assertRaisesRegex(assurance.AssuranceError, "registration drifted"):
+            assurance.verify_activation(
+                store_dir=self.store,
+                scheduler=self.backend,
+                now="2026-08-02T08:05:00Z",
+            )
+
+    def test_l0_detects_stale_l1_until_exact_task_heartbeats_again(self) -> None:
+        self.bootstrap()
+        stale = assurance.run_l0_health_tick(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:20:00Z",
+        )
+        self.assertEqual(stale["action"], "RECOVERY_PROPOSED")
+        self.assertEqual(stale["reason"], "L1_HEARTBEAT_STALE")
+        proof = assurance.record_l1_heartbeat(
+            store_dir=self.store,
+            controller_id=CONTROLLER_ID,
+            target_thread_id=THREAD_ID,
+            observed_at="2026-08-02T08:20:01Z",
+        )
+        self.assertEqual(proof["source"], "SCHEDULED_CODEX_TASK")
+        healthy = assurance.run_l0_health_tick(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:20:02Z",
+        )
+        self.assertEqual(healthy["action"], "HEALTHY")
+
+    def test_l0_detects_stale_bound_worker_heartbeat(self) -> None:
+        self.bootstrap()
+        assurance.record_l1_heartbeat(
+            store_dir=self.store,
+            controller_id=CONTROLLER_ID,
+            target_thread_id=THREAD_ID,
+            observed_at="2026-08-02T08:19:00Z",
+        )
+        binding = assurance.bind_worker(
+            store_dir=self.store,
+            adapter_id="mvp0-worker-unit",
+            turn_id="turn-000001",
+            session_id="11111111-1111-4111-8111-111111111111",
+            worker_model="MiniMax-M3",
+            task_contract_sha256="a" * 64,
+            process_id=4242,
+            process_identity="pid-4242-start-7",
+            now="2026-08-02T08:01:00Z",
+        )
+        assurance.record_worker_heartbeat(
+            store_dir=self.store,
+            worker_binding_path=Path(binding["worker_binding_path"]),
+            sequence=1,
+            session_id="11111111-1111-4111-8111-111111111111",
+            process_id=4242,
+            process_identity="pid-4242-start-7",
+            task_contract_sha256="a" * 64,
+            observed_at="2026-08-02T08:02:00Z",
+        )
+        stale = assurance.run_l0_health_tick(
+            store_dir=self.store,
+            scheduler=self.backend,
+            now="2026-08-02T08:20:00Z",
+        )
+        self.assertEqual(stale["reason"], "L2_HEARTBEAT_STALE")
 
     def test_pause_prevents_l0_reactivation_and_resume_revalidates_closure(self) -> None:
         self.bootstrap()
@@ -307,6 +454,49 @@ class RuntimeAssuranceContracts(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(snapshot["l2"]["freshness"], "STALE")
         self.assertEqual(snapshot["scientific_state_mutations"], 0)
+
+    def test_terminal_worker_completion_suppresses_false_stale_alarm(self) -> None:
+        self.bootstrap()
+        binding = assurance.bind_worker(
+            store_dir=self.store,
+            adapter_id="mvp0-worker-unit",
+            turn_id="turn-000001",
+            session_id="11111111-1111-4111-8111-111111111111",
+            worker_model="MiniMax-M3",
+            task_contract_sha256="a" * 64,
+            process_id=4242,
+            process_identity="pid-4242-start-7",
+            now="2026-08-02T08:01:00Z",
+        )
+        assurance.record_worker_heartbeat(
+            store_dir=self.store,
+            worker_binding_path=Path(binding["worker_binding_path"]),
+            sequence=1,
+            session_id="11111111-1111-4111-8111-111111111111",
+            process_id=4242,
+            process_identity="pid-4242-start-7",
+            task_contract_sha256="a" * 64,
+            observed_at="2026-08-02T08:02:00Z",
+        )
+        receipt_path = self.root / "run" / "adapter" / "turn.json"
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text('{"outcome":"COMPLETED"}\n', encoding="utf-8")
+        receipt_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        assurance.complete_worker(
+            store_dir=self.store,
+            worker_binding_path=Path(binding["worker_binding_path"]),
+            outcome="COMPLETED",
+            turn_receipt_path=receipt_path,
+            turn_receipt_sha256=receipt_sha,
+            completed_at="2026-08-02T08:03:00Z",
+        )
+        snapshot = assurance.inspect_runtime(
+            store_dir=self.store,
+            scheduler=self.backend,
+            processes=self.processes,
+            now="2026-08-03T08:03:00Z",
+        )
+        self.assertEqual(snapshot["l2"]["freshness"], "TERMINAL")
 
     def test_stop_is_ordered_exact_once_and_preserves_research_artifacts(self) -> None:
         result = self.bootstrap()
