@@ -22,7 +22,7 @@ start writing.
 
 - **Current version:** v0.20.1
 - **MVP-0 migration track:** P1 Research Compiler, P2 Minimal Worker Adapter,
-  P3 Experiment Receipt ledger, and P4 Evidence Gate
+  P3 Experiment Receipt ledger, P4 Evidence Gate, and P5 Recompile Loop
   are implemented on the `codex/mvp0-thin-loop` feature branch. P1 provides an
   isolated Research IR v1 schema, deterministic semantic validator,
   strongest-Codex compiler prompt, proposal/critique/revision workflow, two
@@ -37,6 +37,10 @@ start writing.
   P4 validates a closed report from the evaluator frozen in Research IR, binds
   it to exact P3 evidence, archives the evaluator implementation, and publishes
   one replayable KEEP/PIVOT/STOP/RECOMPILE decision per Experiment Receipt.
+  P5 freezes one eligible P4 prefix, publishes one evidence-bound failure
+  analysis and continuation/recompile request, and compiles an explicitly
+  scoped Research IR N+1 back into P1 human review. A later P1 freeze is bound
+  to the complete parent IR → Gate → analysis → request → child IR lineage.
   P2 now keeps the repository's Draft 2020-12 result schema authoritative while
   projecting a declaration-free Draft-07-compatible schema only at the Claude
   Code `--json-schema` boundary. This fixes Claude Code 2.1.205 rejecting the
@@ -44,9 +48,8 @@ start writing.
   `ENGINEERING_ACCEPTANCE` is test-only; a live freeze requires recorded owner
   critique and later explicit owner approval.
   This track does not import or extend the Legacy Harness runtime and does not
-  change the released v0.20.1 product claim. P4 makes bounded evidence
-  decisions but does not analyze failures, revise Research IR, or run the P5
-  recompile loop. The track does not add
+  change the released v0.20.1 product claim. P5 does not approve its candidate,
+  dispatch another Worker, or run an autonomous loop. The track does not add
   watchdogs, checkpoints, Dashboard, launchd, promotion, scientific acceptance,
   or an autonomous loop. See
   [`mvp/README.md`](skills/autoresearch-paper/mvp/README.md).

@@ -62,7 +62,7 @@ class ExperimentLedgerContracts(unittest.TestCase):
             recorded["receipt_sha256"],
         )
         self.assertEqual(receipt["experiment"]["id"], "exp-one")
-        self.assertEqual(receipt["experiment"]["stage"], "METHOD")
+        self.assertEqual(receipt["experiment"]["stage"], "BASELINE")
         self.assertEqual(receipt["task"]["config"]["optimizer"], "test-only")
         self.assertEqual(receipt["task"]["seeds"], [7])
         self.assertTrue(receipt["execution"]["planned_command_reported"])

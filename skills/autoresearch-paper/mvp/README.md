@@ -1,4 +1,4 @@
-# MVP-0 P1–P4 — Research Compiler, Worker, Receipts, and Evidence Gate
+# MVP-0 P1–P5 — Research Compiler, Worker, Evidence, Gate, and Recompile
 
 This directory is the new Thin Loop implementation path. P1 compiles an open
 research idea into one immutable, executable, and falsifiable Research IR. P2
@@ -8,6 +8,8 @@ turns each terminal P2 delivery into an ordered, content-addressed Experiment
 Receipt with archived input/output evidence. The implementation does not import
 or call the Legacy v0.20 Harness. P4 validates the frozen evaluator's closed
 report and emits one deterministic Gate decision for each P3 receipt.
+P5 turns an eligible Gate result into one evidence-bound continuation or
+versioned recompile request and routes IR N+1 back through P1 human review.
 
 ## Boundary
 
@@ -26,6 +28,8 @@ adds the Worker transport beside the IR; it does not add transport fields to
 the scientific contract. P3 adds provenance beside both. P4 decides only
 whether current evidence supports KEEP, PIVOT, STOP, or RECOMPILE; it does not
 perform the recompile.
+P5 can compile a new proposal, but it cannot approve that proposal or dispatch
+its next Worker.
 
 ## Workflow
 
@@ -277,8 +281,8 @@ only on a trusted machine and treat a paused worktree as evidence to inspect,
 not something to auto-reset.
 
 No watchdog, checkpoint protocol, Dashboard, cron, launchd, paper-writing
-workflow, autonomous loop, P5 recompile controller, or production/24h/7×24
-claim is part of P2–P4.
+workflow, autonomous scheduler, or production/24h/7×24 claim is part of
+P2–P5.
 
 ## P3 Experiment Receipt ledger
 
@@ -405,3 +409,78 @@ objects fail closed.
 P4 does not judge novelty, paper quality, SOTA, or publication readiness. It
 does not generate failure analysis, `recompile_request.json`, a revised IR, or
 the next Worker task. Those are P5 Recompile Loop responsibilities.
+
+## P5 evidence-bound Recompile Loop
+
+P5 starts only from the latest `PIVOT` or `RECOMPILE` decision in a verified
+P4 prefix. `KEEP` and `STOP` are terminal for this path. Initialize a separate
+store; its frozen prefix remains replayable even if the same P4 store later
+appends decisions while continuing the current IR:
+
+```bash
+python3 mvp/recompile_loop.py init \
+  --gate-store /absolute/run/mvp0-evidence-gate \
+  --store-dir /absolute/run/mvp0-recompile
+```
+
+Use the strongest Codex model with
+[`prompts/codex-recompile-analyst.md`](prompts/codex-recompile-analyst.md).
+Publish exactly one [`failure-analysis/v1`](schemas/failure-analysis.schema.json)
+for the frozen decision. It must cover the exact ordered P3 prefix and may cite
+only content-addressed P3 evidence:
+
+```bash
+python3 mvp/recompile_loop.py analyze \
+  --store-dir /absolute/run/mvp0-recompile \
+  --analysis /absolute/run/failure-analysis.json
+
+python3 mvp/recompile_loop.py request \
+  --store-dir /absolute/run/mvp0-recompile \
+  --request /absolute/run/recompile-request.json
+```
+
+The closed [`recompile-request/v1`](schemas/recompile-request.schema.json)
+chooses one path:
+
+- `CONTINUE_CURRENT_IR` is available only after `PIVOT`. It names one
+  unattempted experiment already frozen in the current IR whose complete
+  transitive dependency set has succeeded. It requests no IR changes and does
+  not itself dispatch that experiment.
+- `RECOMPILE_IR` is available after `PIVOT` or `RECOMPILE`. It names every
+  top-level scientific contract section that may change and every constraint
+  that must remain byte-identical. A Gate `RECOMPILE` cannot fall back to the
+  continuation path.
+
+For a recompile request, draft Research IR N+1, preserving `ir_id`, setting
+`version = N + 1`, and binding `parent_ir_sha256` to the frozen parent. P5
+requires the candidate's actual changed top-level roots to equal the request:
+
+```bash
+python3 mvp/recompile_loop.py compile \
+  --store-dir /absolute/run/mvp0-recompile \
+  --request-sha256 REQUEST_SHA256 \
+  --candidate-ir /absolute/run/research-ir-v2.json \
+  --author codex/recompile-compiler
+```
+
+`compile` publishes a normal P1 `research-ir-proposal/v1` and stops at
+`AWAITING_HUMAN_CRITIQUE`. Run the existing P1 critique, revision, and Human
+Approval transitions. Human-requested revision may change bytes inside the
+already requested roots, but cannot expand the root set or alter retained
+constraints. After P1 freezes the final IR, bind it back to P5:
+
+```bash
+python3 mvp/recompile_loop.py bind-freeze \
+  --store-dir /absolute/run/mvp0-recompile \
+  --proposal-sha256 P5_PROPOSAL_SHA256 \
+  --freeze-receipt /absolute/compiler-store/receipts/sha256/CHILD_FREEZE.json
+
+python3 mvp/recompile_loop.py verify \
+  --store-dir /absolute/run/mvp0-recompile
+```
+
+P5 permits one linear analysis/request/proposal/freeze lineage per store,
+limits post-hoc reinterpretation to one analysis and request, and replays exact
+object inventories. It does not invoke Claude Code, create a P2 Adapter for the
+child IR, select paper claims, or execute an autonomous loop. A new approved IR
+starts a new bounded P2–P5 lineage only under separate execution authority.

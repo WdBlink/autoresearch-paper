@@ -19,6 +19,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_ROOT))
 
 from mvp import worker_adapter as adapter  # noqa: E402
+from mvp import research_compiler as compiler  # noqa: E402
 
 
 def canonical_digest(value: object) -> str:
@@ -55,17 +56,59 @@ class WorkerAdapterContracts(unittest.TestCase):
         )
         subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "base"], check=True)
         base_digest = hashlib.sha256((self.source / "src" / "base.txt").read_bytes()).hexdigest()
+        self.brief = self.root / "brief.md"
+        self.brief.write_text(
+            "A bounded unit research brief for the MVP thin-loop contract.\n",
+            encoding="utf-8",
+        )
+        brief_digest = hashlib.sha256(self.brief.read_bytes()).hexdigest()
         self.ir = {
+            "schema_version": "research-ir/v1",
             "ir_id": "unit-research",
             "version": 1,
-            "source": {"code_root": str(self.source)},
+            "parent_ir_sha256": None,
+            "source": {
+                "source_task_id": "unit-research-task-0001",
+                "source_summary": "Compile one bounded unit intervention into a falsifiable and replayable research contract.",
+                "brief_artifact": {
+                    "path": str(self.brief),
+                    "sha256": brief_digest,
+                },
+                "workspace_root": str(self.root),
+                "code_root": str(self.source),
+            },
+            "problem_statement": "Determine whether one bounded unit intervention improves fixture quality without violating the latency guardrail.",
             "central_claim": {
+                "statement": "The bounded unit intervention improves fixture quality over the unit baseline without regressing latency.",
                 "baseline_id": "unit-baseline",
                 "primary_metric_id": "quality",
+                "evaluation_scope": "Identical fixture inputs, seeds, evaluator implementation, and execution environment.",
+            },
+            "related_work_gap": {
+                "statement": "The fixture has a baseline implementation but no prior content-addressed intervention comparison.",
+                "evidence_refs": [
+                    {
+                        "source_id": "unit-baseline-source",
+                        "locator": str(self.source / "src" / "base.txt"),
+                        "supports": "The unit baseline implementation exists before the intervention.",
+                        "sha256": base_digest,
+                    }
+                ],
             },
             "baseline_contract": {
                 "baseline_id": "unit-baseline",
                 "status": "READY",
+                "description": "The unchanged base fixture evaluated under the same command, seeds, and environment.",
+                "source_artifacts": [
+                    {
+                        "path": str(self.source / "src" / "base.txt"),
+                        "sha256": base_digest,
+                    }
+                ],
+                "implementation_artifact": str(self.source / "src" / "base.txt"),
+                "implementation_sha256": base_digest,
+                "training_argv": ["python3", "run.py", "--stage", "baseline"],
+                "comparison_scope": ["same input", "same seeds", "same evaluator"],
             },
             "metric_contract": {
                 "primary_metric": {
@@ -101,9 +144,17 @@ class WorkerAdapterContracts(unittest.TestCase):
                 {
                     "id": "quality-collapse",
                     "metric_id": "quality",
-                    "aggregation": "ci_upper",
+                    "aggregation": "ci_lower",
                     "operator": "<",
                     "value": 0.4,
+                    "decision": "REJECT_CLAIM",
+                },
+                {
+                    "id": "latency-collapse",
+                    "metric_id": "latency",
+                    "aggregation": "ci_upper",
+                    "operator": ">",
+                    "value": 150.0,
                     "decision": "REJECT_CLAIM",
                 }
             ],
@@ -113,6 +164,12 @@ class WorkerAdapterContracts(unittest.TestCase):
                 "command_argv": ["python3", "evaluate.py", "--json"],
                 "implementation_artifact": str(self.source / "src" / "base.txt"),
                 "implementation_sha256": base_digest,
+                "input_contract": "One immutable task contract binds the exact fixture inputs and explicit seeds.",
+                "output_contract": "Strict JSON contains per-seed results, aggregate confidence intervals, and artifact hashes.",
+                "metric_bindings": [
+                    {"metric_id": "quality", "json_path": "$.metrics.quality"},
+                    {"metric_id": "latency", "json_path": "$.metrics.latency"},
+                ],
             },
             "budget": {
                 "max_experiments": 8,
@@ -136,52 +193,135 @@ class WorkerAdapterContracts(unittest.TestCase):
             "allowed_search_space": [
                 {
                     "id": "implementation",
+                    "description": "Modify only the bounded fixture implementation and generated research artifacts.",
                     "paths": ["src/**", "artifacts/**"],
                     "operations": ["CREATE", "MODIFY"],
                 }
             ],
+            "forbidden_changes": [
+                "problem_statement",
+                "central_claim",
+                "falsification_conditions",
+                "related_work_gap",
+                "baseline_contract",
+                "metric_contract",
+                "evaluator_spec",
+                "allowed_search_space",
+                "experiment_plan",
+                "budget",
+                "stop_rules",
+            ],
             "experiment_plan": [
                 {
                     "id": "exp-one",
-                    "stage": "METHOD",
+                    "stage": "BASELINE",
                     "hypothesis": "The bounded unit intervention produces one verifiable artifact.",
+                    "intervention": "Modify the bounded fixture implementation and run the frozen command once.",
+                    "controls": ["same evaluator", "same seeds"],
                     "expected_observation": "One content-addressed artifact is present.",
+                    "falsification_condition_ids": ["quality-collapse", "latency-collapse"],
                     "search_space_ids": ["implementation"],
+                    "depends_on": [],
                     "command_argv": ["python3", "run.py", "--stage", "one"],
                     "expected_artifacts": ["artifacts/**"],
-                }
+                },
+                {
+                    "id": "exp-two",
+                    "stage": "METHOD",
+                    "hypothesis": "A second bounded intervention can test the remaining causal uncertainty.",
+                    "intervention": "Modify the same bounded implementation while preserving every frozen evaluator control.",
+                    "controls": ["same evaluator", "same seeds"],
+                    "expected_observation": "The second artifact distinguishes the remaining causal hypotheses.",
+                    "falsification_condition_ids": ["quality-collapse", "latency-collapse"],
+                    "search_space_ids": ["implementation"],
+                    "depends_on": ["exp-one"],
+                    "command_argv": ["python3", "run.py", "--stage", "two"],
+                    "expected_artifacts": ["artifacts/second.json"],
+                },
             ],
         }
-        self.ir_digest = canonical_digest(self.ir)
         self.store = self.root / "compiler-store"
-        ir_path = self.store / "objects" / "sha256" / f"{self.ir_digest}.json"
-        ir_path.parent.mkdir(parents=True)
-        ir_path.write_bytes(adapter._canonical_bytes(self.ir))  # noqa: SLF001
-        self.freeze = write_json(self.root / "freeze.json", {"approval_scope": "OWNER_REVIEWED"})
-        self.freeze_digest = hashlib.sha256(self.freeze.read_bytes()).hexdigest()
+        proposal_ir = write_json(self.root / "proposal-ir.json", self.ir)
+        proposal = compiler.propose(
+            ir_path=proposal_ir,
+            store=self.store,
+            author="codex/unit-proposer",
+            recorded_at="2026-08-01T00:00:00Z",
+        )
+        critique_input = write_json(
+            self.root / "critique.json",
+            {
+                "summary": "Clarify that the unit problem is explicitly content addressed.",
+                "verdict": "REVISE",
+                "findings": [
+                    {
+                        "finding_id": "clarify-problem",
+                        "severity": "minor",
+                        "path": "$.problem_statement",
+                        "message": "The fixture problem should name its evidence boundary.",
+                        "required_change": "State that all accepted evidence is content addressed.",
+                    }
+                ],
+            },
+        )
+        critique = compiler.critique(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_path=critique_input,
+            store=self.store,
+            reviewer="owner/unit-critic",
+            recorded_at="2026-08-01T00:00:01Z",
+        )
+        revised_problem = (
+            self.ir["problem_statement"]
+            + " Every accepted observation is bound to content-addressed evidence."
+        )
+        revision_input = write_json(
+            self.root / "revision.json",
+            {
+                "summary": "Bind the problem statement to content-addressed evidence.",
+                "addressed_finding_ids": ["clarify-problem"],
+                "changes": [
+                    {
+                        "op": "replace",
+                        "path": "/problem_statement",
+                        "value": revised_problem,
+                    }
+                ],
+            },
+        )
+        revision = compiler.revise(
+            proposal_path=Path(proposal["proposal_path"]),
+            critique_record_path=Path(critique["critique_path"]),
+            revision_path=revision_input,
+            store=self.store,
+            author="codex/unit-reviser",
+            recorded_at="2026-08-01T00:00:02Z",
+        )
+        frozen = compiler.freeze(
+            revision_path=Path(revision["revision_path"]),
+            store=self.store,
+            approved_by="owner/unit-approver",
+            approval_scope="OWNER_REVIEWED",
+            approval_note="Approved as a live-style unit fixture after explicit review.",
+            approved_at="2026-08-01T00:00:03Z",
+        )
+        self.freeze = Path(frozen["freeze_receipt_path"])
+        self.freeze_digest = str(frozen["freeze_receipt_sha256"])
+        self.ir_digest = str(frozen["research_ir_sha256"])
+        self.ir = json.loads(Path(frozen["research_ir_path"]).read_text())
         self.claude, self.log = self.make_fake_claude()
         self.adapter_dir = self.root / "adapter"
         self.worktree = self.root / "research-worktree"
-        with mock.patch.object(
-            adapter,
-            "_load_verified_ir",
-            return_value=(
-                self.ir,
-                {"approval_scope": "OWNER_REVIEWED"},
-                self.freeze_digest,
-                self.ir_digest,
-            ),
-        ):
-            adapter.initialize_adapter(
-                freeze_receipt=self.freeze,
-                compiler_store=self.store,
-                source_repo=self.source,
-                adapter_dir=self.adapter_dir,
-                worktree=self.worktree,
-                claude_bin=str(self.claude),
-                worker_model="MiniMax-M3",
-                max_budget_usd_per_turn=1.5,
-            )
+        adapter.initialize_adapter(
+            freeze_receipt=self.freeze,
+            compiler_store=self.store,
+            source_repo=self.source,
+            adapter_dir=self.adapter_dir,
+            worktree=self.worktree,
+            claude_bin=str(self.claude),
+            worker_model="MiniMax-M3",
+            max_budget_usd_per_turn=1.5,
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
