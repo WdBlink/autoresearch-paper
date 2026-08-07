@@ -1,94 +1,93 @@
 # Roadmap
 
-**autoresearch-paper** planning board. This is a living document, not a
-commitment; items move between sections as reality permits. Versions are
-not pre-assigned — when a roadmap item ships, the version is decided by
-the [CHANGELOG.md](../CHANGELOG.md) entry.
+**Autoresearch** planning board. This is a living document, not a commitment;
+versions are assigned only when work ships in [CHANGELOG.md](../CHANGELOG.md).
+
+v0.21 completed the semantic split into 1 thin router, 5 lifecycle skills, and
+1 conditional evaluator capability. Further splitting is not a roadmap goal.
+Future work should improve each stage's local collaboration, field evidence,
+and lifecycle exits without rebuilding an all-in-one controller.
 
 ## On-deck
 
-Items with an active design and a likely first release. Expect them in
-the next minor version.
+### Stage-local human collaboration
 
-### Multi-host conformance fixtures
+Study where a human decision materially improves one stage without forcing
+approval checkpoints into every other stage. Near-term candidates include:
 
-The Claude Code target runtime shipped in v0.8.0. Future work may run the same
-fake-transport behavior suite across Linux and macOS, alternate Claude Code
-gateway configurations, and future compatibility adapters. The controller
-contract remains the source of truth; an adapter cannot weaken authentication,
-hash binding, budgets, or the four-checkpoint registry.
+- structured critique of Discovery's hypothesis and falsifier;
+- clearer Adapter plan/apply review and evaluator-readiness evidence;
+- explicit reauthorization when an Experiment Contract must change; and
+- human confirmation for Paper's rare `research-frame-invalid` return route.
 
-### Multi-language paper output
+The default remains stage-local: Paper stays autonomous inside a frozen Claim
+Boundary, Experiment stays bounded by its frozen contract, and the router never
+performs domain work.
 
-The current `paper.tex` template is English-centric. Researchers writing
-for non-English venues (CCF-A 中文 / CJK journals, French-speaking labs)
-have asked for a localized template path.
+### Real-world forward evaluation
 
-- **Scope (intended)**: parallel `paper-zh.tex` / `paper-fr.tex` templates
-  driven by the brief's `language` field. Bibliography style also
-  localizes (GB/T 7714 vs. APA vs. IEEE).
-- **Open questions**: how reviewer-readiness scoring applies to
-  non-English text. The current rubric is English-tuned.
+Run the modular lifecycle prospectively on varied repositories and research
+settings. Record whether a fresh agent can enter at any artifact boundary,
+whether evaluators remain isolated from candidate edits, whether unsuccessful
+research is reported honestly, and whether the final claims remain traceable to
+frozen evidence.
+
+Forward evaluation should measure handoff clarity, context cost,
+reproducibility, return-route correctness, and manuscript package quality. It
+must not turn one successful run into a claim of general autonomy or scientific
+superiority.
 
 ## Candidates
 
-Items with a design sketch but no active branch. Pull requests welcome.
+### Optional rebuttal and dissemination
 
-### Multi-author plan mode
+Explore separate, opt-in capabilities for reviewer-response preparation,
+camera-ready packaging, repository or artifact release, and venue submission
+checklists. These capabilities must consume the frozen manuscript package and
+preserve its Claim Boundary.
 
-Two or more humans share one plan; the gate verdicts and cleanup hooks
-track a `authors` list. Useful for advisor / student co-writing.
+External submission remains a human action unless a future design defines an
+explicitly authorized dissemination boundary. The Paper skill itself will
+continue to stop after producing the compiled manuscript package.
 
-### Camera-ready submission automation
+### Atomic compatibility-backend removal
 
-The Boundaries section explicitly says "does not submit to venues". A
-follow-up skill (or feature) could wrap the camera-ready steps
-(anonymization, line-number toggle, response letter template) without
-making the boundary claim dishonest.
+After a documented deprecation window and evidence that active users have
+migrated, remove the entire v0.20 compatibility backend in one coordinated
+change: legacy prompt, MVP/MVP0 payloads, runtime references, dashboard,
+installer, setup path, and compatibility tests.
 
-### Test-time compute (T7.5.b)
-
-If the venue allows it, re-run a small evaluation sweep at submission
-time and report the fresh numbers in the readiness summary. Currently
-we use the cached numbers from T6.1.
+Do not move or delete the path-coupled runtime piecemeal. Until atomic removal,
+the backend remains deprecated, non-default, separately tested, and excluded
+from the seven-skill modular architecture.
 
 ## Wishlist
 
-Ideas that exist on the wall but have no design yet. Do not start
-without an issue thread.
-
-- **Multi-modal figure extraction.** Auto-pull figures from PDF
-  references instead of asking the user to point at a folder.
-- **Reviewer-simulator loop.** After T7, run a separate agent against
-  the paper that mimics a venue's reviewer pool and surfaces likely
-  rejection causes.
-- **Cross-plan knowledge graph.** Plans today are isolated. A
-  meta-plan that ingests successful `references/research-state.md`
-  files from prior plans and surfaces "you already explored direction X
-  on plan Y".
-- **Continuous-arxiv mode.** Skip the brief step entirely; subscribe
-  to an arxiv category and auto-generate a plan per paper in the feed.
+- Localized manuscript templates and review rubrics for non-English venues.
+- Cross-project discovery aids that surface prior failed directions without
+  importing another project's full context or claims.
+- Stronger package-level provenance visualization for Evidence and Paper.
+- Additional deterministic evaluator fixtures across operating systems and
+  repository shapes.
 
 ## Anti-roadmap
 
-Things we have explicitly decided **not** to build, and why. This is
-the more important section.
-
-- **Direct venue submission.** The skill is honest about producing a
-  paper draft; submission is the human author's responsibility.
-- **Bypass the research gate via `WAIVED_NEGATIVE_RESULT`.** The gate
-  exists to make the explore-for-hours-then-write-a-zero-contribution
-  failure mode visible. Silently bypassing it would defeat the skill.
-- **Replace human authorship of novel claims.** The skill produces a
-  paper that compiles, cites correctly, and presents the evidence the
-  user has collected. It does not invent claims.
-- **Generic "AI paper writer" mode.** The skill is a paper pipeline,
-  not a content generator. If you want generic writing, use a writing
-  skill; this one is opinionated about research-first workflows.
+- **More v0.21 skill splitting.** The current boundaries already map one skill
+  to one unique product and stop condition. New files or checklists do not earn
+  new top-level skills by themselves.
+- **A new all-in-one orchestrator.** The thin router selects one owner and
+  stops; it must not accumulate domain procedure or preload the suite.
+- **Paper-stage research.** Paper may present and compile frozen evidence but
+  cannot change methods, evaluators, experiments, or Claim Boundary decisions.
+- **Silent evaluator relaxation.** Neither Experiment nor Evidence may change
+  measurement to obtain a favorable result.
+- **Direct venue submission from Paper.** The manuscript package is the release
+  artifact; submission and dissemination are separate responsibilities.
+- **Replacement of human authorship of novel claims.** The suite preserves and
+  presents supported claims; it does not invent scientific authority.
 
 ## How to propose a roadmap item
 
-Open an issue with the `roadmap` label and a 2-paragraph sketch: the
-user pain, the proposed shape, and the riskiest assumption. The author
-of this file will move it to "Candidates" or "Wishlist" and add a
-comment.
+Open an issue with the `roadmap` label and a short sketch of the user pain, the
+stage-local change, its artifact boundary, and the riskiest assumption. Include
+how the proposal will be evaluated without weakening adjacent stages.

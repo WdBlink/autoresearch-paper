@@ -437,7 +437,7 @@ The nested MVP0 entry point is not one of the seven modular skills and is not pr
 
 ### 11.2 Existing Karpathy adapter
 
-The repository will include a canonical copy of the existing `karpathy-autoresearch-adapter` contract, with provenance noted in its README/reference material. Its approved plan becomes a durable `autoresearch/adaptation-plan.md`, and its applied output includes the referenced `experiment-contract.md`. The suite must not silently mutate the user's separately installed copy.
+The repository will include a canonical copy of the existing `karpathy-autoresearch-adapter` contract, with provenance recorded in its generated `agents/openai.yaml` metadata. Like all seven modular skills, it has no per-skill README. Its approved plan becomes a durable `autoresearch/adaptation-plan.md`, and its applied output includes the referenced `experiment-contract.md`. The suite must not silently mutate the user's separately installed copy.
 
 The current compatibility installer does not provide safe backup-and-replace semantics. Any new repository-owned installer must fail on a conflicting real directory or create an explicit backup before replacement. The primary multi-skill installation path uses the standard Skills CLI with explicit `--skill` selection (or an intentional `--all`); the repository does not reimplement a generic multi-agent installer.
 

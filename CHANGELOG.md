@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.21.0 — 2026-08-07
+
+- Replace the single broad entry point with seven independently invokable
+  skills: 1 thin router, 5 lifecycle skills, and 1 conditional evaluator
+  capability. Each run loads only its active stage and compact artifact handoff.
+- Define explicit lifecycle products from `research-brief.md` through the
+  Experiment Contract, Candidate Package, Validated Research Package, semantic
+  Claim Boundary, and compiled `manuscript-package/`.
+- Freeze Paper behavior around the Validated Research Package: it works
+  autonomously on literature, structure, grounded writing, figures/tables,
+  compilation, and review, but cannot reopen methods, evaluators, experiments,
+  evidence decisions, or the Claim Boundary.
+- Vendor `karpathy-autoresearch-adapter` into the suite with repository-local
+  provenance metadata and a plan-first, explicit-apply contract. Partial or
+  missing evaluators detour through Evaluator Engineering and return to Adapter
+  before Experiment can begin.
+- Preserve the v0.20 prompt and coupled runtime as a deprecated compatibility
+  archive. The nested `autoresearch-paper-mvp0` entry point is available only
+  through `skills/autoresearch-paper/scripts/install-mvp0.sh`; it is neither an
+  eighth modular skill nor part of standard discovery. Optional MAVIS behavior
+  remains compatibility-only.
+- Add repository documentation contracts and one modular/compatibility test
+  dispatcher. Verify modular work with `scripts/test.sh modular`; verify the
+  retained backend with `cd skills/autoresearch-paper && scripts/setup.sh test`.
+
 ## v0.20.1 — 2026-07-31
 
 - Replace planner-authored Worker conformance JSON with
