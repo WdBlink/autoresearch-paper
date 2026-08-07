@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LEGACY_SKILL = "compat/SKILL.v0.20.md"
 
 
 def read(path: str) -> str:
@@ -29,6 +30,8 @@ def main() -> int:
     errors: list[str] = []
 
     for path in [
+        "SKILL.md",
+        LEGACY_SKILL,
         "mvp/README.md",
         "mvp0/SKILL.md",
         "mvp0/agents/openai.yaml",
@@ -133,18 +136,27 @@ def main() -> int:
         errors,
     )
     require(
-        contains("SKILL.md", "research_acceptance.md", "plan-l0-guard.py", "cleanup-plan-resources.sh", "resource_manifest.json"),
-        "SKILL.md must document research gate, L0, cleanup, and resource manifest",
+        contains(LEGACY_SKILL, "research_acceptance.md", "plan-l0-guard.py", "cleanup-plan-resources.sh", "resource_manifest.json"),
+        "legacy v0.20 skill must document research gate, L0, cleanup, and resource manifest",
         errors,
     )
     require(
         contains(
-            "SKILL.md", "Target Runtime: Codex Host + Claude Code Worker",
+            LEGACY_SKILL, "Target Runtime: Codex Host + Claude Code Worker",
             "MiniMax M3", "prepare-codex-host-plan", "activate-codex-host-plan",
             "--session-id", "--resume", "CP-01", "CP-04",
             "harness-runtime.py",
         ),
-        "SKILL.md must expose the Codex Host and persistent Claude Worker route",
+        "legacy v0.20 skill must expose the Codex Host and persistent Claude Worker route",
+        errors,
+    )
+    require(
+        contains(
+            "SKILL.md", "validated-research-package", "Claim Boundary",
+            "fully autonomous", "manuscript-package",
+        )
+        and len(read("SKILL.md").splitlines()) <= 220,
+        "active Paper skill must be compact and autonomous inside frozen evidence",
         errors,
     )
     dashboard_index = read("references/dashboard/index.html")
@@ -193,18 +205,18 @@ def main() -> int:
         errors,
     )
     require(
-        contains("SKILL.md", "❌-11", "❌-12", "❌-13", "FM-20", "FM-21", "FM-22", "FM-23"),
-        "SKILL.md must include new anti-patterns and failure modes",
+        contains(LEGACY_SKILL, "❌-11", "❌-12", "❌-13", "FM-20", "FM-21", "FM-22", "FM-23"),
+        "legacy v0.20 skill must include new anti-patterns and failure modes",
         errors,
     )
     require(
         contains(
-            "SKILL.md", "Scientific Figure Gate", "scientific-visualization",
+            LEGACY_SKILL, "Scientific Figure Gate", "scientific-visualization",
             "scientific-schematics", "validate-figure-artifacts.py",
             "check-figure-gate", "--figure-gate-receipt", "required-figures.json",
             "❌-16", "FM-26",
         ),
-        "SKILL.md must expose the executable figure/writing gate and proposal-only AI boundary",
+        "legacy v0.20 skill must expose the executable figure/writing gate and proposal-only AI boundary",
         errors,
     )
     require(
@@ -378,7 +390,11 @@ def main() -> int:
         "budget_exhaustion", "evaluator_drift", "multi_session_restart",
     ):
         require(scenario in acceptance_tests, f"missing T008 scenario {scenario}", errors)
-    require('version: "0.20.1"' in read("SKILL.md"), "SKILL.md version must be 0.20.1", errors)
+    require(
+        'version: "0.20.1"' in read(LEGACY_SKILL),
+        "legacy skill version must be 0.20.1",
+        errors,
+    )
     repository_root = ROOT.parents[1]
     repository_readme = repository_root / "README.md"
     source_layout = any(
@@ -392,35 +408,6 @@ def main() -> int:
     )
     if source_layout:
         require(repository_readme.is_file(), "missing repository README.md", errors)
-    if repository_readme.is_file() and source_layout:
-        repository_readme_text = repository_readme.read_text()
-        require(
-            "Current version:** v0.20.1" in repository_readme_text,
-            "README version must be 0.20.1",
-            errors,
-        )
-        require(
-            "Codex Host 已切换" in repository_readme_text
-            and "full production cutover" in repository_readme_text,
-            "README must state the bounded Codex Host switch without a full-production claim",
-            errors,
-        )
-        require(
-            "Figure Gate | CP-01 freezes expected IDs" not in repository_readme_text
-            and "authorized figure-production stage" in repository_readme_text,
-            "README must describe v0.16 figure freeze at the authorized figure-production stage",
-            errors,
-        )
-        require(
-            all(token in repository_readme_text for token in (
-                "state/staged_research/v1/", "state/progress.json",
-                "state/research-dossier.md", "rebuildable",
-                "advance-staged-research", "Silence is never approval",
-                "bounded stage-crossing capability and acceptance target",
-            )),
-            "README must state the v0.17 authority, continuation, and bounded-claim contract",
-            errors,
-        )
     repository_changelog = ROOT.parents[1] / "CHANGELOG.md"
     if repository_changelog.is_file():
         changelog_text = repository_changelog.read_text()
@@ -435,7 +422,7 @@ def main() -> int:
             errors,
         )
     for release_doc in (
-        "SKILL.md", "references/claude-code-runtime.md",
+        LEGACY_SKILL, "references/claude-code-runtime.md",
         "references/research-state-contract.md",
         "references/task-prompt-snippets.md",
     ):

@@ -103,6 +103,7 @@ fi
 
 for path in \
   "${ROOT_DIR}/SKILL.md" \
+  "${ROOT_DIR}/compat/SKILL.v0.20.md" \
   "${ROOT_DIR}/mvp0/SKILL.md" \
   "${ROOT_DIR}/mvp0/agents/openai.yaml" \
   "${ROOT_DIR}/mvp/README.md" \
