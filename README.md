@@ -71,7 +71,7 @@ Start with the narrowest skill that matches the artifact already in hand.
 | Adapter issued `autoresearch/evaluator_plan.md` for `partial` or `missing` readiness | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/manifest.json`, followed by Adapter reclassification |
 | An Adapter-issued frozen ready Experiment Contract | `autoresearch-experiment` | `autoresearch/candidate-package/manifest.json` |
 | A bound `autoresearch/evidence-request.md` from Evidence | `autoresearch-experiment` | Resume against the linked frozen Experiment Contract; never expand its authority |
-| A bound `autoresearch/evaluator-invalid-return.md` from Experiment | `karpathy-autoresearch-adapter` | Invalidate and reclassify the stale contract, then return a replacement plan for explicit apply authorization |
+| A bound `autoresearch/evaluator-invalid-return.md` from Experiment | `karpathy-autoresearch-adapter` | Treat the stale contract as ineligible in memory, then return a replacement plan for explicit apply authorization |
 | An accepted Candidate Package manifest and intended claims | `autoresearch-evidence` | `validated-research-package/manifest.json` with Claim Boundary |
 | A valid frozen Validated Research Package manifest and venue constraints | `autoresearch-paper` | `manuscript-package/` |
 
@@ -173,8 +173,10 @@ but it will not run claim-changing experiments.
   deterministic command. Adapter requires explicit authorization before
   persisting the approved plan or final ready Experiment Contract and never
   emits a partial contract. It accepts a bound evaluator-invalid return,
-  invalidates the stale contract before reclassification, and requires a new
-  explicit apply authorization before persisting any replacement.
+  treats its durable manifest as plan-only invalidation evidence without
+  changing the worktree, and requires a new explicit apply authorization before
+  persisting a revised adaptation plan and replacement artifact. The stale
+  contract is never edited or reused in place.
 - **Evaluator Engineering owns measurement construction.** It consumes only
   Adapter's `autoresearch/evaluator_plan.md` plus necessary linked project files.
   The plan carries frozen evaluation requirements and permitted design latitude
@@ -197,8 +199,11 @@ but it will not run claim-changing experiments.
   manifest, refuses any package containing `insufficient-evidence`, and remains
   autonomous for a valid frozen package without altering research authority.
   A disclosed limitation is not missing evidence when every required frozen
-  asset is present. A genuinely missing required asset is terminal and cannot
-  coexist with `manuscript-package-complete`.
+  asset is present. For an absent/invalid required asset, Paper first attempts
+  only an already-frozen deterministic recovery task exactly as recorded, when
+  one exists. Only unavailable or failed recovery that leaves the asset
+  absent/invalid is terminal; it cannot coexist with
+  `manuscript-package-complete` or authorize new research.
 
 Honest return paths are part of the architecture: `insufficient-evidence`
 returns to Experiment; a partial or missing evaluator detours through Evaluator

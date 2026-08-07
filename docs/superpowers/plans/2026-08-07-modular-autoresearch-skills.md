@@ -424,10 +424,13 @@ Use `/Users/wdblink/.codex/skills/karpathy-autoresearch-adapter/SKILL.md` as the
   frozen evaluation requirements, permitted design latitude, necessary files,
   risks, and missing evidence so Evaluator Engineering never loads the Brief;
 - after Evaluator Engineering succeeds, return to Adapter to reclassify and freeze the final contract;
-- on an evaluator-invalid return, first invalidate the stale contract, then
-  reclassify and return a replacement plan in chat; require explicit apply
-  authorization before persisting a replacement, with `partial|missing`
-  following the evaluator-plan detour;
+- on an evaluator-invalid return, use its pre-existing durable manifest to make
+  the stale contract ineligible in memory during plan-only reclassification;
+  leave the worktree unchanged and return a replacement plan in chat; only after
+  explicit apply authorization persist the revised adaptation plan plus a
+  replacement evaluator plan or Experiment Contract, each referencing the
+  invalid-return manifest and superseded contract, and never edit/reuse the
+  stale contract in place; `partial|missing` follows the evaluator-plan detour;
 - terminate repository setup/invocation failure as `repository-not-runnable`
   and unreliable baseline reproduction as `baseline-failed`, both with
   `research-brief.md`, literal `next_skill: none`, and no authority expansion;
@@ -807,17 +810,23 @@ Expected: exit 0 before editing the root skill.
 
 - [ ] **Step 4: Rewrite Paper and add three conditional references**
 
-The active `SKILL.md` contains `Core contract`, `Inputs`, `Asset gate`, `Autonomous production loop`, `Allowed completion work`, `Release gate`, `Stop`, and `Boundaries`. It links directly to the three `references/paper/*.md` files and no legacy reference.
+The active `SKILL.md` contains `Core contract`, `Inputs`, `Asset gate`,
+`Required-asset recovery`, `Autonomous production loop`, `Allowed completion
+work`, `Release gate`, `Stop`, and `Boundaries`. It links directly to the three
+`references/paper/*.md` files and no legacy reference.
 
 - `asset-intake.md`: verify manifest, Claim Boundary, code/config/result references, venue assets, and citation sources; distinguish `missing-frozen-evidence` from `research-frame-invalid-confirmation-pending`.
 - `production-loop.md`: Literature, Structure, grounded drafting, Figures/Tables, Compilation. Literature supports positioning and citation verification; it does not reopen novelty search. Figures/tables derive from frozen tasks or existing data.
 - `review-and-packaging.md`: scientific consistency, claim-boundary, citation, numerical, format, and visual review; route findings back to the relevant internal production task until clean.
 
 A limitation already disclosed in the frozen Claim Boundary is not missing
-evidence when all required assets exist. An absent or invalid required frozen
-asset emits terminal `missing-frozen-evidence`, creates no Manuscript Package,
-and cannot coexist with success. Only clean release gates emit
-`manuscript-package-complete`.
+evidence when all required assets exist. For an absent/invalid required frozen
+asset, first run only a linked already-frozen deterministic recovery task
+exactly as recorded when available. Successful recovery continues Paper; if no
+authorized recovery exists or it fails/leaves the asset invalid, emit terminal
+`missing-frozen-evidence`, create no Manuscript Package, and stop. Recovery
+cannot add a seed, ablation, experiment, analysis, or Claim Boundary change.
+Only clean release gates emit `manuscript-package-complete`.
 
 The skill proceeds without routine outline/draft/figure/format approval. It
 refuses a new seed, new ablation, or new experiment whose result could change a

@@ -26,6 +26,12 @@ checks. Release only when no blocking or material finding remains. A disclosed
 limitation already frozen in the valid Claim Boundary is not blocking when all
 of its referenced evidence is present.
 
+If review finds a required manifest-linked artifact absent or invalid, first
+attempt only its linked already-frozen deterministic recovery task exactly as
+recorded, when one exists. Verify the restored artifact against the frozen
+identity/hash and rerun dependent checks. Recovery cannot introduce a new seed,
+ablation, experiment, analysis, or Claim Boundary change.
+
 ## Package inventory
 
 Create exactly one `manuscript-package/` with:
@@ -42,7 +48,8 @@ Do not copy unnecessary private artifacts into the submission package. Verify
 that the packaged source builds from its recorded command and that the compiled
 artifact matches the reviewed output.
 
-If an asset required for an included claim or required venue deliverable is
-absent/invalid, emit `missing-frozen-evidence`, create no Manuscript Package,
-and stop. That terminal outcome and `manuscript-package-complete` never coexist.
+If no authorized recovery exists, recovery fails, or an asset required for an
+included claim or required venue deliverable remains absent/invalid, emit
+`missing-frozen-evidence`, create no Manuscript Package, and stop. That terminal
+outcome and `manuscript-package-complete` never coexist.
 Emit completion only after the complete package passes every release gate.

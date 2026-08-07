@@ -69,6 +69,27 @@ class RepositoryDocumentationTests(unittest.TestCase):
             self.assertIn(artifact, spec)
             self.assertIn(artifact, changelog)
 
+    def test_changelog_uses_canonical_evaluator_plan_and_complete_invalid_return_binding(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text()
+        self.assertIn("`autoresearch/evaluator_plan.md`", changelog)
+        self.assertNotIn("only `evaluator_plan.md`", changelog)
+        self.assertIn(
+            "Experiment's `autoresearch/evaluator-invalid-return.md`",
+            changelog,
+        )
+        bullet = changelog.split(
+            "Experiment's `autoresearch/evaluator-invalid-return.md`", 1
+        )[1].split("\n- ", 1)[0]
+        normalized = " ".join(bullet.split())
+        for binding in (
+            "contract identity/hash",
+            "evaluator identity",
+            "failure evidence",
+            "candidate/ledger state",
+            "provenance",
+        ):
+            self.assertIn(binding, normalized)
+
     def test_adapter_provenance_is_not_assigned_to_ui_metadata(self):
         spec = (
             ROOT

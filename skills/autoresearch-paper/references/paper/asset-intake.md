@@ -26,10 +26,24 @@ Create an intake record mapping each source asset to its immutable reference,
 intended manuscript use, and verification result. Never overwrite the frozen
 package. Open only manifest-linked assets needed for the current manuscript task.
 
+## Required-asset recovery
+
+When a required manifest-linked artifact is absent or invalid, first look for an
+already-frozen deterministic recovery task linked by the valid package. If it
+exists, run only that task exactly as recorded with its frozen command, inputs,
+configuration, environment, and expected identity/hash. If recovery succeeds,
+verify the restored artifact and continue intake.
+
+This recovery cannot add a new seed, ablation, experiment, analysis, or Claim
+Boundary change. If no authorized recovery exists, recovery fails, or the asset
+remains absent or invalid, emit `missing-frozen-evidence`, create no Manuscript
+Package, and stop.
+
 ## Typed outcomes
 
-Use `missing-frozen-evidence` only when an asset required for an included claim
-or required venue deliverable is absent, unreadable, hash-mismatched, or invalid.
+Use `missing-frozen-evidence` only after the recovery gate above, when an asset
+required for an included claim or required venue deliverable remains absent,
+unreadable, hash-mismatched, or invalid.
 Identify the exact reference and affected claim or deliverable, create no
 Manuscript Package, emit the terminal status, and stop. Do not regenerate the
 asset through a new seed, ablation, experiment, or changed analysis.

@@ -225,10 +225,15 @@ For `partial|missing`, `autoresearch/evaluator_plan.md` carries the Research
 Brief identity/hash/reference, the frozen evaluation requirements, permitted
 evaluator-design latitude, necessary file links, known risks, and missing
 evidence. Evaluator Engineering therefore never loads the Brief. On an
-evaluator-invalid return, Adapter first makes the stale contract ineligible for
-reuse, then reclassifies. It returns a replacement plan in chat and requires
-explicit apply authorization before persisting any replacement plan or contract;
-a partial or missing reclassification takes the evaluator-plan detour.
+evaluator-invalid return, Adapter treats the pre-existing return manifest as
+durable invalidation evidence and makes the stale contract ineligible in memory
+while plan-only; it writes nothing and does not edit the contract. It then
+reclassifies and returns a replacement plan in chat. Only after explicit apply
+authorization does it persist a revised `autoresearch/adaptation-plan.md` plus a
+replacement evaluator plan or Experiment Contract, each referencing the return
+manifest and superseded contract identity/hash. The stale contract is never
+edited or reused in place; a partial or missing reclassification takes the
+evaluator-plan detour.
 
 **Must not do:**
 
@@ -372,17 +377,22 @@ current manuscript task.
 **Unique product:** `manuscript-package/`, containing manuscript source, compiled paper, figures, tables, bibliography, review reports, and submission checklist.
 
 **Stop condition:** All manuscript release checks pass and
-`manuscript-package-complete` is recorded; a missing frozen asset yields terminal
+`manuscript-package-complete` is recorded; a required frozen asset that remains
+missing after the authorized recovery gate yields terminal
 `missing-frozen-evidence`; an invalid package is refused; or
 `research-frame-invalid-confirmation-pending` pauses with no route until a human
 selects a target-specific confirmed status.
 
 These outcomes are mutually exclusive. A limitation already disclosed in the
 frozen Claim Boundary is not missing evidence when all required frozen assets
-are present. An absent or invalid asset required by an included claim or venue
-deliverable emits terminal `missing-frozen-evidence`, produces no Manuscript
-Package, and cannot coexist with success. Only all-clean release gates emit
-`manuscript-package-complete`.
+are present. For an absent or invalid asset required by an included claim or
+venue deliverable, Paper first attempts only a manifest-linked already-frozen
+deterministic recovery task exactly as recorded, when one exists. Successful
+recovery continues the asset gate. If no authorized recovery exists or it fails
+or leaves the asset invalid, Paper emits terminal `missing-frozen-evidence`,
+produces no Manuscript Package, and cannot coexist with success. Recovery cannot
+add seeds, ablations, experiments, analyses, or Claim Boundary changes. Only
+all-clean release gates emit `manuscript-package-complete`.
 
 **Internal loop:**
 
@@ -402,7 +412,11 @@ Paper first requires every manifest/Claim Boundary status to be exactly
 `insufficient-evidence` is refused as `invalid-validated-package`; Paper does
 not start production from it. A valid frozen package remains autonomous.
 
-**Allowed completion work:** Re-run frozen deterministic tasks, compute additional statistics from existing data, fill table cells from existing results, and generate presentation artifacts from the frozen method, evaluator, and evidence.
+**Allowed completion work:** Re-run an already-frozen deterministic recovery
+task exactly as recorded before classifying a required asset as irrecoverably
+missing; compute additional statistics from existing data, fill table cells
+from existing results, and generate presentation artifacts from the frozen
+method, evaluator, and evidence.
 
 **Must not do:**
 
@@ -442,7 +456,7 @@ The skills communicate through ordinary files and links rather than a large cent
 | Adapter (`ready`) | `autoresearch/experiment-contract.md` | Experiment |
 | Adapter (`partial` or `missing`) | `autoresearch/evaluator_plan.md` | Evaluator Engineering |
 | Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for readiness reclassification |
-| Experiment (`experiment-evaluator-invalid`) | `autoresearch/evaluator-invalid-return.md` | Adapter for stale-contract invalidation and reclassification |
+| Experiment (`experiment-evaluator-invalid`) | `autoresearch/evaluator-invalid-return.md` | Adapter for plan-only in-memory invalidation and reclassification |
 | Experiment (`accepted`) | `autoresearch/candidate-package/` | Evidence |
 | Evidence (`insufficient-evidence`) | `autoresearch/evidence-request.md` | Experiment resume against the bound frozen contract |
 | Evidence (complete three-status boundary) | `validated-research-package/` | Paper |
@@ -587,8 +601,10 @@ status tokens, so Workflow never infers the authorized destination.
   never a partial Experiment Contract. It may also terminate as
   `repository-not-runnable` or `baseline-failed`, both before artifact
   fallthrough and with no next skill. An evaluator-invalid return first
-  invalidates its stale contract, then enters normal reclassification and
-  explicit replacement authorization.
+  makes its stale contract ineligible in memory from the durable return
+  manifest without plan-only writes, then enters normal reclassification and
+  explicit replacement authorization. Applied replacements reference both the
+  manifest and superseded contract rather than editing it in place.
 - Evaluator Engineering may return `evaluator-not-validatable`.
 - Experiment may return terminal `no-improvement`, `budget-exhausted`, or
   `contract-reauthorization-needed`; evaluator invalidity returns to Adapter
@@ -600,10 +616,12 @@ status tokens, so Workflow never infers the authorized destination.
 - Paper may return terminal `missing-frozen-evidence`, refuse
   `invalid-validated-package`, pause at
   `research-frame-invalid-confirmation-pending`, or complete the Manuscript
-  Package. Missing required evidence and manuscript completion are mutually
-  exclusive; a disclosed frozen limitation with all required assets is not
-  missing evidence. Only a target-specific human-confirmed status routes to
-  Evidence or Experiment.
+  Package. Before a required frozen asset becomes terminally missing, Paper
+  attempts only an already-frozen deterministic recovery task exactly as
+  recorded when available. Missing required evidence after that gate and
+  manuscript completion are mutually exclusive; a disclosed frozen limitation
+  with all required assets is not missing evidence. Only a target-specific
+  human-confirmed status routes to Evidence or Experiment.
 
 “No improvement” and “claim rejected” are scientifically valid outcomes, not system failures.
 

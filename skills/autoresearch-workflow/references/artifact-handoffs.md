@@ -71,9 +71,12 @@ Package manifest returns to Adapter for the sole readiness reclassification.
 Experiment-discovered evaluator integrity/readiness failures also return to
 Adapter through `autoresearch/evaluator-invalid-return.md`, which binds the stale
 contract, evaluator identity and failure evidence, candidate/ledger, and
-provenance. Adapter invalidates that contract before reclassification and
-requires explicit apply authorization before persisting a replacement. This
-detour is operational and is not a scientific return loop.
+provenance. During plan-only reclassification Adapter uses that durable manifest
+to treat the stale contract as ineligible in memory without writing it. After
+explicit apply authorization, the revised plan and replacement artifact each
+reference the manifest and superseded contract; the stale contract is never
+edited or reused in place. This detour is operational and is not a scientific
+return loop.
 
 The terminal Adapter outcomes `repository-not-runnable` and `baseline-failed`
 are evaluated before artifact-presence fallthrough. Both retain

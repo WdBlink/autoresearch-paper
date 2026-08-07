@@ -82,6 +82,49 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("partial` or `missing", normalized)
         self.assertIn("`autoresearch/evaluator_plan.md`", normalized)
 
+    def test_evaluator_invalid_plan_only_mode_uses_durable_evidence_without_writes(self):
+        body = assert_compact_skill(self, "karpathy-autoresearch-adapter")
+        section = body.split("## Evaluator-invalid operational return", 1)[1].split(
+            "## Apply only after authorization", 1
+        )[0]
+        normalized = " ".join(section.split())
+        for token in (
+            "pre-existing durable invalidation evidence",
+            "in memory only",
+            "plan-only mode",
+            "worktree unchanged",
+            "do not write or edit the stale contract",
+            "return the replacement plan in chat",
+        ):
+            self.assertIn(token, normalized)
+        self.assertLess(
+            normalized.index("worktree unchanged"),
+            normalized.index("explicit apply authorization"),
+        )
+
+    def test_evaluator_invalid_replacements_persist_only_after_authorization(self):
+        body = assert_compact_skill(self, "karpathy-autoresearch-adapter")
+        section = body.split("## Evaluator-invalid operational return", 1)[1].split(
+            "## Apply only after authorization", 1
+        )[0]
+        normalized = " ".join(section.split())
+        for token in (
+            "After explicit apply authorization",
+            "persist the revised `autoresearch/adaptation-plan.md`",
+        ):
+            self.assertIn(token, normalized)
+        authorization = normalized.index("After explicit apply authorization")
+        persist = normalized.index("persist the revised `autoresearch/adaptation-plan.md`")
+        self.assertLess(authorization, persist)
+        for token in (
+            "replacement `autoresearch/evaluator_plan.md`",
+            "replacement `autoresearch/experiment-contract.md`",
+            "reference the invalid-return manifest",
+            "superseded contract identity/hash",
+            "never edit or reuse the stale contract in place",
+        ):
+            self.assertIn(token, normalized)
+
     def test_evaluator_plan_preserves_brief_requirements_without_loading_brief(self):
         body = assert_compact_skill(self, "karpathy-autoresearch-adapter")
         partial = body.split("For `partial` or `missing`", 1)[1].split(

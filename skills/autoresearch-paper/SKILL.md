@@ -50,10 +50,28 @@ research frame remains valid. A limitation already frozen in a valid Claim
 Boundary is a disclosed limitation and does not emit `missing-frozen-evidence`
 when all referenced assets are present.
 
-Emit terminal `missing-frozen-evidence` only when a manifest-linked asset needed
-to substantiate an included claim or complete a required venue deliverable is
-absent or invalid. Stop, create no Manuscript Package, and never run research to
-repair it. An optional unused asset does not trigger this outcome.
+When a manifest-linked asset needed to substantiate an included claim or
+complete a required venue deliverable is absent or invalid, follow the
+required-asset recovery gate below before classifying the outcome. An optional
+unused asset does not trigger this gate.
+
+## Required-asset recovery
+
+First check whether the valid frozen package links an already-frozen
+deterministic recovery task for that exact required artifact. When one exists,
+run only that task exactly as recorded, with its frozen command, inputs,
+configuration, environment, and expected immutable identity/hash. Verify the
+recovered artifact against those bindings.
+
+If recovery succeeds and restores a valid required artifact, continue the asset
+gate and normal production. If no authorized recovery exists, recovery fails,
+or the required asset remains absent or invalid, emit terminal
+`missing-frozen-evidence`, create no Manuscript Package, and stop.
+
+Recovery grants no research authority. It cannot introduce a new seed, new
+ablation, or new experiment; change the Claim Boundary; change the method,
+evaluator, data/split, or result; or otherwise alter a claim. It may only
+reconstruct the already-frozen artifact.
 
 ## Autonomous production loop
 
@@ -70,11 +88,10 @@ then iterate autonomously:
 
 ## Allowed completion work
 
-Rerun a frozen deterministic task exactly as recorded to recover/verify an
-artifact. Compute reproducible disclosed statistics, plots, or tables from
-existing data only when they cannot change the research decision or Claim
-Boundary. Verify citation metadata and add literature that explains frozen
-claims.
+Use the required-asset recovery gate above to rerun a frozen deterministic task
+exactly as recorded. Compute reproducible disclosed statistics, plots, or tables
+from existing data only when they cannot change the research decision or Claim
+Boundary. Verify citation metadata and add literature that explains frozen claims.
 
 Refuse a new seed, new ablation, or new experiment whose result could change a
 claim. Do not change method, evaluator, metric, data/split, comparisons, or the
@@ -114,7 +131,7 @@ failure and impact without manufacturing or broadening research.
 
 | Condition | Outcome | Manuscript Package |
 | --- | --- | --- |
-| Required frozen asset absent or invalid | `missing-frozen-evidence` | `forbidden` |
+| Required frozen asset remains absent or invalid after recovery gate | `missing-frozen-evidence` | `forbidden` |
 | Invalid validated package | `invalid-validated-package` | `forbidden` |
 | Research frame invalid, confirmation pending | `research-frame-invalid-confirmation-pending` | `forbidden` |
 | All release gates clean | `manuscript-package-complete` | `required` |

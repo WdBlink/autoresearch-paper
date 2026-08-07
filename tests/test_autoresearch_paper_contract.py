@@ -55,6 +55,60 @@ class PaperContractTests(unittest.TestCase):
         self.assertIn("disclosed limitation", gate)
         self.assertIn("does not emit `missing-frozen-evidence`", gate)
 
+    def test_required_asset_recovery_precedes_terminal_missing_outcome(self):
+        body = assert_compact_skill(self, "autoresearch-paper")
+        self.assertIn("## Required-asset recovery", body)
+        recovery = body.split("## Required-asset recovery", 1)[1].split(
+            "## Autonomous production loop", 1
+        )[0]
+        normalized = " ".join(recovery.split())
+        for token in (
+            "already-frozen deterministic recovery task",
+            "exactly as recorded",
+            "If recovery succeeds",
+            "continue the asset gate",
+            "no authorized recovery exists",
+            "recovery fails",
+            "remains absent or invalid",
+            "`missing-frozen-evidence`",
+            "create no Manuscript Package",
+        ):
+            self.assertIn(token, normalized)
+        self.assertLess(
+            normalized.index("already-frozen deterministic recovery task"),
+            normalized.index("`missing-frozen-evidence`"),
+        )
+
+    def test_required_asset_recovery_cannot_change_research_authority(self):
+        body = assert_compact_skill(self, "autoresearch-paper")
+        self.assertIn("## Required-asset recovery", body)
+        recovery = " ".join(
+            body.split("## Required-asset recovery", 1)[1].split(
+                "## Autonomous production loop", 1
+            )[0].split()
+        )
+        for forbidden in (
+            "new seed",
+            "new ablation",
+            "new experiment",
+            "change the Claim Boundary",
+        ):
+            self.assertIn(forbidden, recovery)
+
+        for reference in (
+            "asset-intake.md",
+            "review-and-packaging.md",
+        ):
+            text = (PAPER_DIR / "references" / "paper" / reference).read_text()
+            normalized = " ".join(text.split())
+            self.assertIn("frozen deterministic recovery", normalized)
+            self.assertIn("emit `missing-frozen-evidence`", normalized)
+            self.assertLess(
+                normalized.index("frozen deterministic recovery"),
+                normalized.index("emit `missing-frozen-evidence`"),
+                reference,
+            )
+
     def test_missing_evidence_and_completion_are_mutually_exclusive(self):
         body = assert_compact_skill(self, "autoresearch-paper")
         self.assertIn("## Outcome exclusivity", body)
@@ -66,7 +120,11 @@ class PaperContractTests(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                ("Required frozen asset absent or invalid", "missing-frozen-evidence", "forbidden"),
+                (
+                    "Required frozen asset remains absent or invalid after recovery gate",
+                    "missing-frozen-evidence",
+                    "forbidden",
+                ),
                 ("Invalid validated package", "invalid-validated-package", "forbidden"),
                 ("Research frame invalid, confirmation pending", "research-frame-invalid-confirmation-pending", "forbidden"),
                 ("All release gates clean", "manuscript-package-complete", "required"),

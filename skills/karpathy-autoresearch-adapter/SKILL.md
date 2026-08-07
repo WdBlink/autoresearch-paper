@@ -60,18 +60,22 @@ from documentation promises.
 
 ## Evaluator-invalid operational return
 
-For `autoresearch/evaluator-invalid-return.md`, verify the bound Experiment
-Contract identity/hash, evaluator identity and failure evidence, candidate and
-ledger state, and provenance. First mark the bound contract ineligible for reuse;
-never resume from it or edit it in place. Then reclassify readiness from the
-return evidence and linked files, return the replacement plan in chat, and stop.
-Require **explicit apply authorization** before persisting a replacement
-Experiment Contract or evaluator plan.
+`autoresearch/evaluator-invalid-return.md` is pre-existing durable invalidation
+evidence. In plan-only mode, read and verify its bound Experiment Contract
+identity/hash, evaluator identity and failure evidence, candidate and ledger
+state, and provenance. Treat the bound contract as ineligible for reuse in
+memory only, then reclassify from the return evidence and linked files and
+return the replacement plan in chat. Keep the worktree unchanged: do not write
+or edit the stale contract or persist any plan or replacement artifact.
 
-After authorization, persist a replacement contract only if `ready`. If
-`partial` or `missing`, persist `autoresearch/evaluator_plan.md` and follow the
-normal `autoresearch-evaluator-engineering` detour. Preserve candidate/ledger
-state and state whether a future replacement contract may resume it.
+After explicit apply authorization, persist the revised
+`autoresearch/adaptation-plan.md` plus exactly one replacement artifact:
+replacement `autoresearch/evaluator_plan.md` for `partial` or `missing`, or a
+replacement `autoresearch/experiment-contract.md` only for `ready`. The revised
+plan and replacement artifact must each reference the invalid-return manifest
+and superseded contract identity/hash. Preserve candidate/ledger state and state
+whether the replacement may resume it, and never edit or reuse the stale
+contract in place.
 
 ## Apply only after authorization
 

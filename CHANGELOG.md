@@ -10,14 +10,15 @@
   Claim Boundary, and compiled `manuscript-package/`.
 - Make compact manifests operational: Adapter's final contract is Experiment's
   new-run handoff; a bound `autoresearch/evidence-request.md` is Experiment's
-  only resume handoff; Evaluator Engineering receives only `evaluator_plan.md`;
+  only resume handoff; Evaluator Engineering receives only
+  `autoresearch/evaluator_plan.md`;
   Candidate, Evaluator, and Validated packages expose manifests that let the
   next stage open only linked, task-needed files.
 - Make both return paths executable: Evidence's request binds the exact frozen
   contract, candidate, evaluator, missing evidence, permitted scope, and
   provenance; Experiment's `autoresearch/evaluator-invalid-return.md` binds the
-  stale contract, failure evidence, candidate/ledger, and provenance for Adapter
-  reclassification.
+  stale contract identity/hash, evaluator identity, failure evidence,
+  candidate/ledger state, and provenance for Adapter reclassification.
 - Freeze Paper behavior around the Validated Research Package: it works
   autonomously on literature, structure, grounded writing, figures/tables,
   compilation, and review, but cannot reopen methods, evaluators, experiments,
@@ -37,8 +38,13 @@
   outcomes ahead of artifact fallthrough, with no next skill or authority
   expansion.
 - Make Paper outcomes exclusive: a disclosed frozen limitation is not missing
-  evidence, a missing required frozen asset produces no manuscript package,
-  and only a clean release emits `manuscript-package-complete`.
+  evidence, a required frozen asset still missing after its recovery gate
+  produces no manuscript package, and only a clean release emits
+  `manuscript-package-complete`.
+- Before that missing-asset terminal, allow only an already-frozen deterministic
+  recovery task exactly as recorded; successful recovery continues Paper, while
+  absent or failed recovery creates no Manuscript Package and grants no new
+  research authority.
 - Preserve the v0.20 prompt and coupled runtime as a deprecated compatibility
   archive. The nested `autoresearch-paper-mvp0` entry point is available only
   through `skills/autoresearch-paper/scripts/install-mvp0.sh`; it is neither an
