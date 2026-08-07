@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Evaluator Engineering"
+  short_description: "Build a missing reproducible research evaluator"
+  default_prompt: "Use $autoresearch-evaluator-engineering to build and validate the evaluator this Experiment Contract lacks."
