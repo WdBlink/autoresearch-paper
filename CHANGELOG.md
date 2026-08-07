@@ -8,6 +8,10 @@
 - Define explicit lifecycle products from `research-brief.md` through the
   Experiment Contract, Candidate Package, Validated Research Package, semantic
   Claim Boundary, and compiled `manuscript-package/`.
+- Make compact manifests operational: Adapter's final contract is Experiment's
+  sole prior handoff; Evaluator Engineering receives only `evaluator_plan.md`;
+  Candidate, Evaluator, and Validated packages expose manifests that let the
+  next stage open only linked, task-needed files.
 - Freeze Paper behavior around the Validated Research Package: it works
   autonomously on literature, structure, grounded writing, figures/tables,
   compilation, and review, but cannot reopen methods, evaluators, experiments,
@@ -17,6 +21,12 @@
   `agents/openai.yaml` remains UI-only. The Adapter keeps a plan-first,
   explicit-apply contract. Partial or missing evaluators detour through
   Evaluator Engineering and return to Adapter before Experiment can begin.
+- Reserve Claim Boundary rows for exactly
+  `supported|qualified|unsupported`. `insufficient-evidence` is an upstream
+  request to Experiment and cannot enter a Validated Research Package or Paper.
+- Represent terminal and confirmation-pending Workflow states with literal
+  `next_skill: none`; evaluator packages and Experiment evaluator-integrity
+  failures return to Adapter before any further Experiment run.
 - Preserve the v0.20 prompt and coupled runtime as a deprecated compatibility
   archive. The nested `autoresearch-paper-mvp0` entry point is available only
   through `skills/autoresearch-paper/scripts/install-mvp0.sh`; it is neither an

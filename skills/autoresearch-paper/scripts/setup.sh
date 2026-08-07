@@ -199,7 +199,7 @@ then rerun:
   scripts/setup.sh
 
 For GitHub installation:
-  npx skills add WdBlink/autoresearch-paper -g --copy
+  npx skills add WdBlink/autoresearch-paper --skill autoresearch-paper -g --copy
 EOF
   exit 1
 fi

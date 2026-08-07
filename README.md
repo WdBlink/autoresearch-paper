@@ -45,8 +45,9 @@ The suite is **1 thin router + 5 lifecycle skills + 1 conditional capability**:
 | Lifecycle | `autoresearch-paper` | Produce and compile the manuscript package without reopening research |
 
 All seven can be installed together, but one invocation loads only the selected
-skill, its focused references, the previous compact handoff, and the necessary
-project files. The router never performs domain work.
+skill, its focused references, one compact manifest or contract from the prior
+stage, and the necessary linked project files. It does not preload a prior
+package. The router never performs domain work.
 
 ```text
 idea
@@ -67,10 +68,10 @@ Start with the narrowest skill that matches the artifact already in hand.
 | You want the suite to decide | `autoresearch-workflow` | Four-field route handoff |
 | An idea, constraints, or early literature | `autoresearch-discovery` | `research-brief.md` |
 | A frozen Research Brief and a repository | `karpathy-autoresearch-adapter` | `autoresearch/experiment-contract.md` after explicit apply authorization |
-| Adapter says the evaluator is `partial` or `missing` | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/`, followed by Adapter reclassification |
-| A frozen Experiment Contract and ready evaluator | `autoresearch-experiment` | `autoresearch/candidate-package/` |
-| A frozen Candidate Package and intended claims | `autoresearch-evidence` | `validated-research-package/` with Claim Boundary |
-| A frozen Validated Research Package and venue constraints | `autoresearch-paper` | `manuscript-package/` |
+| Adapter issued `autoresearch/evaluator_plan.md` for `partial` or `missing` readiness | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/manifest.json`, followed by Adapter reclassification |
+| An Adapter-issued frozen ready Experiment Contract | `autoresearch-experiment` | `autoresearch/candidate-package/manifest.json` |
+| An accepted Candidate Package manifest and intended claims | `autoresearch-evidence` | `validated-research-package/manifest.json` with Claim Boundary |
+| A valid frozen Validated Research Package manifest and venue constraints | `autoresearch-paper` | `manuscript-package/` |
 
 Use `autoresearch-workflow` when the correct stage is unclear. It reads one
 compact handoff, emits exactly one next-skill decision, and stops.
@@ -86,14 +87,20 @@ the prior stage's context.
 | Discovery | `research-brief.md` | Adapter |
 | Adapter | `autoresearch/experiment-contract.md` | Experiment |
 | Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for reclassification |
-| Experiment | `autoresearch/candidate-package/` | Evidence |
-| Evidence | `validated-research-package/`, including `manifest.json` and `claim-boundary.md` | Paper |
+| Experiment | `autoresearch/candidate-package/` | Evidence, only when it contains an accepted candidate |
+| Evidence | `validated-research-package/`, including `claim-boundary.md` | Paper |
 | Paper | `manuscript-package/` | User or a future dissemination capability |
 
 The Paper product includes editable manuscript sources, bibliography,
 figures/tables, traceability and review records, venue support files, a package
 manifest, and a compiled submission artifact. It does not submit anything to an
 external venue.
+
+Package directories expose one compact entry point: Evaluator Engineering hands
+Adapter `autoresearch/evaluator-package/manifest.json`, accepted Experiment
+hands Evidence `autoresearch/candidate-package/manifest.json`, and Evidence
+hands Paper `validated-research-package/manifest.json`. Each consumer opens only
+the linked files needed for its current task.
 
 ## Install
 
@@ -158,28 +165,36 @@ but it will not run claim-changing experiments.
 
 - **Discovery owns the question.** It does not inspect implementation details,
   choose an evaluator, adapt a repository, or run experiments.
-- **Adapter owns execution design.** It classifies evaluator readiness and
-  requires explicit authorization before persisting the approved plan or
-  ready Experiment Contract. It does not build the evaluator or optimize a
-  candidate.
-- **Evaluator Engineering owns measurement construction.** It changes only
-  evaluator assets, never a candidate, and returns to Adapter for readiness
-  reclassification.
-- **Experiment owns candidate search.** Its evaluator, baseline, mutable
-  surface, budget, and KEEP/DISCARD rule remain frozen. Every accepted and
-  rejected attempt is recorded.
-- **Evidence owns scientific validation.** It freezes the candidate, records
-  scope and uncertainty claim by claim, and never tunes the method.
-- **Paper owns presentation.** It may structure, write, render, compile, and
-  review the manuscript, but it cannot alter the method, evaluator, evidence,
-  or Claim Boundary.
+- **Adapter owns execution design and all evaluator-readiness classification.**
+  `ready` requires fixed inputs/splits, candidate-edit isolation,
+  known-outcome/discrimination checks, and adequate repeatability—not merely a
+  deterministic command. Adapter requires explicit authorization before
+  persisting the approved plan or final ready Experiment Contract and never
+  emits a partial contract.
+- **Evaluator Engineering owns measurement construction.** It consumes only
+  Adapter's `autoresearch/evaluator_plan.md` plus necessary linked project files,
+  changes only evaluator assets, and returns its compact manifest to Adapter.
+- **Experiment owns candidate search.** Its sole compact prior handoff is the
+  Adapter-issued frozen contract, which binds the ready evaluator, brief,
+  baseline, mutable surface, budget, and KEEP/DISCARD rule. Every attempt is
+  recorded; evaluator integrity/readiness failures return only to Adapter.
+- **Evidence owns scientific validation.** It opens claim-needed files from the
+  Candidate Package manifest, freezes only `supported|qualified|unsupported`
+  rows, and never tunes the method. `insufficient-evidence` produces an upstream
+  request to Experiment, not a Validated Research Package.
+- **Paper owns presentation.** It enters through the Validated Research Package
+  manifest, refuses any package containing `insufficient-evidence`, and remains
+  autonomous for a valid frozen package without altering research authority.
 
 Honest return paths are part of the architecture: `insufficient-evidence`
 returns to Experiment; a partial or missing evaluator detours through Evaluator
 Engineering and back to Adapter; `research-frame-invalid` waits for human
-confirmation before Evidence or Experiment. `no-testable-opportunity`,
-`evaluator-not-validatable`, `no-improvement`, and `budget-exhausted` are valid
-outcomes, not permission to weaken the scientific contract.
+confirmation as `research-frame-invalid-confirmation-pending` before a
+target-specific Evidence or Experiment route. `no-testable-opportunity`,
+`evaluator-not-validatable`, `no-improvement`, `budget-exhausted`, and
+`contract-reauthorization-needed` are terminal/no-route outcomes. Workflow uses
+literal `next_skill: none` for them and for confirmation-pending states; none is
+permission to weaken the scientific contract.
 
 ## Compatibility backend
 

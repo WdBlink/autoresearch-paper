@@ -13,6 +13,7 @@ from tests.skill_contract_helpers import (
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "test.sh"
+SETUP = ROOT / "skills" / "autoresearch-paper" / "scripts" / "setup.sh"
 
 EXPECTED = {
     "autoresearch-workflow",
@@ -83,6 +84,11 @@ class ModularSuiteContractTests(unittest.TestCase):
                     text,
                     rf"(?m)^\s*{re.escape(mode)}\)\s+{re.escape(command)}\s*;;\s*$",
                 )
+
+    def test_legacy_setup_repair_hint_selects_the_compatibility_skill(self):
+        text = SETUP.read_text()
+        hint = text.split("For GitHub installation:", 1)[1].split("EOF", 1)[0]
+        self.assertIn("--skill autoresearch-paper", hint)
 
 
 if __name__ == "__main__":

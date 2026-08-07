@@ -1,103 +1,95 @@
 ---
 name: autoresearch-experiment
-description: Use when a frozen Experiment Contract and a ready, isolated evaluator authorize bounded candidate search and a reproducible Candidate Package is needed.
+description: Use when an Adapter-issued frozen Experiment Contract binds a ready isolated evaluator and authorizes bounded candidate search.
 ---
 
 # Auto-Research Experiment
 
-Run the complete bounded XYZ loop—**Research → Development → Review →
-Record**—inside one Experiment Contract. This skill owns candidate optimization,
-not evaluator construction, final scientific validation, or paper production.
+Run the complete bounded **Research → Development → Review → Record** loop
+inside one Experiment Contract. Own candidate optimization, not evaluator
+construction, final scientific validation, or paper production.
 
 ## Entry gate
 
-Proceed only when all of these are supplied and internally consistent:
+Accept one Adapter-issued frozen `autoresearch/experiment-contract.md` as the
+sole compact prior-stage handoff. Proceed only when that contract:
 
-- a frozen `autoresearch/experiment-contract.md` that names the target,
-  mutable and forbidden surfaces, evaluator command and inputs, baseline,
-  KEEP/DISCARD rule, resource budget, authority, and stopping conditions;
-- a `ready`, isolated evaluator or evaluator package whose command, data/split,
-  scoring, and adoption gate are fixed; and
-- writable candidate workspace plus a destination for
-  `autoresearch/candidate-package/`.
+- identifies its Adapter provenance and frozen `research-brief.md`;
+- identifies and binds a `ready` evaluator, including command, fixed inputs and
+  splits, seed policy, scoring, KEEP/DISCARD gate, readiness evidence, and
+  candidate-edit isolation;
+- freezes target, baseline, mutable/forbidden surfaces, budget, authority,
+  rollback, stop, and reauthorization conditions; and
+- links every necessary project file rather than requiring another prior package.
 
-If any item is absent, mutable, inconsistent, or needs changing, do not start an
-iteration. Record `contract-reauthorization-needed` when a contract change is
-requested; return evaluator gaps to Evaluator Engineering and contract changes
-to Adapter.
+If evaluator identity, integrity, isolation, readiness evidence, or execution is
+absent, mutable, inconsistent, or invalid, do not iterate. Emit
+`experiment-evaluator-invalid` and return only to Adapter
+(`karpathy-autoresearch-adapter`). Never classify readiness or route directly to
+evaluator construction. For a non-evaluator contract change, record
+`contract-reauthorization-needed` and stop under the contract with no route.
 
 ## Frozen contract
 
-Treat the contract as the complete authority for this run. Freeze its target and
-scope, file permissions, evaluator identity/command/data/split/seed/scoring,
-baseline, budget, KEEP/DISCARD rule, authority, and stop or re-authorization
-conditions before the first candidate.
-
-**Never modify the frozen evaluator**—including its threshold, data, split,
-baseline, command, scoring, or adoption gate—to make a candidate pass. A
-screening metric may rank or make one candidate eligible for expensive Review;
-screening cannot authorize adoption. Only the declared frozen evaluator and
-KEEP rule can do that.
+Treat the contract as the complete authority. **Never modify the frozen
+evaluator**—including threshold, source, data, split, seed, baseline, command,
+scoring, or adoption gate—to make a candidate pass. A screening metric may rank
+or qualify one candidate for expensive Review; screening cannot authorize
+adoption. Only the bound evaluator and KEEP rule can.
 
 Read [the bounded loop reference](references/bounded-experiment-loop.md) only
 when starting a run or recovering a recorded run.
 
 ## One transition
 
-Operate one bounded candidate at a time. Do not batch changes, carry an
-unreviewed candidate forward, or use a failed change as the baseline.
+Operate one bounded candidate at a time:
 
-1. **Research** — Read the frozen contract, current baseline, and prior ledger
-   rows. Propose exactly one falsifiable, in-scope intervention and record its
-   hypothesis, expected effect, allowed files, rollback point, and estimated
-   cost. Stop rather than guessing beyond the contract.
-2. **Development** — Implement only that intervention within the editable
-   scope. Capture a reproducible diff/configuration, command, environment and
-   input provenance. Do not edit forbidden surfaces or the evaluator.
-3. **Review** — First run any declared cheap screening. If it qualifies, run
-   the frozen evaluator against the frozen baseline and apply the declared
-   KEEP/DISCARD rule exactly. A proxy gain alone is a null result for adoption.
-   On DISCARD, restore the candidate workspace to its recorded rollback point.
-4. **Record** — Append an immutable result row to
-   `experiment-ledger.jsonl`, for every accepted and rejected attempt, before
-   proposing another candidate. Update the best reproducible candidate only
-   after a KEEP decision.
+1. **Research** — Read the contract and prior ledger rows. Record one
+   falsifiable in-scope intervention, expected effect, allowed files, rollback
+   point, and estimated cost.
+2. **Development** — Implement only that intervention. Capture reproducible
+   diff/configuration, command, environment, and input provenance.
+3. **Review** — Run declared screening if any, then the frozen evaluator. Apply
+   KEEP/DISCARD exactly. Restore the rollback point after DISCARD.
+4. **Record** — Append an immutable `experiment-ledger.jsonl` row for every
+   accepted, rejected, invalid, or stopped attempt before another candidate.
+
+Never batch changes, carry an unreviewed candidate, or use a failed change as
+the baseline.
 
 ## Candidate Package
 
-Produce exactly one `autoresearch/candidate-package/` for the run. It contains:
+Produce one `autoresearch/candidate-package/`. Its compact
+`autoresearch/candidate-package/manifest.json` links the frozen Experiment
+Contract, evaluator identity/readiness evidence, accepted candidate (or its
+explicit absence), reproducible source/configuration, outcome summary,
+experiment ledger, and evidence/log index. Keep raw evaluator/screening outputs
+or stable references and all accepted/rejected ledger rows.
 
-- the accepted best Candidate (or an explicit absence of an accepted Candidate),
-  reproducible source/configuration, provenance, baseline comparison, and
-  reproduction command;
-- `experiment-ledger.jsonl` with complete accepted and rejected attempts;
-- raw evaluator and screening logs or stable references to them; and
-- an honest outcome: `accepted`, `no-improvement`, `budget-exhausted`, or
-  `contract-reauthorization-needed`, plus the stop reason and remaining budget.
+Record one honest outcome: `accepted`, `no-improvement`, `budget-exhausted`, or
+`contract-reauthorization-needed`, with stop reason and remaining budget. Only a
+manifest with an `accepted` candidate is the sole compact handoff to Evidence
+(`autoresearch-evidence`). A no-candidate outcome is terminal; artifact presence
+alone never advances it.
 
-Do not replace rejected evidence with a summary or delete discarded artifacts
-needed to reproduce the decision. Candidate Package is this skill's unique
-product; do not create a Validated Research Package, Claim Boundary, or paper.
+Do not create a Validated Research Package, Claim Boundary, or paper.
 
 ## Stop
 
-Stop immediately and record the current state when the contract's success
-threshold or stopping rule is met, the budget is exhausted, no permissible next
-candidate remains, evaluator execution is invalid, or re-authorization is
-needed. `no-improvement` and `budget-exhausted` are successful honest outcomes,
-not invitations to relax the evaluator or invent a new metric.
+Stop when success or another contract rule is met, budget is exhausted, no
+permissible candidate remains, reauthorization is needed, or evaluator execution
+becomes invalid. `no-improvement` and `budget-exhausted` are honest terminal
+outcomes, not permission to weaken measurement. Any evaluator integrity or
+readiness failure must preserve the record and return to Adapter; do not repair
+or reclassify it here.
 
-Before handoff, ensure the selected best candidate (if any) still reproduces
-with the frozen evaluator and that every attempted transition has a ledger row.
-Route the frozen Candidate Package to Evidence for external validation; do not
-claim external transfer, SOTA, or scientific proof from private development
-results.
+Before an accepted handoff, reproduce the best candidate with the frozen
+evaluator and ensure every transition has a ledger row. Experiment results are
+private development evidence, not external transfer or scientific proof.
 
 ## Boundaries
 
-Do not alter the Research Brief, invent or repair an evaluator, redefine
+Do not alter the Research Brief, invent/repair/classify an evaluator, redefine
 contract authority, edit evaluator assets, approve an out-of-scope candidate,
-conduct final evidence review, or write/optimize a paper. Do not import or run
-legacy MVP, Watchdog, repository-wide controller, or other supervisory runtime
-as a requirement for this loop. The four states above are the complete
-Experiment lifecycle.
+conduct final evidence review, or write a paper. The four states above are the
+complete Experiment lifecycle.

@@ -1,109 +1,103 @@
 ---
 name: autoresearch-paper
-description: Use when a frozen Validated Research Package and Claim Boundary must become a submission-ready scientific manuscript without reopening research.
+description: Use when a valid frozen Validated Research Package manifest and venue constraints must become a submission-ready scientific manuscript without reopening research.
 ---
 
 # Auto-Research Paper
 
 ## Core contract
 
-Turn one frozen `validated-research-package/` into exactly one
-`manuscript-package/`. Work fully autonomous inside the package's Claim
-Boundary. Treat its methods, evaluator, evidence, and claim statuses as fixed;
-paper production may explain and present them but cannot create new research.
+Turn one valid frozen `validated-research-package/` into exactly one
+`manuscript-package/`. Work fully autonomous inside its exact Claim Boundary.
+Methods, evaluator, evidence, and claim statuses are fixed; paper production may
+explain and present them but cannot create research.
 
-Use only these delivery mechanisms: Literature, Structure, grounded Writing,
-Figures/Tables, Compilation, and Peer Review. Do not import a legacy
-supervisory runtime or compatibility workflow.
+Use only Literature, Structure, grounded Writing, Figures/Tables, Compilation,
+and Peer Review. Do not import a supervisory or compatibility workflow.
 
 ## Inputs
 
-Require:
+Accept `validated-research-package/manifest.json` as the sole prior-stage
+handoff, plus target venue, format, length, anonymity, and submission constraints.
+Read the compact manifest first, then open only linked Claim Boundary, assets,
+provenance, code/config/result references, and citation sources needed for the
+current manuscript task. Do not load the entire prior package by default.
 
-- the complete `validated-research-package/`, including its manifest, Claim
-  Boundary, frozen code/config/result references, and provenance;
-- project assets and citation sources referenced by that package; and
-- the target venue, format, length, anonymity, and submission constraints.
-
-Read [asset intake](references/paper/asset-intake.md) at entry. Validate the
-manifest and classify an unusable input as either `missing-frozen-evidence` or
-`research-frame-invalid`; never silently fill a research gap.
+Read [asset intake](references/paper/asset-intake.md) at entry. Never silently
+fill a research gap.
 
 ## Asset gate
 
-Build a traceability map from every manuscript claim, number, figure, table,
-and citation to the frozen package or a verified literature source. Preserve
-the Claim Boundary's supported, qualified, unsupported, and
-insufficient-evidence distinctions. Narrow or omit unsupported prose; do not
-promote it through rhetoric.
+Verify that the manifest and every Claim Boundary row use exactly
+`supported|qualified|unsupported`. Refuse any package whose manifest or Claim
+Boundary contains `insufficient-evidence`: emit `invalid-validated-package`, do
+not begin manuscript production, do not create `manuscript-package/`, and do not
+consume the invalid package as research authority.
 
-Proceed without routine outline, draft, figure, or format approval when the
-research frame remains valid. Missing frozen artifacts do not authorize new
-research: record `missing-frozen-evidence`, state the affected deliverable,
-and continue only with claims and artifacts the frozen package supports.
+For a valid package, build traceability from every manuscript claim, number,
+figure, table, and citation to a manifest-linked frozen artifact or verified
+literature source. Preserve status, scope, and uncertainty. Narrow or omit
+unsupported prose; never promote it rhetorically.
+
+Proceed without routine outline, draft, figure, or format approval while the
+research frame remains valid. Report a missing manifest-linked frozen asset as
+`missing-frozen-evidence`; continue only where the valid package still supports
+the deliverable and never run research to repair it.
 
 ## Autonomous production loop
 
-Read [the production loop](references/paper/production-loop.md) before drafting.
-Iterate autonomously through:
+Read [the production loop](references/paper/production-loop.md) before drafting,
+then iterate autonomously:
 
-1. **Literature** — verify citations and position the frozen contribution
-   without reopening an open-ended novelty hunt.
-2. **Structure** — map the Claim Boundary and venue requirements into a complete
-   outline and evidence-backed argument.
-3. **Grounded Writing** — draft each claim, limitation, method statement, and
-   result from the traceability map.
-4. **Figures/Tables** — derive presentation artifacts only from frozen
-   deterministic tasks or existing data.
-5. **Compilation** — build the target format, resolve references, and inspect
-   the rendered manuscript.
-6. **Peer Review** — audit scientific and submission quality, then route every
-   finding back to the responsible internal step until clean.
-
-Keep working through this loop without asking for routine approval.
+1. **Literature** — verify citations and position only frozen contributions.
+2. **Structure** — map the Claim Boundary and venue rules into the argument.
+3. **Grounded Writing** — trace every claim, limitation, method, and result.
+4. **Figures/Tables** — derive presentation only from frozen deterministic tasks
+   or existing data.
+5. **Compilation** — build, resolve references, and inspect the rendered output.
+6. **Peer Review** — route findings to the responsible internal step and repeat.
 
 ## Allowed completion work
 
-Rerun frozen deterministic tasks exactly as recorded to recover or verify an
-artifact. Compute statistics, plots, or tables from existing data when the
-transformation is reproducible, disclosed, and cannot change the research
-decision or Claim Boundary. Verify citation metadata and add literature needed
-to explain or position already-frozen claims.
+Rerun a frozen deterministic task exactly as recorded to recover/verify an
+artifact. Compute reproducible disclosed statistics, plots, or tables from
+existing data only when they cannot change the research decision or Claim
+Boundary. Verify citation metadata and add literature that explains frozen
+claims.
 
 Refuse a new seed, new ablation, or new experiment whose result could change a
-claim. Do not change the method, evaluator, metric, data/split, comparison set,
-or acceptance decision. Do not satisfy survey quotas or expand an unresolved
-literature search. Do not hide new research inside writing, analysis, figure
-polish, or reviewer response.
+claim. Do not change method, evaluator, metric, data/split, comparisons, or the
+acceptance decision. Do not hide new research inside writing, analysis, figures,
+or reviewer response.
 
 ## Release gate
 
-Read [review and packaging](references/paper/review-and-packaging.md) before
-release. Require clean scientific-consistency, claim-boundary, citation,
-numerical, format, and visual reviews. Route a failed check back to Literature,
-Structure, grounded Writing, Figures/Tables, or Compilation and repeat review.
+Read [review and packaging](references/paper/review-and-packaging.md). Require
+clean claim-boundary, scientific-consistency, citation, numerical, format, and
+visual reviews. Route a failed check to an internal production step and repeat.
 
-Release one `manuscript-package/` containing the editable manuscript source,
-compiled submission artifact, bibliography, figures/tables, traceability and
-review records, venue-required supporting files, and a package manifest. Mark
-any unresolved frozen-evidence limitation explicitly; never disguise it as a
-completed result.
+Release `manuscript-package/` with editable source, compiled submission,
+bibliography, figures/tables, traceability and review records, venue files, and
+a compact manifest. Never disguise a frozen-evidence limitation.
 
 ## Stop
 
-Use `research-frame-invalid` only when the supplied Claim Boundary, method,
-evaluator, or evidence relationships are internally incompatible such that
-honest manuscript production would require reframing the research. Pause only
-for this outcome and obtain human confirmation before routing upstream to
-Evidence or Experiment. Do not start that upstream work from this skill.
+Emit `research-frame-invalid-confirmation-pending` only when valid-package
+relationships are internally incompatible and honest production would require
+reframing. Pause for human confirmation before routing upstream to
+`autoresearch-evidence` or `autoresearch-experiment`; never start that work here.
+Without confirmation, there is no route. After confirmation, emit the matching
+`research-frame-invalid-confirmed-evidence` or
+`research-frame-invalid-confirmed-experiment` status. This human-confirmed route
+is one of the two scientific loops.
+The confirmation request must preserve the candidate manifest and Experiment
+Contract references already linked by the validated manifest so the confirmed
+target receives its normal compact entry artifact.
 
-For `missing-frozen-evidence`, report the exact absent or invalid reference and
-its manuscript impact. Do not request routine approval and do not manufacture,
-rerun, or broaden research to repair it.
+For `missing-frozen-evidence` or `invalid-validated-package`, report the exact
+failure and impact without manufacturing or broadening research.
 
 ## Boundaries
 
-Own paper production only. Do not discover or optimize a method, alter an
-evaluator, run claim-changing research, revalidate scientific claims, or widen
-the Claim Boundary. The frozen package is the scientific authority; the
-manuscript-package is this skill's sole product.
+Own paper production only. Do not discover/optimize a method, alter an evaluator,
+run claim-changing research, revalidate claims, or widen the Claim Boundary.

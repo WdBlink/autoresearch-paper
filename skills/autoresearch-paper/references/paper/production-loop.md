@@ -1,7 +1,7 @@
 # Autonomous paper production loop
 
-Run all stages autonomously inside the frozen Validated Research Package and
-Claim Boundary. Maintain a traceability ledger throughout.
+Run all stages autonomously only after the compact manifest proves a valid
+three-status frozen Claim Boundary. Maintain a traceability ledger throughout.
 
 ## Literature
 
@@ -15,7 +15,7 @@ claim from later work.
 
 Translate venue requirements and the Claim Boundary into an outline. Assign
 each scientific statement to supporting evidence and each limitation to the
-relevant scope. Make negative, qualified, and insufficient evidence visible.
+relevant scope. Make negative and qualified evidence visible.
 Order the argument for comprehension, not to conceal contrary results.
 
 ## Grounded Writing

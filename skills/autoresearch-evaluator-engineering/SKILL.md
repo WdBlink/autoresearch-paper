@@ -1,62 +1,65 @@
 ---
 name: autoresearch-evaluator-engineering
-description: Use when the Adapter classified a repository evaluator as partial or missing and a reproducible evaluator must be built and validated before an Experiment Contract can exist.
+description: Use when Adapter supplied a compact evaluator plan for a partial or missing evaluator that must be built and validated before Adapter can reconsider readiness.
 ---
 
 # Auto-Research Evaluator Engineering
 
 ## Entry condition
 
-Enter only after Adapter has classified the evaluator as `partial` or `missing`
-and supplied its evaluator plan. Do not enter for `ready`. This capability builds
-measurement only; a successful handoff must **return to Adapter** for readiness
-reclassification and final Experiment Contract creation.
+Enter only after Adapter classified the evaluator `partial` or `missing` and
+issued its evaluator plan. This capability builds measurement only. Success must
+return to Adapter (`karpathy-autoresearch-adapter`) for reclassification and a
+possible final Experiment Contract.
 
 ## Inputs
 
-Read the frozen Research Brief, partial Experiment Contract if present, evaluator
-plan, repository evidence, available fixtures/data, and known measurement risks.
-Preserve the Research Brief's evaluation requirements; identify any absent ground
-truth, baseline, data access, or decision rule instead of inventing them.
+Use `autoresearch/evaluator_plan.md` as the sole prior-stage handoff. Read only
+that compact plan and the necessary project files it links: evaluator assets,
+fixtures/data, runtime dependencies, repository constraints, and measurement
+risks. Do not request or load a Research Brief or any Experiment Contract, and
+do not load the Adapter conversation.
 
 ## Build and validate
 
-Define and implement the smallest credible evaluator without changing a candidate:
+Define and implement the smallest credible evaluator without changing a
+candidate:
 
 1. Specify metric semantics, direction, aggregation, comparison baseline, and
    pass/fail or KEEP/DISCARD interpretation.
-2. Fix versioned data, splits, seeds, environment, and evaluator command so runs
-   are repeatable. Record all inputs and runtime dependencies.
-3. Add fixtures with known outcomes and check the evaluator produces those
-   outcomes. Test that meaningful better/worse or valid/invalid cases are
-   discriminative rather than merely executable.
-4. Run repeatability checks and characterize cost and runtime. Investigate unstable
-   output, leakage, missing provenance, or unbounded cost before proceeding.
-5. Keep validation isolated from candidate edits: evaluator assets and validation
-   may change, but the candidate, its parameters, and its implementation must not.
-   Never optimize the candidate or launch an Experiment.
+2. Fix versioned data, splits, seeds, environment, and the evaluator command.
+3. Add fixtures with known outcomes; check meaningful better/worse or
+   valid/invalid cases for discrimination, not mere executability.
+4. Run enough repeatability trials for the planned budget and characterize cost,
+   runtime, variance, leakage, and limitations.
+5. Demonstrate candidate-edit isolation: evaluator assets may change here, but
+   candidate edits cannot alter evaluation behavior.
+
+Never optimize the candidate or launch an Experiment.
 
 ## Evaluator Package
 
-On validation, produce one `autoresearch/evaluator-package/` containing the
-evaluator command, metric contract, fixed data/split and environment record,
-fixtures and known outcomes, discrimination and repeatability results, cost/runtime
-characterization, a validation report, and known limitations. State exactly what
-the evaluator can and cannot conclude. Return to Adapter with the package path and
-evidence needed to reclassify the evaluator; do not create or execute an Experiment
-Contract here.
+On validation, produce `autoresearch/evaluator-package/` with the compact
+`autoresearch/evaluator-package/manifest.json`. The manifest links the evaluator
+command/version, metric contract, fixed data/split and environment, known-outcome
+fixtures, discrimination evidence, repeatability evidence, candidate-edit
+isolation evidence, cost/runtime report, validation summary, and known
+limitations. It states what the evaluator can and cannot conclude.
+
+Then return to Adapter with only that compact manifest as the prior-stage handoff;
+Adapter opens linked evidence as needed and owns readiness reclassification.
+Never create or execute an Experiment Contract here.
 
 ## Stop
 
-Emit `evaluator-not-validatable` and stop if credible metric semantics, fixed data
-or splits, a runnable evaluator command, known-outcome fixtures, discriminative
-behavior, repeatable results, isolated candidate edits, or meaningful limitations
-cannot be established. Explain the evidence gap and preserve partial work without
-claiming readiness.
+Emit `evaluator-not-validatable` and stop with no route if credible semantics,
+fixed inputs/splits, a runnable command, known-outcome and discrimination checks,
+adequate repeatability, candidate-edit isolation, or meaningful limitations
+cannot be established. Preserve partial work without claiming readiness.
 
 ## Boundaries
 
-Do not perform discovery, alter the Research Brief, set stage-wide human policy,
-adapt the repository beyond evaluator assets, optimize or edit a candidate, launch
-an Experiment, or validate research claims. This capability only constructs and
-validates evaluator engineering evidence, then returns control to Adapter.
+Do not perform discovery, alter research framing, set stage-wide human policy,
+adapt beyond evaluator assets, optimize a candidate, launch an Experiment, or
+validate research claims. Construct evaluator evidence, return control to
+Adapter, and stop.

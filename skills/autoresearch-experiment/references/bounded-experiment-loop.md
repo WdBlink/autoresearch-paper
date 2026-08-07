@@ -36,8 +36,10 @@ Each iteration is one candidate and exactly this sequence:
 
 The evaluator is immutable in this decision path. Never alter evaluator source,
 thresholds, data, split, seed, baseline, command, metric, or gate to rescue a
-candidate. If evaluator repair or a changed rule is warranted, preserve the
-current record and request contract re-authorization outside this loop.
+candidate. If evaluator integrity, isolation, readiness evidence, or execution
+becomes invalid, preserve the current record, emit `experiment-evaluator-invalid`,
+and return to Adapter for its sole readiness classification. A non-evaluator
+contract change follows the frozen reauthorization rule and stops with no route.
 
 ## Ledger row
 
@@ -58,11 +60,17 @@ Rows for rejected, null, invalid, and accepted candidates are equally required.
 Do not overwrite history, erase a proxy failure, or represent a proxy gain as a
 KEEP decision.
 
+At run close, write `autoresearch/candidate-package/manifest.json` as the compact
+index to the contract, evaluator evidence, accepted candidate or explicit
+absence, outcome summary, ledger, and evidence/log inventory. A retained
+accepted candidate uses outcome `accepted` even when a budget stop ends further
+search; `budget-exhausted` is terminal when no candidate was accepted.
+
 ## Development evidence is not external validation
 
 The frozen evaluator decides only what the contract permits in its private
 development setting. It can select a reproducible candidate, but it cannot by
 itself establish external generalization, scientific novelty, SOTA, or the final
-claim scope. Preserve the complete Candidate Package and send it to the Evidence
-stage for independent external validation; do not add that final-review duty to
-this Experiment loop.
+claim scope. For an accepted candidate, hand Evidence only the Candidate Package
+manifest; Evidence opens the claim-needed links instead of loading the complete
+package by default. Do not add final scientific validation to this loop.

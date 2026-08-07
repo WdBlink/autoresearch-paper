@@ -158,8 +158,11 @@ git commit -m "test: capture modular skill baselines"
 - Create: `skills/autoresearch-workflow/references/artifact-handoffs.md`
 
 **Interfaces:**
-- Consumes: explicit entry request or one compact handoff containing status plus artifact references.
-- Produces: one route decision with `next_skill`, `reason`, `input_artifact`, and `resume_artifact`.
+- Consumes: an explicit entry request or one exact four-field compact handoff;
+  status is the `status=<token>;` prefix in `reason`.
+- Produces: exactly `next_skill`, `reason`, `input_artifact`, and
+  `resume_artifact`; literal `next_skill: none` represents terminal,
+  confirmation-pending, refusal, and no-route states.
 
 - [ ] **Step 1: Write the failing Workflow contract test**
 
@@ -202,29 +205,37 @@ python3 /Users/wdblink/.codex/skills/.system/skill-creator/scripts/init_skill.py
 
 - [ ] **Step 4: Replace the generated template with the minimal router**
 
-Write `SKILL.md` with these sections in order: `Core contract`, `Input`, `Routing`, `Handoff`, `Stop`, `Boundaries`. The routing table is exactly:
+Write `SKILL.md` with these sections in order: `Core contract`, `Input`,
+`Routing`, `Handoff`, `Stop`, `Boundaries`. Put the complete ordered route matrix
+in `references/artifact-handoffs.md` and test it with literal table-driven
+fixtures. Negative and terminal outcomes precede artifact fallthrough. The
+matrix must cover:
 
-| Observable state | Route |
-|---|---|
-| No Research Brief | `autoresearch-discovery` |
-| Research Brief, no Experiment Contract | `karpathy-autoresearch-adapter` |
-| Evaluator `partial` or `missing` | `autoresearch-evaluator-engineering`, then Adapter reclassification |
-| Frozen Experiment Contract, no Candidate Package | `autoresearch-experiment` |
-| Candidate Package, no Validated Research Package | `autoresearch-evidence` |
-| Validated Research Package with Claim Boundary | `autoresearch-paper` |
-| Evidence says `insufficient-evidence` | `autoresearch-experiment` |
-| Paper says `research-frame-invalid` | wait for human confirmation, then Evidence or Experiment |
+- terminal/no-route: `no-testable-opportunity`,
+  `evaluator-not-validatable`, `no-improvement`, `budget-exhausted`,
+  `contract-reauthorization-needed`, no accepted candidate, missing input,
+  invalid validated package, and manuscript completion;
+- Paper `research-frame-invalid-confirmation-pending` -> `none`, plus distinct
+  `research-frame-invalid-confirmed-evidence` and
+  `research-frame-invalid-confirmed-experiment` tokens;
+- Evidence `insufficient-evidence` -> Experiment;
+- Evaluator Package -> Adapter and Experiment evaluator invalidity -> Adapter;
+- Adapter `partial|missing` -> Evaluator Engineering;
+- initial/forward artifact states -> Discovery, Adapter, Experiment, Evidence,
+  or Paper as applicable.
 
 The skill emits only:
 
 ```yaml
 next_skill: karpathy-autoresearch-adapter
-reason: Research Brief exists and no Experiment Contract exists.
+reason: status=research-brief-no-experiment-contract; Research Brief exists and no Experiment Contract exists.
 input_artifact: research-brief.md
 resume_artifact: autoresearch/experiment-contract.md
 ```
 
-`references/artifact-handoffs.md` defines the seven primary products, the compact handoff fields, direct-entry behavior, and the same two scientific return loops. It contains no domain procedure.
+`references/artifact-handoffs.md` defines the six canonical products, compact
+fields, direct-entry behavior, conditional operational evaluator detour, and
+exactly two scientific loops. It contains no domain procedure.
 
 - [ ] **Step 5: Verify Workflow GREEN and validate structure**
 
@@ -242,7 +253,7 @@ Expected: both PASS.
 Fresh-agent prompt:
 
 ```text
-Use $autoresearch-workflow at skills/autoresearch-workflow. A project has a complete research-brief.md, no experiment-contract.md, and a repository with tests. The user asks you to carry it toward a paper. Return the next handoff.
+Use $autoresearch-workflow at skills/autoresearch-workflow. A project has a complete research-brief.md, no autoresearch/experiment-contract.md, and a repository with tests. The user asks you to carry it toward a paper. Return the next handoff.
 ```
 
 Pass criteria: returns only `karpathy-autoresearch-adapter` plus compact artifact references; does not inspect repository internals, construct an evaluator, run experiments, or load another skill.
@@ -282,7 +293,7 @@ class DiscoveryContractTests(unittest.TestCase):
             "Evaluation requirements", "no-testable-opportunity",
         ):
             self.assertIn(token, body)
-        for forbidden in ("experiment-contract.md", "KEEP/DISCARD", "manuscript-package"):
+        for forbidden in ("autoresearch/experiment-contract.md", "KEEP/DISCARD", "manuscript-package/"):
             self.assertNotIn(forbidden, body)
 ```
 
@@ -345,7 +356,9 @@ git commit -m "feat: add autoresearch discovery skill"
 
 **Interfaces:**
 - Consumes: repository path, frozen `research-brief.md`, constraints, known evaluator command, and separate apply authorization.
-- Produces: one `autoresearch/experiment-contract.md`; `adaptation-plan.md` is an interim preview, not the lifecycle handoff.
+- Produces: one `autoresearch/experiment-contract.md` only after readiness;
+  `autoresearch/adaptation-plan.md` is an approved design record and never the
+  lifecycle handoff.
 
 - [ ] **Step 1: Write the failing Adapter contract test**
 
@@ -359,7 +372,8 @@ class AdapterContractTests(unittest.TestCase):
     def test_adapter_maps_brief_to_repository_execution_contract(self):
         body = assert_compact_skill(self, "karpathy-autoresearch-adapter")
         for token in (
-            "research-brief.md", "adaptation-plan.md", "experiment-contract.md",
+            "research-brief.md", "autoresearch/adaptation-plan.md",
+            "autoresearch/experiment-contract.md",
             "ready", "partial", "missing", "explicit apply authorization",
             "return to Adapter", "fresh-agent",
         ):
@@ -396,6 +410,9 @@ Use `/Users/wdblink/.codex/skills/karpathy-autoresearch-adapter/SKILL.md` as the
 - make `autoresearch/experiment-contract.md` the unique ready-state handoff;
 - retain plan-first behavior and explicit apply authorization;
 - retain exact `ready|partial|missing` evaluator classification;
+- make Adapter the sole evaluator-readiness classifier; `ready` requires fixed
+  inputs/splits, candidate-edit isolation, known-outcome/discrimination checks,
+  and adequate repeatability, not merely a deterministic command;
 - for `partial|missing`, create at most `autoresearch/evaluator_plan.md` after authorization, then stop;
 - after Evaluator Engineering succeeds, return to Adapter to reclassify and freeze the final contract;
 - never run Experiment, validate final claims, or write Paper.
@@ -437,8 +454,11 @@ git commit -m "feat: vendor repository autoresearch adapter"
 - Create: `skills/autoresearch-evaluator-engineering/agents/openai.yaml`
 
 **Interfaces:**
-- Consumes: Research Brief, partial Experiment Contract, evaluator plan, fixtures/data, and known measurement risks.
-- Produces: one `autoresearch/evaluator-package/` and returns to Adapter.
+- Consumes: only `autoresearch/evaluator_plan.md` as the compact prior handoff,
+  plus necessary project files it links; never a Research Brief or Experiment
+  Contract.
+- Produces: `autoresearch/evaluator-package/manifest.json` and returns it to
+  Adapter.
 
 - [ ] **Step 1: Write the failing Evaluator Engineering test**
 
@@ -452,7 +472,7 @@ class EvaluatorEngineeringContractTests(unittest.TestCase):
     def test_evaluator_is_conditional_isolated_and_returns_to_adapter(self):
         body = assert_compact_skill(self, "autoresearch-evaluator-engineering")
         for token in (
-            "partial", "missing", "evaluator-package", "discriminative",
+            "partial", "missing", "autoresearch/evaluator-package/", "discriminative",
             "repeatable", "isolated", "known limitations",
             "evaluator-not-validatable", "return to Adapter",
         ):
@@ -475,7 +495,7 @@ python3 /Users/wdblink/.codex/skills/.system/skill-creator/scripts/init_skill.py
   autoresearch-evaluator-engineering --path skills \
   --interface display_name="Auto-Research Evaluator Engineering" \
   --interface short_description="Build a missing reproducible research evaluator" \
-  --interface default_prompt='Use $autoresearch-evaluator-engineering to build and validate the evaluator this Experiment Contract lacks.'
+  --interface default_prompt='Use $autoresearch-evaluator-engineering to implement and validate the supplied Adapter evaluator plan.'
 ```
 
 - [ ] **Step 4: Write the capability skill**
@@ -518,8 +538,12 @@ git commit -m "feat: add conditional evaluator engineering skill"
 - Create: `skills/autoresearch-experiment/references/bounded-experiment-loop.md`
 
 **Interfaces:**
-- Consumes: frozen Experiment Contract and ready, isolated evaluator.
-- Produces: one `autoresearch/candidate-package/` containing the Candidate and `experiment-ledger.jsonl`.
+- Consumes: only an Adapter-issued frozen
+  `autoresearch/experiment-contract.md`, which binds the ready isolated
+  evaluator and Research Brief.
+- Produces: `autoresearch/candidate-package/manifest.json`, linking its contract,
+  evaluator, accepted candidate or absence, outcome summary, ledger, and
+  evidence/log index.
 
 - [ ] **Step 1: Write the failing Experiment test**
 
@@ -534,7 +558,7 @@ class ExperimentContractTests(unittest.TestCase):
         body = assert_compact_skill(self, "autoresearch-experiment")
         for token in (
             "Research", "Development", "Review", "Record",
-            "candidate-package", "experiment-ledger.jsonl",
+            "autoresearch/candidate-package/", "experiment-ledger.jsonl",
             "no-improvement", "budget-exhausted",
             "contract-reauthorization-needed",
         ):
@@ -602,8 +626,11 @@ git commit -m "feat: add bounded autoresearch experiment skill"
 - Create: `skills/autoresearch-evidence/agents/openai.yaml`
 
 **Interfaces:**
-- Consumes: frozen Candidate Package, Experiment Contract, evaluator, relevant baselines, and intended claim scope.
-- Produces: one `validated-research-package/` containing `manifest.json` and `claim-boundary.md`.
+- Consumes: `autoresearch/candidate-package/manifest.json` as the sole compact
+  prior handoff and opens only claim-needed linked files.
+- Produces: `validated-research-package/manifest.json` and
+  `claim-boundary.md` only when every row is
+  `supported|qualified|unsupported`.
 
 - [ ] **Step 1: Write the failing Evidence contract test**
 
@@ -617,9 +644,9 @@ class EvidenceContractTests(unittest.TestCase):
     def test_evidence_freezes_a_semantic_claim_boundary(self):
         body = assert_compact_skill(self, "autoresearch-evidence")
         for token in (
-            "validated-research-package", "claim-boundary.md",
+            "validated-research-package/", "claim-boundary.md",
             "supporting evidence", "applicable scope", "uncertainty",
-            "supported", "qualified", "unsupported", "insufficient-evidence",
+            "supported", "qualified", "unsupported",
         ):
             self.assertIn(token, body)
         self.assertIn("Never change the candidate method", body)
@@ -656,7 +683,10 @@ The required table is:
 | Method A reduces median latency versus B0 | runs A-01 through A-05 and table 2 | dataset A on frozen evaluator v1 | 95% CI excludes zero; no evidence on dataset C | qualified |
 ```
 
-If required evidence is absent or contradictory, emit `insufficient-evidence` and return to Experiment. Do not automatically route to Discovery and do not draft the manuscript.
+If required evidence is absent, invalid, unreproducible, or contradictory, emit
+`insufficient-evidence` in `autoresearch/evidence-request.md`, return only to
+Experiment, and do not create/freeze a Validated Research Package. It is never a
+Claim Boundary row status and Paper must refuse any package containing it.
 
 - [ ] **Step 5: Verify GREEN and validate structure**
 
@@ -713,9 +743,9 @@ class PaperContractTests(unittest.TestCase):
     def test_paper_is_autonomous_inside_frozen_evidence(self):
         body = assert_compact_skill(self, "autoresearch-paper")
         for token in (
-            "validated-research-package", "Claim Boundary", "manuscript-package",
+            "validated-research-package/", "Claim Boundary", "manuscript-package/",
             "fully autonomous", "frozen deterministic", "existing data",
-            "new seed", "new ablation", "research-frame-invalid",
+            "new seed", "new ablation", "research-frame-invalid-confirmation-pending",
             "human confirmation",
         ):
             self.assertIn(token, body)
@@ -744,11 +774,14 @@ Expected: exit 0 before editing the root skill.
 
 The active `SKILL.md` contains `Core contract`, `Inputs`, `Asset gate`, `Autonomous production loop`, `Allowed completion work`, `Release gate`, `Stop`, and `Boundaries`. It links directly to the three `references/paper/*.md` files and no legacy reference.
 
-- `asset-intake.md`: verify manifest, Claim Boundary, code/config/result references, venue assets, and citation sources; distinguish `missing-frozen-evidence` from `research-frame-invalid`.
+- `asset-intake.md`: verify manifest, Claim Boundary, code/config/result references, venue assets, and citation sources; distinguish `missing-frozen-evidence` from `research-frame-invalid-confirmation-pending`.
 - `production-loop.md`: Literature, Structure, grounded drafting, Figures/Tables, Compilation. Literature supports positioning and citation verification; it does not reopen novelty search. Figures/tables derive from frozen tasks or existing data.
 - `review-and-packaging.md`: scientific consistency, claim-boundary, citation, numerical, format, and visual review; route findings back to the relevant internal production task until clean.
 
-The skill proceeds without routine outline/draft/figure/format approval. It refuses a new seed, new ablation, or new experiment whose result could change a claim. Only `research-frame-invalid` pauses for human confirmation before an upstream route.
+The skill proceeds without routine outline/draft/figure/format approval. It
+refuses a new seed, new ablation, or new experiment whose result could change a
+claim. `research-frame-invalid-confirmation-pending` uses no route; only the
+target-specific human-confirmed Evidence or Experiment token resumes upstream.
 
 - [ ] **Step 5: Generate Paper UI metadata**
 
@@ -843,11 +876,11 @@ It verifies these are the exact top-level `skills/*/SKILL.md` names, all local M
 ```python
 PRODUCTS = {
     "autoresearch-discovery": "research-brief.md",
-    "karpathy-autoresearch-adapter": "experiment-contract.md",
-    "autoresearch-evaluator-engineering": "evaluator-package",
-    "autoresearch-experiment": "candidate-package",
-    "autoresearch-evidence": "validated-research-package",
-    "autoresearch-paper": "manuscript-package",
+    "karpathy-autoresearch-adapter": "autoresearch/experiment-contract.md",
+    "autoresearch-evaluator-engineering": "autoresearch/evaluator-package/",
+    "autoresearch-experiment": "autoresearch/candidate-package/",
+    "autoresearch-evidence": "validated-research-package/",
+    "autoresearch-paper": "manuscript-package/",
 }
 ```
 

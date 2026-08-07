@@ -1,75 +1,78 @@
 ---
 name: karpathy-autoresearch-adapter
-description: Use when mapping a repository and frozen Research Brief into a plan-first, repository-specific Experiment Contract.
+description: Use when mapping a repository and frozen Research Brief into a plan-first, repository-specific Experiment Contract or evaluator plan.
 ---
 
 # Karpathy Autoresearch Adapter
 
 ## Core contract
 
-Map the supplied repository, constraints, known evaluator command (if any), and
-frozen `research-brief.md` into the repository-specific execution boundary. The
-Research Brief is research truth: reference it; never copy or redefine the gap,
-contribution, or hypothesis. This stage owns implementation/run/measurement
-design, not discovery or research claims.
+Act as the sole evaluator-readiness classifier. Map the repository, constraints,
+and frozen `research-brief.md` into execution design without redefining the gap,
+contribution, hypothesis, or claims. This stage owns implementation/run/
+measurement design, not evaluator construction, experiments, or science claims.
 
-The only ready-state lifecycle handoff is
-`autoresearch/experiment-contract.md`. An `adaptation-plan.md` is an interim
-preview, never a lifecycle handoff.
+The only ready-state lifecycle product is
+`autoresearch/experiment-contract.md`. `autoresearch/adaptation-plan.md` is an
+approved design record; `autoresearch/evaluator_plan.md` is the compact handoff
+for an evaluator detour. Adapter never emits a partial Experiment Contract.
 
 ## Plan first
 
-Default to read-only inspection. Scan repository evidence: documentation,
-manifests, CI, entry points, tests, benchmarks, data/fixtures, evaluator
-commands, and existing artifacts. State the repository path and cite the frozen
-Research Brief without researching or reframing it.
+Default to read-only repository inspection. Examine documentation, manifests,
+CI, entry points, tests, benchmarks, data/fixtures, evaluator commands, and
+existing artifacts. Cite the frozen Research Brief and repository evidence.
+If `autoresearch/evaluator-package/manifest.json` returns from Evaluator
+Engineering, read that manifest first and open only linked evidence needed for
+reclassification.
 
-Return this plan in chat and stop unless the user provides **explicit apply
-authorization**. The plan must name the future Experiment Contract and include:
-
-- Research Brief reference, repository objective, constraints, and evidence;
-- evaluator status and deterministic-command evidence;
-- immutable judge, baseline, mutable surface, allowed/forbidden files;
-- invocation, score and KEEP/DISCARD rules, runtime artifact and Git discipline;
-- planned output paths and a fresh-agent continuation check.
+Return a plan in chat and stop unless the user gives **explicit apply
+authorization**. The plan names the future product, mutable/forbidden surfaces,
+baseline, candidate isolation, invocation, scoring and KEEP/DISCARD rule,
+resource bounds, output paths, Git discipline, and a fresh-agent check.
 
 ## Evaluator classification
 
-Classify from repository evidence using exactly one status:
+Classify repository evidence using exactly one status:
 
-- `ready`: a deterministic command/test/benchmark compares baseline and
-  candidate outputs with a score or keep/discard result.
-- `partial`: useful checks or metrics exist, but a baseline, data split, score,
-  or acceptance gate is incomplete.
+- `ready`: evidence establishes a runnable deterministic comparison and score or
+  gate, fixed inputs and splits, candidate-edit isolation, discrimination and
+  known-outcome checks, and repeatability adequate for the declared budget.
+- `partial`: some credible measurement exists, but any required ready evidence
+  is absent, weak, unstable, or not yet bound.
 - `missing`: no credible evaluator exists.
 
-Do not fabricate a judge or claim evaluator readiness from README promises.
+A deterministic command alone is insufficient. Missing readiness evidence means
+`partial`, not `ready`. Readiness authorizes bounded development measurement; it
+is not external scientific validity. Do not fabricate a judge or infer readiness
+from documentation promises.
 
 ## Apply only after authorization
 
-With explicit apply authorization, persist the approved plan as
+After explicit apply authorization, persist the approved design as
 `autoresearch/adaptation-plan.md`.
 
-For `ready`, then create exactly one lifecycle handoff:
-`autoresearch/experiment-contract.md`. It must tell a fresh-agent which files
-to read, how to run the immutable baseline and evaluator, how to propose one
-candidate within the mutable surface, the fixed KEEP/DISCARD rule, how to
-restore discards, stop conditions, and runtime outputs that must stay ignored.
-Freeze the Research Brief reference, evaluator command/data/split/scoring/gates,
-and forbidden files; do not create a generic program or runtime implementation.
+For `ready`, create `autoresearch/experiment-contract.md` as the sole compact
+prior-stage handoff to Experiment (`autoresearch-experiment`). It must link the
+frozen `research-brief.md` and frozen evaluator evidence, bind the evaluator
+identity, command, inputs/splits/seeds, scoring, gates and readiness evidence,
+and define target, baseline, mutable/forbidden files, candidate isolation,
+KEEP/DISCARD rule, budget, rollback, stop/reauthorization conditions, and
+runtime outputs. A fresh agent must be able to execute it without loading the
+Adapter conversation or another prior package.
 
-For `partial` or `missing`, after authorization create at most
-`autoresearch/evaluator_plan.md` (as well as the approved adaptation plan), then
-stop. Do not create an Experiment Contract. Route to Evaluator Engineering;
-after it succeeds, **return to Adapter** to reclassify evaluator readiness and
-freeze the final contract.
+For `partial` or `missing`, create at most
+`autoresearch/evaluator_plan.md` plus the approved adaptation plan, then stop.
+The evaluator plan is the sole compact prior-stage handoff to
+`autoresearch-evaluator-engineering`; link only necessary project files, risks,
+and missing readiness evidence. Do not create an Experiment Contract. After an
+Evaluator Package returns, reclassify it here and create a final contract only
+if all `ready` evidence exists.
 
 ## Stop and boundaries
 
-Never redefine the gap, conduct discovery, implement an evaluator, run the research loop,
-run an experiment, validate final claims, gather evidence, or write the paper. Do not mutate
-files in plan-only mode. Do not advance to
-Experiment until a `ready` contract exists and the router hands it off.
-
-Summarize evaluator status, evidence, plan/apply status, files created, and the
-single next owner; then stop.
+Never redefine the gap, conduct discovery, implement an evaluator, run the
+research loop or an experiment, validate final claims, gather evidence, or write
+the paper. Do not mutate in plan-only mode. Do not route to
+`autoresearch-experiment` until an Adapter-issued `ready` contract is frozen;
+otherwise the single next owner is `autoresearch-evaluator-engineering` or none.
