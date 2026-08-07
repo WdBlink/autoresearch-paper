@@ -50,9 +50,10 @@ Record commands, versions, seed assignments, raw outputs or stable references,
 and deviations in the manifest so the result can be checked independently.
 
 Compare each result with every relevant baseline in the stated scope. Distinguish
-replicated effects from noise, failures, regressions, missing coverage, and
-contradictory evidence. Do not use a screening gain or one favorable dataset to
-support a broader claim than the evaluated scope.
+replicated effects from noise, failures, clear regressions that answer the claim,
+missing coverage, and unresolved conflicts among required results. Do not use a
+screening gain or one favorable dataset to support a broader claim than the
+evaluated scope.
 
 ## Claim Boundary
 
@@ -68,10 +69,13 @@ Use only these statuses:
 - `supported` — evidence directly supports the claim throughout its stated scope.
 - `qualified` — evidence supports a narrower, explicitly stated scope or has a
   material limitation.
-- `unsupported` — evidence does not support the claim, including observed
-  regression or contradiction.
+- `unsupported` — clear negative or regression evidence that answers the claim.
 - `insufficient-evidence` — required evidence is absent, invalid, unreproducible,
-  or too incomplete to decide.
+  too incomplete, or internally inconsistent/contradictory and unresolved.
+
+A resolved negative result is `unsupported`, even when it contradicts the
+desired claim. A conflict among required evidence is `insufficient-evidence`
+until further validation resolves it.
 
 The table must state supporting evidence, applicable scope, and uncertainty for
 every status, including negative results. Keep the original claim separate from
@@ -85,9 +89,10 @@ next-stage routing decision.
 ## Stop
 
 Stop after producing the validated-research-package and its complete evidence
-record. When any required evidence is absent or contradictory, use
-`insufficient-evidence`, identify the gap, and return to Experiment. Do not
-automatically route to Discovery and do not draft the manuscript.
+record. For absent required evidence, or unresolved or internally
+inconsistent/contradictory required evidence, use `insufficient-evidence`,
+identify the gap or conflict, and return to Experiment. Do not automatically
+route to Discovery and do not draft the manuscript.
 
 ## Boundaries
 
