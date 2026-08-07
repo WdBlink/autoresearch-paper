@@ -12,13 +12,22 @@ issued its evaluator plan. This capability builds measurement only. Success must
 return to Adapter (`karpathy-autoresearch-adapter`) for reclassification and a
 possible final Experiment Contract.
 
+## Sole handoff modes
+
+| Mode | Sole input artifact |
+| --- | --- |
+| Evaluator plan | `autoresearch/evaluator_plan.md` |
+
 ## Inputs
 
 Use `autoresearch/evaluator_plan.md` as the sole prior-stage handoff. Read only
 that compact plan and the necessary project files it links: evaluator assets,
 fixtures/data, runtime dependencies, repository constraints, and measurement
-risks. Do not request or load a Research Brief or any Experiment Contract, and
-do not load the Adapter conversation.
+risks. The plan carries the frozen evaluation requirements, permitted design
+latitude, and Research Brief identity/hash/reference. Implement those
+requirements without loading or redefining the Brief. Do not request or load a
+Research Brief or any Experiment Contract, and do not load the Adapter
+conversation.
 
 ## Build and validate
 

@@ -4,6 +4,17 @@ Read this reference only when starting a new Experiment run or recovering a
 recorded one. It operationalizes the versioned bounded-exploration loop from
 [XYZ Lab, *Bounded-Exploration AI4AI for System Optimization* (PDF)](https://xyz-lab.ai/blogs/ai4ai-at-scale/assets/bounded-exploration-ai4ai-system-optimization.pdf).
 
+## New run or Evidence resume
+
+Accept exactly one compact handoff mode. A new run receives the Adapter-issued
+`autoresearch/experiment-contract.md`. An Evidence resume receives
+`autoresearch/evidence-request.md`, verifies its exact contract identity/hash,
+candidate manifest, evaluator identity, missing-evidence request, permitted
+scope, and provenance, and then opens the linked frozen contract. The request
+adds no permission. If completing it would cross the contract's mutable surface,
+budget, evaluator, or other authority, record terminal
+`contract-reauthorization-needed` and do not start another iteration.
+
 ## Freeze six bounds before Research
 
 Record these six bounds in the Experiment Contract. A missing or changing bound
@@ -38,7 +49,10 @@ The evaluator is immutable in this decision path. Never alter evaluator source,
 thresholds, data, split, seed, baseline, command, metric, or gate to rescue a
 candidate. If evaluator integrity, isolation, readiness evidence, or execution
 becomes invalid, preserve the current record, emit `experiment-evaluator-invalid`,
-and return to Adapter for its sole readiness classification. A non-evaluator
+write `autoresearch/evaluator-invalid-return.md` binding the stale contract
+identity/hash, evaluator identity and failure evidence, candidate/ledger
+references, and provenance, and return that sole operational artifact to
+Adapter for its readiness reclassification. A non-evaluator
 contract change follows the frozen reauthorization rule and stops with no route.
 
 ## Ledger row

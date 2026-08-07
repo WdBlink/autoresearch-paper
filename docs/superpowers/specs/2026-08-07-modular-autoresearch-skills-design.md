@@ -114,7 +114,7 @@ and one conditional capability skill:
 All seven skills may be installed and independently invoked, but they are never loaded together as one execution context. Each invocation loads only:
 
 1. the current skill;
-2. the sole compact contract or manifest published for that receiving stage;
+2. exactly one compact artifact from a handoff mode published by that receiving stage;
 3. only the necessary project files linked by that handoff.
 
 A project may enter at any stage when it already possesses the required input artifact.
@@ -190,18 +190,28 @@ Human participation for discovery is intentionally stage-local and remains to be
 
 **Purpose:** Translate a frozen Research Brief into a bounded, repeatable Experiment Contract for the current repository.
 
-**Inputs:** Repository, `research-brief.md` or an equivalent frozen research definition, resource constraints, and any known evaluation command.
+**Inputs:** Exactly one operational mode: repository plus `research-brief.md`;
+`autoresearch/evaluator-package/manifest.json` returned for reclassification; or
+`autoresearch/evaluator-invalid-return.md` binding a stale contract, evaluator
+failure evidence, candidate/ledger, and provenance. Resource constraints and a
+known evaluation command may accompany the Research Brief mode.
 
 **Unique product:** `autoresearch/experiment-contract.md`. This is Experiment's
-sole compact prior handoff. It links the frozen `research-brief.md`, frozen
+new-run compact handoff. It links the frozen `research-brief.md`, frozen
 evaluator evidence, editable scope, setup/baseline commands, target metric,
 resource budget, experiment instructions, baseline evidence, and readiness
 classification.
 
 **Stop condition:** A fresh agent can execute an Adapter-issued `ready` contract;
 the evaluator is `partial|missing` and the Adapter emits only an evaluator plan;
-or a referenced required input is absent and routing stops with
-`required-input-missing`.
+repository setup/invocation cannot run and terminates as
+`repository-not-runnable`; the declared baseline cannot be reproduced reliably
+and terminates as `baseline-failed`; or a referenced required input is absent
+and routing stops with `required-input-missing`. Both repository/baseline
+terminal outcomes retain `research-brief.md` and route to literal `none`.
+An already-authorized `autoresearch/adaptation-plan.md` and its failure evidence
+may remain as internal records, but Workflow publishes no automatic resume
+artifact for either terminal state.
 
 **Evaluator readiness:**
 
@@ -210,6 +220,15 @@ or a referenced required input is absent and routing stops with
   and adequate repeatability;
 - `partial`: route to Evaluator Engineering, then return to Adapter for reclassification;
 - `missing`: route to Evaluator Engineering, then return to Adapter for reclassification.
+
+For `partial|missing`, `autoresearch/evaluator_plan.md` carries the Research
+Brief identity/hash/reference, the frozen evaluation requirements, permitted
+evaluator-design latitude, necessary file links, known risks, and missing
+evidence. Evaluator Engineering therefore never loads the Brief. On an
+evaluator-invalid return, Adapter first makes the stale contract ineligible for
+reuse, then reclassifies. It returns a replacement plan in chat and requires
+explicit apply authorization before persisting any replacement plan or contract;
+a partial or missing reclassification takes the evaluator-plan detour.
 
 **Must not do:**
 
@@ -231,7 +250,9 @@ run, and measured in this repository.
 **Purpose:** Create or repair a trustworthy evaluator when the adapter cannot certify one as ready.
 
 **Inputs:** `autoresearch/evaluator_plan.md` as the sole prior handoff plus only
-the necessary project files it links. Evaluator Engineering does not consume a
+the necessary project files it links. The plan itself carries the frozen
+evaluation requirements, permitted design latitude, and Research Brief
+identity/hash/reference. Evaluator Engineering does not load or consume a
 Research Brief, Adapter conversation, or Experiment Contract.
 
 **Unique product:** `autoresearch/evaluator-package/`, whose compact
@@ -255,10 +276,14 @@ After a successful evaluator build, control returns to Adapter so the repository
 
 **Purpose:** Run bounded experimental optimization against a frozen evaluator.
 
-**Inputs:** The Adapter-issued frozen `autoresearch/experiment-contract.md` is
-the sole compact prior handoff. It binds the ready evaluator and Research Brief,
-resource budget, stop/reauthorization conditions, and links necessary project
-files. Experiment never receives an evaluator package directly.
+**Inputs:** Exactly one of two compact modes: the Adapter-issued frozen
+`autoresearch/experiment-contract.md` for a new run, or
+`autoresearch/evidence-request.md` for an Evidence resume. The request binds the
+exact Adapter-issued contract identity/hash, candidate manifest, evaluator,
+missing evidence, permitted scope, and provenance; Experiment opens that linked
+contract and gains no authority from the request. Work outside the contract is
+terminal `contract-reauthorization-needed` and no iteration begins. Experiment
+never receives an evaluator package directly.
 
 **Unique product:** `autoresearch/candidate-package/`, whose compact
 `manifest.json` links the contract, evaluator, accepted candidate or explicit
@@ -276,8 +301,11 @@ absence, outcome summary, `experiment-ledger.jsonl`, and evidence/log index.
 Only an `accepted` manifest advances to Evidence. A budget stop with a retained
 accepted candidate is classified `accepted`; without one, `budget-exhausted` is
 terminal. Every evaluator integrity/readiness problem emits
-`experiment-evaluator-invalid` and returns to Adapter, never directly to
-Evaluator Engineering.
+`experiment-evaluator-invalid`, writes
+`autoresearch/evaluator-invalid-return.md` binding the stale contract,
+evaluator identity and failure evidence, candidate/ledger, and provenance, and
+returns that sole operational artifact to Adapter, never directly to Evaluator
+Engineering.
 
 **Must not do:**
 
@@ -313,9 +341,11 @@ Claim
 
 **Stop condition:** Every Claim Boundary row uses exactly
 `supported|qualified|unsupported`, or Evidence emits `insufficient-evidence` in
-an upstream request to Experiment and does not create/freeze a Validated
-Research Package. `insufficient-evidence` is never a Claim Boundary row status
-or package-manifest status.
+`autoresearch/evidence-request.md` and does not create/freeze a Validated
+Research Package. The compact request binds the exact Adapter-issued Experiment
+Contract identity/hash, Candidate Package manifest and evaluator, missing
+evidence, permitted scope, and provenance. `insufficient-evidence` is never a
+Claim Boundary row status or package-manifest status.
 
 **Allowed work:** Repeat frozen evaluations, run predefined ablations, fill missing seeds, compare declared baselines, and produce analysis needed to interpret results.
 
@@ -346,6 +376,13 @@ current manuscript task.
 `missing-frozen-evidence`; an invalid package is refused; or
 `research-frame-invalid-confirmation-pending` pauses with no route until a human
 selects a target-specific confirmed status.
+
+These outcomes are mutually exclusive. A limitation already disclosed in the
+frozen Claim Boundary is not missing evidence when all required frozen assets
+are present. An absent or invalid asset required by an included claim or venue
+deliverable emits terminal `missing-frozen-evidence`, produces no Manuscript
+Package, and cannot coexist with success. Only all-clean release gates emit
+`manuscript-package-complete`.
 
 **Internal loop:**
 
@@ -405,7 +442,9 @@ The skills communicate through ordinary files and links rather than a large cent
 | Adapter (`ready`) | `autoresearch/experiment-contract.md` | Experiment |
 | Adapter (`partial` or `missing`) | `autoresearch/evaluator_plan.md` | Evaluator Engineering |
 | Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for readiness reclassification |
+| Experiment (`experiment-evaluator-invalid`) | `autoresearch/evaluator-invalid-return.md` | Adapter for stale-contract invalidation and reclassification |
 | Experiment (`accepted`) | `autoresearch/candidate-package/` | Evidence |
+| Evidence (`insufficient-evidence`) | `autoresearch/evidence-request.md` | Experiment resume against the bound frozen contract |
 | Evidence (complete three-status boundary) | `validated-research-package/` | Paper |
 | Paper | `manuscript-package/` | User or future dissemination skill |
 | Workflow | exact four-field handoff, with `next_skill: none` when applicable | One next stage or no route |
@@ -417,6 +456,14 @@ Engineering returns `autoresearch/evaluator-package/manifest.json`, accepted
 Experiment returns `autoresearch/candidate-package/manifest.json`, and Evidence
 returns `validated-research-package/manifest.json`. Consumers open only the
 linked files needed for their task.
+
+The two non-package operational manifests are equally strict. Evidence's
+`autoresearch/evidence-request.md` is Experiment's sole resume mode and binds
+the exact contract identity/hash, candidate manifest, evaluator, missing
+evidence, permitted scope, and provenance. Experiment's
+`autoresearch/evaluator-invalid-return.md` is Adapter's sole invalidity-return
+mode and binds the stale contract, evaluator identity and failure evidence,
+candidate/ledger, and provenance. Neither artifact grants new authority.
 
 The evaluator path is a conditional capability detour: Adapter classifies the
 evaluator as `partial` or `missing`, Evaluator Engineering returns its package
@@ -431,6 +478,11 @@ target_stage: experiment
 reason: concise scientific or operational gap
 required_artifact: exact missing or invalid asset
 resume_when: observable completion condition
+experiment_contract: exact path, identity, and hash
+candidate_manifest: exact path, identity, and hash
+evaluator: exact identity and immutable reference
+permitted_scope: contract-bounded work allowed to answer this request
+provenance: request authoring and evidence references
 ```
 
 This is routing metadata, not an approval permit.
@@ -522,7 +574,8 @@ Each stage either produces its success artifact, returns a typed upstream reques
 Workflow always emits exactly `next_skill`, `reason`, `input_artifact`, and
 `resume_artifact`; `reason` begins `status=<token>;`. It evaluates terminal and
 negative statuses before artifact fallthrough. `no-testable-opportunity`,
-`evaluator-not-validatable`, `no-improvement`, `budget-exhausted`,
+`repository-not-runnable`, `baseline-failed`, `evaluator-not-validatable`,
+`no-improvement`, `budget-exhausted`,
 `contract-reauthorization-needed`, missing/no-accepted inputs, refused validated
 packages, manuscript completion, and Paper confirmation-pending use literal
 `next_skill: none`. Evaluator packages and Experiment evaluator-integrity
@@ -531,18 +584,26 @@ status tokens, so Workflow never infers the authorized destination.
 
 - Discovery may return `no-testable-opportunity`.
 - Adapter may return evaluator `partial|missing`; it emits an evaluator plan,
-  never a partial Experiment Contract.
+  never a partial Experiment Contract. It may also terminate as
+  `repository-not-runnable` or `baseline-failed`, both before artifact
+  fallthrough and with no next skill. An evaluator-invalid return first
+  invalidates its stale contract, then enters normal reclassification and
+  explicit replacement authorization.
 - Evaluator Engineering may return `evaluator-not-validatable`.
 - Experiment may return terminal `no-improvement`, `budget-exhausted`, or
-  `contract-reauthorization-needed`; evaluator invalidity returns to Adapter.
+  `contract-reauthorization-needed`; evaluator invalidity returns to Adapter
+  only through the bound `autoresearch/evaluator-invalid-return.md`.
 - Evidence freezes only `supported|qualified|unsupported`; any
-  `insufficient-evidence` request routes only to Experiment without creating a
-  Validated Research Package.
+  `insufficient-evidence` request routes only to Experiment through the bound
+  `autoresearch/evidence-request.md` without creating a Validated Research
+  Package.
 - Paper may return terminal `missing-frozen-evidence`, refuse
   `invalid-validated-package`, pause at
   `research-frame-invalid-confirmation-pending`, or complete the Manuscript
-  Package. Only a target-specific human-confirmed status routes to Evidence or
-  Experiment.
+  Package. Missing required evidence and manuscript completion are mutually
+  exclusive; a disclosed frozen limitation with all required assets is not
+  missing evidence. Only a target-specific human-confirmed status routes to
+  Evidence or Experiment.
 
 “No improvement” and “claim rejected” are scientifically valid outcomes, not system failures.
 
@@ -561,6 +622,14 @@ Paper finds research frame invalid -> human confirmation -> Evidence or Experime
 - every referenced local file exists;
 - each required input, output, success condition, and forbidden responsibility is present;
 - the workflow contains the conditional evaluator route and stage return edges;
+- every nonterminal Workflow row's `input_artifact` is accepted by the
+  destination skill's explicitly documented sole handoff modes;
+- Evidence-resume and evaluator-invalid return manifests are tested for exact
+  identity/hash, evaluator, state, scope, and provenance bindings;
+- Adapter stale-contract invalidation precedes reclassification and replacement
+  authorization, including the partial/missing detour;
+- Paper's missing-required-asset and successful-package outcomes are mutually
+  exclusive while disclosed frozen limitations remain nonblocking;
 - the Paper skill explicitly declares full autonomy and forbids method/evaluator changes;
 - the Experiment skill contains the four-state XYZ loop and evaluator-isolation rule;
 - no domain skill imports the whole suite or platform instructions by default.
@@ -609,8 +678,8 @@ Use small fixtures to verify routing for:
 The modular preview is complete when:
 
 - the thin router, all five lifecycle skills, and the conditional evaluator capability are independently invokable;
-- an invocation loads only its current skill, sole stage-specific compact
-  handoff, and necessary linked project files;
+- an invocation loads only its current skill, exactly one compact artifact from
+  a published handoff mode, and necessary linked project files;
 - the workflow routes by existing artifacts without imposing a global gate;
 - Paper can start directly from a mature validated package, stay inside its Claim Boundary, and complete autonomously;
 - Experiment owns the bounded `Research -> Development -> Review -> Record` loop;

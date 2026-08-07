@@ -70,6 +70,8 @@ Start with the narrowest skill that matches the artifact already in hand.
 | A frozen Research Brief and a repository | `karpathy-autoresearch-adapter` | `autoresearch/experiment-contract.md` after explicit apply authorization |
 | Adapter issued `autoresearch/evaluator_plan.md` for `partial` or `missing` readiness | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/manifest.json`, followed by Adapter reclassification |
 | An Adapter-issued frozen ready Experiment Contract | `autoresearch-experiment` | `autoresearch/candidate-package/manifest.json` |
+| A bound `autoresearch/evidence-request.md` from Evidence | `autoresearch-experiment` | Resume against the linked frozen Experiment Contract; never expand its authority |
+| A bound `autoresearch/evaluator-invalid-return.md` from Experiment | `karpathy-autoresearch-adapter` | Invalidate and reclassify the stale contract, then return a replacement plan for explicit apply authorization |
 | An accepted Candidate Package manifest and intended claims | `autoresearch-evidence` | `validated-research-package/manifest.json` with Claim Boundary |
 | A valid frozen Validated Research Package manifest and venue constraints | `autoresearch-paper` | `manuscript-package/` |
 
@@ -153,7 +155,7 @@ Inspect first and return the plan without changing files.
 Enter directly at Paper when research has already been validated:
 
 ```text
-Use autoresearch-paper with validated-research-package/. Target the supplied
+Use autoresearch-paper with validated-research-package/manifest.json. Target the supplied
 conference format and compile the final manuscript package.
 ```
 
@@ -170,21 +172,33 @@ but it will not run claim-changing experiments.
   known-outcome/discrimination checks, and adequate repeatability—not merely a
   deterministic command. Adapter requires explicit authorization before
   persisting the approved plan or final ready Experiment Contract and never
-  emits a partial contract.
+  emits a partial contract. It accepts a bound evaluator-invalid return,
+  invalidates the stale contract before reclassification, and requires a new
+  explicit apply authorization before persisting any replacement.
 - **Evaluator Engineering owns measurement construction.** It consumes only
-  Adapter's `autoresearch/evaluator_plan.md` plus necessary linked project files,
-  changes only evaluator assets, and returns its compact manifest to Adapter.
-- **Experiment owns candidate search.** Its sole compact prior handoff is the
-  Adapter-issued frozen contract, which binds the ready evaluator, brief,
-  baseline, mutable surface, budget, and KEEP/DISCARD rule. Every attempt is
-  recorded; evaluator integrity/readiness failures return only to Adapter.
+  Adapter's `autoresearch/evaluator_plan.md` plus necessary linked project files.
+  The plan carries frozen evaluation requirements and permitted design latitude
+  plus the Research Brief identity/hash/reference, so Evaluator Engineering
+  never loads the Brief. It changes only evaluator assets and returns its
+  compact manifest to Adapter.
+- **Experiment owns candidate search.** It accepts exactly one compact handoff:
+  an Adapter-issued frozen contract for a new run, or a bound
+  `autoresearch/evidence-request.md` for a resume. A resume opens the exact
+  linked contract and cannot expand its authority. Every attempt is recorded;
+  evaluator integrity/readiness failures return only to Adapter in
+  `autoresearch/evaluator-invalid-return.md`.
 - **Evidence owns scientific validation.** It opens claim-needed files from the
   Candidate Package manifest, freezes only `supported|qualified|unsupported`
   rows, and never tunes the method. `insufficient-evidence` produces an upstream
-  request to Experiment, not a Validated Research Package.
+  request to Experiment, not a Validated Research Package. The request binds
+  the exact contract, candidate, evaluator, missing evidence, permitted scope,
+  and provenance needed for a safe resume.
 - **Paper owns presentation.** It enters through the Validated Research Package
   manifest, refuses any package containing `insufficient-evidence`, and remains
   autonomous for a valid frozen package without altering research authority.
+  A disclosed limitation is not missing evidence when every required frozen
+  asset is present. A genuinely missing required asset is terminal and cannot
+  coexist with `manuscript-package-complete`.
 
 Honest return paths are part of the architecture: `insufficient-evidence`
 returns to Experiment; a partial or missing evaluator detours through Evaluator
@@ -192,7 +206,8 @@ Engineering and back to Adapter; `research-frame-invalid` waits for human
 confirmation as `research-frame-invalid-confirmation-pending` before a
 target-specific Evidence or Experiment route. `no-testable-opportunity`,
 `evaluator-not-validatable`, `no-improvement`, `budget-exhausted`, and
-`contract-reauthorization-needed` are terminal/no-route outcomes. Workflow uses
+`contract-reauthorization-needed`, `repository-not-runnable`, and
+`baseline-failed` are terminal/no-route outcomes. Workflow uses
 literal `next_skill: none` for them and for confirmation-pending states; none is
 permission to weaken the scientific contract.
 

@@ -15,6 +15,12 @@ explain and present them but cannot create research.
 Use only Literature, Structure, grounded Writing, Figures/Tables, Compilation,
 and Peer Review. Do not import a supervisory or compatibility workflow.
 
+## Sole handoff modes
+
+| Mode | Sole input artifact |
+| --- | --- |
+| Validated package | `validated-research-package/manifest.json` |
+
 ## Inputs
 
 Accept `validated-research-package/manifest.json` as the sole prior-stage
@@ -40,9 +46,14 @@ literature source. Preserve status, scope, and uncertainty. Narrow or omit
 unsupported prose; never promote it rhetorically.
 
 Proceed without routine outline, draft, figure, or format approval while the
-research frame remains valid. Report a missing manifest-linked frozen asset as
-`missing-frozen-evidence`; continue only where the valid package still supports
-the deliverable and never run research to repair it.
+research frame remains valid. A limitation already frozen in a valid Claim
+Boundary is a disclosed limitation and does not emit `missing-frozen-evidence`
+when all referenced assets are present.
+
+Emit terminal `missing-frozen-evidence` only when a manifest-linked asset needed
+to substantiate an included claim or complete a required venue deliverable is
+absent or invalid. Stop, create no Manuscript Package, and never run research to
+repair it. An optional unused asset does not trigger this outcome.
 
 ## Autonomous production loop
 
@@ -76,9 +87,11 @@ Read [review and packaging](references/paper/review-and-packaging.md). Require
 clean claim-boundary, scientific-consistency, citation, numerical, format, and
 visual reviews. Route a failed check to an internal production step and repeat.
 
-Release `manuscript-package/` with editable source, compiled submission,
+Only after every release gate is clean, release `manuscript-package/` with
+editable source, compiled submission,
 bibliography, figures/tables, traceability and review records, venue files, and
-a compact manifest. Never disguise a frozen-evidence limitation.
+a compact manifest, then emit `manuscript-package-complete`. Never disguise a
+frozen-evidence limitation.
 
 ## Stop
 
@@ -96,6 +109,18 @@ target receives its normal compact entry artifact.
 
 For `missing-frozen-evidence` or `invalid-validated-package`, report the exact
 failure and impact without manufacturing or broadening research.
+
+## Outcome exclusivity
+
+| Condition | Outcome | Manuscript Package |
+| --- | --- | --- |
+| Required frozen asset absent or invalid | `missing-frozen-evidence` | `forbidden` |
+| Invalid validated package | `invalid-validated-package` | `forbidden` |
+| Research frame invalid, confirmation pending | `research-frame-invalid-confirmation-pending` | `forbidden` |
+| All release gates clean | `manuscript-package-complete` | `required` |
+
+These outcomes are mutually exclusive. A blocking terminal outcome cannot
+coexist with `manuscript-package-complete`.
 
 ## Boundaries
 

@@ -42,6 +42,33 @@ class RepositoryDocumentationTests(unittest.TestCase):
             text,
         )
 
+    def test_readme_direct_paper_entry_uses_the_manifest(self):
+        text = (ROOT / "README.md").read_text()
+        example = text.split("Enter directly at Paper", 1)[1].split(
+            "## Stage boundaries", 1
+        )[0]
+        self.assertIn(
+            "Use autoresearch-paper with validated-research-package/manifest.json.",
+            example,
+        )
+        self.assertNotIn(
+            "Use autoresearch-paper with validated-research-package/.",
+            example,
+        )
+
+    def test_design_and_changelog_name_bound_operational_manifests(self):
+        spec = (
+            ROOT
+            / "docs/superpowers/specs/2026-08-07-modular-autoresearch-skills-design.md"
+        ).read_text()
+        changelog = (ROOT / "CHANGELOG.md").read_text()
+        for artifact in (
+            "`autoresearch/evidence-request.md`",
+            "`autoresearch/evaluator-invalid-return.md`",
+        ):
+            self.assertIn(artifact, spec)
+            self.assertIn(artifact, changelog)
+
     def test_adapter_provenance_is_not_assigned_to_ui_metadata(self):
         spec = (
             ROOT

@@ -28,12 +28,17 @@ package. Open only manifest-linked assets needed for the current manuscript task
 
 ## Typed outcomes
 
-Use `missing-frozen-evidence` when the research frame and Claim Boundary remain
-coherent but a manifest-listed artifact is absent, unreadable, hash-mismatched,
-or insufficient to render a particular statement or display. Identify the exact
-reference, affected claim or artifact, and safe action: omit, narrow, mark as a
-limitation, or leave the deliverable incomplete. Do not regenerate it through a
-new seed, ablation, experiment, or changed analysis.
+Use `missing-frozen-evidence` only when an asset required for an included claim
+or required venue deliverable is absent, unreadable, hash-mismatched, or invalid.
+Identify the exact reference and affected claim or deliverable, create no
+Manuscript Package, emit the terminal status, and stop. Do not regenerate the
+asset through a new seed, ablation, experiment, or changed analysis.
+
+A limitation already disclosed in the frozen Claim Boundary is not missing
+evidence when all assets required to state that qualified or unsupported result
+honestly are present. Likewise, an absent optional asset that is not used by an
+included claim or required deliverable does not trigger
+`missing-frozen-evidence`.
 
 Use `research-frame-invalid-confirmation-pending` only when the package cannot
 support an honest paper at all without changing the research frame—for example, the Claim

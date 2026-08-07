@@ -1,6 +1,6 @@
 ---
 name: autoresearch-experiment
-description: Use when an Adapter-issued frozen Experiment Contract binds a ready isolated evaluator and authorizes bounded candidate search.
+description: Use when an Adapter-issued frozen Experiment Contract authorizes a new bounded candidate run or a bound Evidence request resumes that contract.
 ---
 
 # Auto-Research Experiment
@@ -9,10 +9,21 @@ Run the complete bounded **Research → Development → Review → Record** loop
 inside one Experiment Contract. Own candidate optimization, not evaluator
 construction, final scientific validation, or paper production.
 
+## Sole handoff modes
+
+Accept exactly one of these compact inputs per invocation; receiving both is
+invalid:
+
+| Mode | Sole input artifact |
+| --- | --- |
+| New run | `autoresearch/experiment-contract.md` |
+| Evidence resume | `autoresearch/evidence-request.md` |
+
 ## Entry gate
 
-Accept one Adapter-issued frozen `autoresearch/experiment-contract.md` as the
-sole compact prior-stage handoff. Proceed only when that contract:
+For new-run mode, accept one Adapter-issued frozen
+`autoresearch/experiment-contract.md` as that invocation's sole compact
+handoff. Proceed only when that contract:
 
 - identifies its Adapter provenance and frozen `research-brief.md`;
 - identifies and binds a `ready` evaluator, including command, fixed inputs and
@@ -28,6 +39,29 @@ absent, mutable, inconsistent, or invalid, do not iterate. Emit
 (`karpathy-autoresearch-adapter`). Never classify readiness or route directly to
 evaluator construction. For a non-evaluator contract change, record
 `contract-reauthorization-needed` and stop under the contract with no route.
+
+## Evidence resume
+
+Accept `autoresearch/evidence-request.md` only as a compact resume manifest. It
+must immutably bind the exact Adapter-issued frozen Experiment Contract identity
+and hash, Candidate Package manifest, evaluator identity, requested missing
+evidence, permitted scope, and provenance. Verify those bindings, then open the
+linked frozen contract and only the linked state needed to resume.
+
+The request adds no authority. If requested work, files, evaluator use, budget,
+or evidence collection falls outside the bound contract, emit terminal
+`contract-reauthorization-needed`, perform no iteration, and never silently
+broaden scope. An in-contract resume follows the same evaluator, KEEP/DISCARD,
+ledger, and stop rules as a new run.
+
+## Evaluator-invalid return
+
+On any evaluator integrity, isolation, readiness, or execution failure, stop
+before another iteration and emit
+`autoresearch/evaluator-invalid-return.md`. This compact operational-return
+manifest binds the stale Experiment Contract identity and hash, evaluator
+identity, failure evidence, candidate and ledger state, and provenance. Route it
+only to Adapter; it is not an Experiment resume input and authorizes no repair.
 
 ## Frozen contract
 
@@ -80,8 +114,8 @@ Stop when success or another contract rule is met, budget is exhausted, no
 permissible candidate remains, reauthorization is needed, or evaluator execution
 becomes invalid. `no-improvement` and `budget-exhausted` are honest terminal
 outcomes, not permission to weaken measurement. Any evaluator integrity or
-readiness failure must preserve the record and return to Adapter; do not repair
-or reclassify it here.
+readiness failure must preserve the record in the evaluator-invalid return and
+return to Adapter; do not repair or reclassify it here.
 
 Before an accepted handoff, reproduce the best candidate with the frozen
 evaluator and ensure every transition has a ledger row. Experiment results are

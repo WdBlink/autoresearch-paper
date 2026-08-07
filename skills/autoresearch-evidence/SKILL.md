@@ -12,6 +12,12 @@ Validate an accepted frozen candidate without changing it. Produce exactly one
 closed enum `supported|qualified|unsupported`. A claim-blocking gap produces an
 `insufficient-evidence` upstream request instead of a validated package.
 
+## Sole handoff modes
+
+| Mode | Sole input artifact |
+| --- | --- |
+| Candidate package | `autoresearch/candidate-package/manifest.json` |
+
 ## Inputs
 
 Use `autoresearch/candidate-package/manifest.json` as the sole prior-stage
@@ -85,10 +91,13 @@ the input for `autoresearch-paper`.
 
 For any claim-blocking validation gap, do not create or freeze
 `validated-research-package/`. Emit the typed package-validation outcome
-`insufficient-evidence` in `autoresearch/evidence-request.md`; identify the
-missing/invalid/conflicting evidence and request it from only
-`autoresearch-experiment`. This outcome cannot appear in a Claim Boundary or a
-Validated Research Package manifest. Do not route to Discovery or Paper.
+`insufficient-evidence` in `autoresearch/evidence-request.md`. This compact
+resume manifest immutably binds the exact Adapter-issued frozen Experiment
+Contract identity and hash, Candidate Package manifest, evaluator identity,
+requested missing evidence, permitted scope, and provenance. Request the bound
+work from only `autoresearch-experiment`. This outcome cannot appear in a Claim
+Boundary or Validated Research Package manifest. Do not route to Discovery or
+Paper.
 
 After a valid package is frozen, hand off only its manifest and stop.
 

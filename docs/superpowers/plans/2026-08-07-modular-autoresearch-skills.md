@@ -212,14 +212,17 @@ fixtures. Negative and terminal outcomes precede artifact fallthrough. The
 matrix must cover:
 
 - terminal/no-route: `no-testable-opportunity`,
-  `evaluator-not-validatable`, `no-improvement`, `budget-exhausted`,
+  `repository-not-runnable`, `baseline-failed`, `evaluator-not-validatable`,
+  `no-improvement`, `budget-exhausted`,
   `contract-reauthorization-needed`, no accepted candidate, missing input,
   invalid validated package, and manuscript completion;
 - Paper `research-frame-invalid-confirmation-pending` -> `none`, plus distinct
   `research-frame-invalid-confirmed-evidence` and
   `research-frame-invalid-confirmed-experiment` tokens;
-- Evidence `insufficient-evidence` -> Experiment;
-- Evaluator Package -> Adapter and Experiment evaluator invalidity -> Adapter;
+- Evidence `insufficient-evidence` -> Experiment through the bound
+  `autoresearch/evidence-request.md` resume manifest;
+- Evaluator Package -> Adapter and Experiment evaluator invalidity -> Adapter
+  through `autoresearch/evaluator-invalid-return.md`;
 - Adapter `partial|missing` -> Evaluator Engineering;
 - initial/forward artifact states -> Discovery, Adapter, Experiment, Evidence,
   or Paper as applicable.
@@ -355,7 +358,10 @@ git commit -m "feat: add autoresearch discovery skill"
 - Create: `skills/karpathy-autoresearch-adapter/agents/openai.yaml`
 
 **Interfaces:**
-- Consumes: repository path, frozen `research-brief.md`, constraints, known evaluator command, and separate apply authorization.
+- Consumes exactly one operational mode: repository plus frozen
+  `research-brief.md`; `autoresearch/evaluator-package/manifest.json`; or
+  `autoresearch/evaluator-invalid-return.md`. Constraints, a known evaluator
+  command, and separate apply authorization accompany the planning/apply mode.
 - Produces: one `autoresearch/experiment-contract.md` only after readiness;
   `autoresearch/adaptation-plan.md` is an approved design record and never the
   lifecycle handoff.
@@ -414,7 +420,19 @@ Use `/Users/wdblink/.codex/skills/karpathy-autoresearch-adapter/SKILL.md` as the
   inputs/splits, candidate-edit isolation, known-outcome/discrimination checks,
   and adequate repeatability, not merely a deterministic command;
 - for `partial|missing`, create at most `autoresearch/evaluator_plan.md` after authorization, then stop;
+- make that evaluator plan carry the Research Brief identity/hash/reference,
+  frozen evaluation requirements, permitted design latitude, necessary files,
+  risks, and missing evidence so Evaluator Engineering never loads the Brief;
 - after Evaluator Engineering succeeds, return to Adapter to reclassify and freeze the final contract;
+- on an evaluator-invalid return, first invalidate the stale contract, then
+  reclassify and return a replacement plan in chat; require explicit apply
+  authorization before persisting a replacement, with `partial|missing`
+  following the evaluator-plan detour;
+- terminate repository setup/invocation failure as `repository-not-runnable`
+  and unreliable baseline reproduction as `baseline-failed`, both with
+  `research-brief.md`, literal `next_skill: none`, and no authority expansion;
+  preserve an already-authorized `autoresearch/adaptation-plan.md` and failure
+  evidence internally when present, but publish no automatic resume artifact;
 - never run Experiment, validate final claims, or write Paper.
 
 Do not add a per-skill README. Root documentation and Git history carry provenance.
@@ -455,8 +473,10 @@ git commit -m "feat: vendor repository autoresearch adapter"
 
 **Interfaces:**
 - Consumes: only `autoresearch/evaluator_plan.md` as the compact prior handoff,
-  plus necessary project files it links; never a Research Brief or Experiment
-  Contract.
+  plus necessary project files it links. The plan carries frozen evaluation
+  requirements, permitted design latitude, and Research Brief
+  identity/hash/reference; Evaluator Engineering never loads a Research Brief
+  or Experiment Contract.
 - Produces: `autoresearch/evaluator-package/manifest.json` and returns it to
   Adapter.
 
@@ -538,9 +558,11 @@ git commit -m "feat: add conditional evaluator engineering skill"
 - Create: `skills/autoresearch-experiment/references/bounded-experiment-loop.md`
 
 **Interfaces:**
-- Consumes: only an Adapter-issued frozen
-  `autoresearch/experiment-contract.md`, which binds the ready isolated
-  evaluator and Research Brief.
+- Consumes exactly one of two compact handoff modes: an Adapter-issued frozen
+  `autoresearch/experiment-contract.md` for a new run, or the bound
+  `autoresearch/evidence-request.md` for an Evidence resume. The request binds
+  the exact contract identity/hash, candidate manifest, evaluator, missing
+  evidence, permitted scope, and provenance and never grants new authority.
 - Produces: `autoresearch/candidate-package/manifest.json`, linking its contract,
   evaluator, accepted candidate or absence, outcome summary, ledger, and
   evidence/log index.
@@ -590,7 +612,15 @@ python3 /Users/wdblink/.codex/skills/.system/skill-creator/scripts/init_skill.py
 
 `SKILL.md` contains `Entry gate`, `Frozen contract`, `One transition`, `Candidate Package`, `Stop`, and `Boundaries`. One iteration changes one bounded candidate, evaluates it with the frozen judge, applies declared KEEP/DISCARD rules, restores discarded work, and records accepted and rejected evidence. Cheap screening may make a candidate eligible for expensive evaluation but cannot authorize adoption.
 
-`references/bounded-experiment-loop.md` is read only when starting or recovering a run. It records the six XYZ bounds (target/scope, permissions, evaluation, resources, authority, stop/re-authorization), the four-state loop, immutable evaluator rule, record fields, and private-development-versus-external-validation distinction. Cite the XYZ PDF directly.
+`references/bounded-experiment-loop.md` is read only when starting or recovering
+a run. It records the two exclusive handoff modes, Evidence-resume binding and
+out-of-contract reauthorization stop, the six XYZ bounds (target/scope,
+permissions, evaluation, resources, authority, stop/re-authorization), the
+four-state loop, immutable evaluator rule, record fields, and
+private-development-versus-external-validation distinction. Evaluator
+invalidity emits `autoresearch/evaluator-invalid-return.md` binding the stale
+contract, evaluator identity/failure evidence, candidate/ledger, and provenance
+before returning only to Adapter. Cite the XYZ PDF directly.
 
 - [ ] **Step 5: Verify GREEN and validate structure**
 
@@ -686,7 +716,10 @@ The required table is:
 If required evidence is absent, invalid, unreproducible, or contradictory, emit
 `insufficient-evidence` in `autoresearch/evidence-request.md`, return only to
 Experiment, and do not create/freeze a Validated Research Package. It is never a
-Claim Boundary row status and Paper must refuse any package containing it.
+Claim Boundary row status and Paper must refuse any package containing it. The
+compact request binds the exact Adapter-issued contract identity/hash,
+Candidate Package manifest, evaluator, missing evidence, permitted scope, and
+provenance for the bounded resume.
 
 - [ ] **Step 5: Verify GREEN and validate structure**
 
@@ -728,7 +761,9 @@ git commit -m "feat: add autoresearch evidence skill"
 - Modify: `skills/autoresearch-paper/scripts/setup.sh`
 
 **Interfaces:**
-- Consumes: `validated-research-package/`, its Claim Boundary, project assets, and target venue/format.
+- Consumes: `validated-research-package/manifest.json` as its sole compact
+  handoff, then only linked Claim Boundary/project assets plus target
+  venue/format.
 - Produces: one `manuscript-package/`.
 
 - [ ] **Step 1: Write the failing Paper contract test against the current 895-line skill**
@@ -777,6 +812,12 @@ The active `SKILL.md` contains `Core contract`, `Inputs`, `Asset gate`, `Autonom
 - `asset-intake.md`: verify manifest, Claim Boundary, code/config/result references, venue assets, and citation sources; distinguish `missing-frozen-evidence` from `research-frame-invalid-confirmation-pending`.
 - `production-loop.md`: Literature, Structure, grounded drafting, Figures/Tables, Compilation. Literature supports positioning and citation verification; it does not reopen novelty search. Figures/tables derive from frozen tasks or existing data.
 - `review-and-packaging.md`: scientific consistency, claim-boundary, citation, numerical, format, and visual review; route findings back to the relevant internal production task until clean.
+
+A limitation already disclosed in the frozen Claim Boundary is not missing
+evidence when all required assets exist. An absent or invalid required frozen
+asset emits terminal `missing-frozen-evidence`, creates no Manuscript Package,
+and cannot coexist with success. Only clean release gates emit
+`manuscript-package-complete`.
 
 The skill proceeds without routine outline/draft/figure/format approval. It
 refuses a new seed, new ablation, or new experiment whose result could change a
@@ -884,7 +925,13 @@ PRODUCTS = {
 }
 ```
 
-It also asserts Adapter/Evaluator reclassification, Evidence-to-Experiment, and human-confirmed Paper-to-Evidence/Experiment; it rejects any automatic `Paper -> Experiment` or any return to Discovery.
+It also parses every nonterminal Workflow route and asserts its
+`input_artifact` appears in the destination skill's explicitly documented sole
+handoff modes. It verifies Adapter/Evaluator reclassification, the bound
+Evidence-request resume, the bound evaluator-invalid return, restored Adapter
+terminal precedence, Paper outcome exclusivity, and human-confirmed
+Paper-to-Evidence/Experiment; it rejects any automatic `Paper -> Experiment` or
+any return to Discovery.
 
 Add a test expecting `scripts/test.sh` to exist and contain cases for `modular`, `legacy`, and `all`.
 

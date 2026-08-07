@@ -9,9 +9,15 @@
   Experiment Contract, Candidate Package, Validated Research Package, semantic
   Claim Boundary, and compiled `manuscript-package/`.
 - Make compact manifests operational: Adapter's final contract is Experiment's
-  sole prior handoff; Evaluator Engineering receives only `evaluator_plan.md`;
+  new-run handoff; a bound `autoresearch/evidence-request.md` is Experiment's
+  only resume handoff; Evaluator Engineering receives only `evaluator_plan.md`;
   Candidate, Evaluator, and Validated packages expose manifests that let the
   next stage open only linked, task-needed files.
+- Make both return paths executable: Evidence's request binds the exact frozen
+  contract, candidate, evaluator, missing evidence, permitted scope, and
+  provenance; Experiment's `autoresearch/evaluator-invalid-return.md` binds the
+  stale contract, failure evidence, candidate/ledger, and provenance for Adapter
+  reclassification.
 - Freeze Paper behavior around the Validated Research Package: it works
   autonomously on literature, structure, grounded writing, figures/tables,
   compilation, and review, but cannot reopen methods, evaluators, experiments,
@@ -27,6 +33,12 @@
 - Represent terminal and confirmation-pending Workflow states with literal
   `next_skill: none`; evaluator packages and Experiment evaluator-integrity
   failures return to Adapter before any further Experiment run.
+- Restore Adapter's `repository-not-runnable` and `baseline-failed` terminal
+  outcomes ahead of artifact fallthrough, with no next skill or authority
+  expansion.
+- Make Paper outcomes exclusive: a disclosed frozen limitation is not missing
+  evidence, a missing required frozen asset produces no manuscript package,
+  and only a clean release emits `manuscript-package-complete`.
 - Preserve the v0.20 prompt and coupled runtime as a deprecated compatibility
   archive. The nested `autoresearch-paper-mvp0` entry point is available only
   through `skills/autoresearch-paper/scripts/install-mvp0.sh`; it is neither an

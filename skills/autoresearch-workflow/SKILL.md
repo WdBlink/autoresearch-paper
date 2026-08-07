@@ -32,6 +32,11 @@ Use literal `none` for a terminal outcome, confirmation-pending state, refused
 package, or any other canonical no-route row. Do not route back to Discovery
 after a Research Brief exists.
 
+Adapter's `repository-not-runnable` and `baseline-failed` outcomes are terminal,
+use `next_skill: none`, and precede the Research-Brief fallback. Experiment
+evaluator failure routes the bound `autoresearch/evaluator-invalid-return.md`
+to Adapter, never the stale contract.
+
 Evaluator construction is a conditional operational detour: Adapter sends a
 `partial` or `missing` evaluator to Evaluator Engineering; an Evaluator Package
 returns to Adapter. An evaluator integrity/readiness problem found by Experiment

@@ -42,6 +42,8 @@ class WorkflowContractTests(unittest.TestCase):
         expected = [
             ("required-input-missing", "Referenced required input is absent", "none", "none", "none"),
             ("no-testable-opportunity", "Discovery found no testable opportunity", "none", "research-brief.md", "none"),
+            ("repository-not-runnable", "Repository setup or required invocation cannot run within constraints", "none", "research-brief.md", "none"),
+            ("baseline-failed", "Declared baseline cannot be reproduced reliably enough to freeze", "none", "research-brief.md", "none"),
             ("evaluator-not-validatable", "Evaluator cannot be validated from the Adapter plan", "none", "autoresearch/evaluator_plan.md", "none"),
             ("no-improvement", "Experiment ended without an accepted candidate", "none", "autoresearch/candidate-package/manifest.json", "none"),
             ("budget-exhausted", "Experiment exhausted its budget without an accepted candidate", "none", "autoresearch/candidate-package/manifest.json", "none"),
@@ -53,7 +55,7 @@ class WorkflowContractTests(unittest.TestCase):
             ("research-frame-invalid-confirmed-evidence", "Human confirmed Evidence as correction target", "autoresearch-evidence", "autoresearch/candidate-package/manifest.json", "validated-research-package/manifest.json"),
             ("research-frame-invalid-confirmed-experiment", "Human confirmed Experiment as correction target", "autoresearch-experiment", "autoresearch/experiment-contract.md", "autoresearch/candidate-package/manifest.json"),
             ("insufficient-evidence", "Evidence issued a claim-blocking request", "autoresearch-experiment", "autoresearch/evidence-request.md", "autoresearch/candidate-package/manifest.json"),
-            ("experiment-evaluator-invalid", "Experiment found evaluator integrity or readiness invalid", "karpathy-autoresearch-adapter", "autoresearch/experiment-contract.md", "autoresearch/experiment-contract.md"),
+            ("experiment-evaluator-invalid", "Experiment emitted a bound evaluator-invalid return", "karpathy-autoresearch-adapter", "autoresearch/evaluator-invalid-return.md", "autoresearch/experiment-contract.md"),
             ("evaluator-package-ready-for-adapter", "Evaluator Engineering produced a package", "karpathy-autoresearch-adapter", "autoresearch/evaluator-package/manifest.json", "autoresearch/experiment-contract.md"),
             ("evaluator-partial", "Adapter classified evaluator partial", "autoresearch-evaluator-engineering", "autoresearch/evaluator_plan.md", "autoresearch/evaluator-package/manifest.json"),
             ("evaluator-missing", "Adapter classified evaluator missing", "autoresearch-evaluator-engineering", "autoresearch/evaluator_plan.md", "autoresearch/evaluator-package/manifest.json"),
@@ -71,6 +73,8 @@ class WorkflowContractTests(unittest.TestCase):
         first_forward = statuses.index("no-research-brief")
         for status in (
             "no-testable-opportunity",
+            "repository-not-runnable",
+            "baseline-failed",
             "evaluator-not-validatable",
             "no-improvement",
             "budget-exhausted",
@@ -83,6 +87,7 @@ class WorkflowContractTests(unittest.TestCase):
             "experiment-evaluator-invalid",
             "evaluator-package-ready-for-adapter",
         ):
+            self.assertIn(status, statuses)
             self.assertLess(statuses.index(status), first_forward, status)
 
     def test_reference_defines_exactly_two_scientific_loops(self):

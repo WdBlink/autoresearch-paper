@@ -23,6 +23,21 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertIn("only `autoresearch-experiment`", normalized)
         self.assertNotIn("appropriate earlier stage", body)
 
+    def test_evidence_request_is_a_bound_resume_manifest(self):
+        body = assert_compact_skill(self, "autoresearch-evidence")
+        stop = body.split("## Stop", 1)[1].split("## Boundaries", 1)[0]
+        normalized = " ".join(stop.split())
+        for item in (
+            "Experiment Contract identity and hash",
+            "Candidate Package manifest",
+            "evaluator identity",
+            "requested missing evidence",
+            "permitted scope",
+            "provenance",
+        ):
+            self.assertIn(item, normalized)
+        self.assertIn("compact resume manifest", normalized)
+
     def test_evidence_enters_through_candidate_manifest_and_opens_claim_needed_files(self):
         body = assert_compact_skill(self, "autoresearch-evidence")
         inputs = body.split("## Inputs", 1)[1].split("## Freeze", 1)[0]

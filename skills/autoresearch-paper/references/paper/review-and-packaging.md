@@ -22,7 +22,9 @@ verification result.
 
 Route every failed check to Literature, Structure, grounded Writing,
 Figures/Tables, or Compilation. Re-run the changed check and all dependent
-checks. Release only when no blocking or material finding remains.
+checks. Release only when no blocking or material finding remains. A disclosed
+limitation already frozen in the valid Claim Boundary is not blocking when all
+of its referenced evidence is present.
 
 ## Package inventory
 
@@ -33,9 +35,14 @@ Create exactly one `manuscript-package/` with:
 - final figures, tables, captions, and source/transformation records;
 - supplements and venue-required declarations or checklists;
 - claim-to-evidence traceability ledger and review log; and
-- a manifest listing every file, provenance, build command, and unresolved
-  `missing-frozen-evidence` limitation.
+- a manifest listing every file, provenance, build command, and disclosed
+  limitations already frozen in the valid Claim Boundary.
 
 Do not copy unnecessary private artifacts into the submission package. Verify
 that the packaged source builds from its recorded command and that the compiled
 artifact matches the reviewed output.
+
+If an asset required for an included claim or required venue deliverable is
+absent/invalid, emit `missing-frozen-evidence`, create no Manuscript Package,
+and stop. That terminal outcome and `manuscript-package-complete` never coexist.
+Emit completion only after the complete package passes every release gate.

@@ -58,6 +58,34 @@ def body(name: str) -> str:
     return load_skill(name)[1]
 
 
+def workflow_routes() -> list[tuple[str, str, str, str, str]]:
+    reference = (
+        SKILLS_ROOT
+        / "autoresearch-workflow"
+        / "references"
+        / "artifact-handoffs.md"
+    ).read_text()
+    self_contained = reference.split("## Route matrix", 1)[1].split(
+        "## Direct entry", 1
+    )[0]
+    return [
+        tuple(cell.strip().strip("`") for cell in line.strip("|").split("|"))
+        for line in self_contained.splitlines()
+        if line.startswith("| `")
+    ]
+
+
+def sole_handoff_artifacts(skill_name: str) -> set[str]:
+    skill_body = body(skill_name)
+    if "## Sole handoff modes" not in skill_body:
+        return set()
+    section = skill_body.split("## Sole handoff modes", 1)[1].split("\n## ", 1)[0]
+    return {
+        match
+        for match in re.findall(r"(?m)^\| [^|]+ \| `([^`]+)` \|$", section)
+    }
+
+
 class ArtifactRoutingTests(unittest.TestCase):
     def test_workflow_reference_names_exact_canonical_product_chain(self):
         reference = (
@@ -100,6 +128,20 @@ class ArtifactRoutingTests(unittest.TestCase):
             with self.subTest(owner=owner):
                 self.assertEqual(mentioned, expected)
 
+    def test_every_nonterminal_route_matches_destination_handoff_contract(self):
+        for status, _, destination, input_artifact, _ in workflow_routes():
+            if destination == "none":
+                continue
+            with self.subTest(status=status, destination=destination):
+                if destination == "autoresearch-discovery":
+                    self.assertEqual(input_artifact, "none")
+                    continue
+                self.assertIn(
+                    input_artifact,
+                    sole_handoff_artifacts(destination),
+                    f"{status} sends {input_artifact} to {destination}, which does not accept it",
+                )
+
     def test_evaluator_detour_and_integrity_return_only_through_adapter(self):
         adapter = " ".join(body("karpathy-autoresearch-adapter").split())
         evaluator = " ".join(body("autoresearch-evaluator-engineering").split())
@@ -110,6 +152,11 @@ class ArtifactRoutingTests(unittest.TestCase):
         self.assertIn("return to Adapter", evaluator)
         self.assertIn("return only to Adapter", experiment)
         self.assertNotIn("Evaluator Engineering", experiment)
+
+        routes_by_status = {row[0]: row for row in workflow_routes()}
+        self.assertIn("experiment-evaluator-invalid", routes_by_status)
+        invalid_route = routes_by_status["experiment-evaluator-invalid"]
+        self.assertEqual(invalid_route[3], "autoresearch/evaluator-invalid-return.md")
 
     def test_evidence_has_one_claim_blocking_route_and_paper_requires_confirmation(self):
         evidence = " ".join(body("autoresearch-evidence").split())
