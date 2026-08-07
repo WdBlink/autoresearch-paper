@@ -12,10 +12,11 @@
   autonomously on literature, structure, grounded writing, figures/tables,
   compilation, and review, but cannot reopen methods, evaluators, experiments,
   evidence decisions, or the Claim Boundary.
-- Vendor `karpathy-autoresearch-adapter` into the suite with repository-local
-  provenance metadata and a plan-first, explicit-apply contract. Partial or
-  missing evaluators detour through Evaluator Engineering and return to Adapter
-  before Experiment can begin.
+- Vendor `karpathy-autoresearch-adapter` into the suite. Vendored Adapter
+  provenance is recorded in root documentation and Git history; generated
+  `agents/openai.yaml` remains UI-only. The Adapter keeps a plan-first,
+  explicit-apply contract. Partial or missing evaluators detour through
+  Evaluator Engineering and return to Adapter before Experiment can begin.
 - Preserve the v0.20 prompt and coupled runtime as a deprecated compatibility
   archive. The nested `autoresearch-paper-mvp0` entry point is available only
   through `skills/autoresearch-paper/scripts/install-mvp0.sh`; it is neither an

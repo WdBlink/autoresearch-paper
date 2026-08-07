@@ -210,7 +210,10 @@ The Experiment Contract references the Research Brief and owns only how the rese
 
 **Purpose:** Create or repair a trustworthy evaluator when the adapter cannot certify one as ready.
 
-**Inputs:** Experiment Contract, Research Brief, available datasets or fixtures, and known sources of measurement error.
+**Inputs:** Research Brief, Adapter evaluator plan, repository evidence,
+available datasets or fixtures, and known sources of measurement error. A
+`partial` or `missing` classification does not yet authorize an Experiment
+Contract.
 
 **Unique product:** `autoresearch/evaluator-package/`, containing the versioned evaluator, fixtures, validation report, metric definition, isolation rules, and known limitations.
 
@@ -230,7 +233,9 @@ After a successful evaluator build, control returns to Adapter so the repository
 
 **Purpose:** Run bounded experimental optimization against a frozen evaluator.
 
-**Inputs:** Experiment Contract, evaluator package or a `ready` evaluator declaration, resource budget, and stop/re-authorization conditions.
+**Inputs:** Experiment Contract, the `ready` evaluator frozen by that contract,
+resource budget, and stop/re-authorization conditions. Experiment never
+receives an unfrozen Evaluator Package directly from Evaluator Engineering.
 
 **Unique product:** `autoresearch/candidate-package/`, containing `experiment-ledger.jsonl`, reproducible candidate artifacts, accepted-candidate summary, complete logs for accepted and rejected attempts, and an honest outcome classification.
 
@@ -345,14 +350,21 @@ The skills communicate through ordinary files and links rather than a large cent
 | Producer | Required handoff | Consumer |
 |---|---|---|
 | Discovery | `research-brief.md` | Adapter or user |
-| Adapter | `autoresearch/experiment-contract.md` | Evaluator Engineering or Experiment |
-| Evaluator Engineering | `autoresearch/evaluator-package/` | Experiment |
+| Adapter (`ready`) | `autoresearch/experiment-contract.md` | Experiment |
+| Adapter (`partial` or `missing`) | `autoresearch/evaluator_plan.md` | Evaluator Engineering |
+| Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for readiness reclassification |
 | Experiment | `autoresearch/candidate-package/` | Evidence |
 | Evidence | `validated-research-package/manifest.json`, result assets, `claim-boundary.md` | Paper |
 | Paper | `manuscript-package/` | User or future dissemination skill |
 | Workflow | `workflow-state.md` containing links only | Any next stage |
 
 Each producer owns its artifact semantics. The workflow skill checks presence and declared status but does not reinterpret scientific content.
+
+The evaluator path is a conditional capability detour: Adapter classifies the
+evaluator as `partial` or `missing`, Evaluator Engineering returns its package
+to Adapter, and only Adapter may reclassify readiness and freeze the Experiment
+Contract consumed by Experiment. This detour does not add a scientific return
+loop to the two listed in Section 12.
 
 Typed upstream requests use a short common shape:
 
@@ -416,7 +428,7 @@ scripts/
 ```
 
 Only the active skill's `SKILL.md` and explicitly linked references are loaded. Core entry points should remain compact and use progressive disclosure for detailed checklists or templates.
-Each modular skill also carries generated `agents/openai.yaml` UI metadata; the repeated metadata path is omitted from the tree above. Skill folders do not carry per-skill README, changelog, or installation guides.
+All seven modular skills carry generated `agents/openai.yaml` UI metadata and no per-skill README. The repeated metadata path is omitted from the tree above; skill folders also do not carry per-skill changelogs or installation guides.
 
 The old 895-line prompt is preserved as `compat/SKILL.v0.20.md`; it is not named `SKILL.md` and therefore is not discoverable as another active skill. The existing runtime tree remains physically in place for this release because its standalone-copy behavior, setup script, tests, references, and dashboard are tightly path-coupled. It is a deprecated compatibility backend, not the semantic implementation of the new Experiment or Evidence skills.
 
@@ -437,7 +449,7 @@ The nested MVP0 entry point is not one of the seven modular skills and is not pr
 
 ### 11.2 Existing Karpathy adapter
 
-The repository will include a canonical copy of the existing `karpathy-autoresearch-adapter` contract, with provenance recorded in its generated `agents/openai.yaml` metadata. Like all seven modular skills, it has no per-skill README. Its approved plan becomes a durable `autoresearch/adaptation-plan.md`, and its applied output includes the referenced `experiment-contract.md`. The suite must not silently mutate the user's separately installed copy.
+The repository will include a canonical copy of the existing `karpathy-autoresearch-adapter` contract. Vendored Adapter provenance is recorded in root documentation and Git history; generated `agents/openai.yaml` remains UI metadata only. Like all seven modular skills, Adapter has no per-skill README. Its approved plan becomes a durable `autoresearch/adaptation-plan.md`, and its applied output includes the referenced `experiment-contract.md`. The suite must not silently mutate the user's separately installed copy.
 
 The current compatibility installer does not provide safe backup-and-replace semantics. Any new repository-owned installer must fail on a conflicting real directory or create an explicit backup before replacement. The primary multi-skill installation path uses the standard Skills CLI with explicit `--skill` selection (or an intentional `--all`); the repository does not reimplement a generic multi-agent installer.
 
