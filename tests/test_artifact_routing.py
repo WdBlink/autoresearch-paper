@@ -22,12 +22,35 @@ CHAIN_INPUTS = {
     "autoresearch-paper": "validated-research-package",
 }
 
+REFERENCE_PRODUCTS = {
+    "Research Brief": "research-brief.md",
+    "Experiment Contract": "experiment-contract.md",
+    "Evaluator Package": "evaluator-package/",
+    "Candidate Package": "candidate-package/",
+    "Validated Research Package": "validated-research-package/",
+    "Manuscript Package": "manuscript-package/",
+}
+
 
 def normalized_skill(name: str) -> str:
     return " ".join(load_skill(name)[1].split())
 
 
 class ArtifactRoutingTests(unittest.TestCase):
+    def test_workflow_reference_names_exact_canonical_product_chain(self):
+        reference = (
+            SKILLS_ROOT
+            / "autoresearch-workflow"
+            / "references"
+            / "artifact-handoffs.md"
+        ).read_text()
+        primary_products = reference.split("## Primary products", 1)[1].split(
+            "## Compact handoff", 1
+        )[0]
+        rows = re.findall(r"(?m)^\d+\. ([^—]+) — `([^`]+)`$", primary_products)
+
+        self.assertEqual(rows, list(REFERENCE_PRODUCTS.items()))
+
     def test_each_lifecycle_owner_names_its_canonical_product(self):
         for skill, product in PRODUCTS.items():
             with self.subTest(skill=skill, product=product):

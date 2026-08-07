@@ -2,15 +2,14 @@
 
 ## Primary products
 
-The seven primary products are:
+The six stage products are:
 
 1. Research Brief — `research-brief.md`
-2. Experiment Contract — `autoresearch/experiment-contract.md`
-3. Evaluator Report — `autoresearch/evaluator-report.md`
-4. Candidate Package — `autoresearch/candidate-package.md`
-5. Validated Research Package — `autoresearch/validated-research-package.md`
-6. Claim Boundary — `autoresearch/claim-boundary.md`
-7. Paper — `autoresearch/paper.md`
+2. Experiment Contract — `experiment-contract.md`
+3. Evaluator Package — `evaluator-package/`
+4. Candidate Package — `candidate-package/`
+5. Validated Research Package — `validated-research-package/`
+6. Manuscript Package — `manuscript-package/`
 
 ## Compact handoff
 
