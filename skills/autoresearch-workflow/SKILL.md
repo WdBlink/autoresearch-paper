@@ -9,11 +9,11 @@ Act only as a thin router. Select exactly one `next_skill` from the observable p
 
 # Input
 
-Accept either an explicit entry request or one compact handoff containing status and artifact references. For direct entry, infer state only from the artifacts and statuses stated in the request; treat unstated artifacts as unavailable. Read [artifact handoffs](references/artifact-handoffs.md) only to identify product names and handoff fields.
+Accept either an explicit entry request or one four-field compact handoff whose `reason` starts with a canonical `status=<token>;` prefix and whose artifact fields contain the references. For direct entry, infer state only from the artifacts and statuses stated in the request; treat unstated artifacts as unavailable. Read [artifact handoffs](references/artifact-handoffs.md) to decode the status token and identify product names and handoff fields.
 
 # Routing
 
-Use the first applicable row.
+Evaluate status return routes before every forward-progress route. Check `insufficient-evidence` and `research-frame-invalid` first. Evaluate the Evaluator `partial` or `missing` conditional capability detour next. Only then use the first applicable forward-progress row.
 
 | Observable state | Route |
 | --- | --- |
@@ -30,11 +30,11 @@ For the final row, do not emit a domain route until human confirmation identifie
 
 # Handoff
 
-Emit only this four-field YAML shape, replacing values with the selected route and relevant artifact references:
+Emit only this four-field YAML shape, replacing values with the selected route and relevant artifact references. Begin `reason` with `status=<canonical-token>;` so the same handoff is reproducible as input without adding a fifth field:
 
 ```yaml
 next_skill: karpathy-autoresearch-adapter
-reason: Research Brief exists and no Experiment Contract exists.
+reason: status=research-brief-no-experiment-contract; Research Brief exists and no Experiment Contract exists.
 input_artifact: research-brief.md
 resume_artifact: autoresearch/experiment-contract.md
 ```
