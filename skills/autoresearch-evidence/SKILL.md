@@ -17,7 +17,7 @@ candidate.
 
 Require all of the following before evaluating claims:
 
-- the frozen Candidate Package and its reproducible candidate, provenance,
+- the frozen `autoresearch/candidate-package/` and its reproducible candidate, provenance,
   experiment ledger, and outcome;
 - the frozen Experiment Contract, including evaluator, data/split, metrics,
   baseline, and KEEP/DISCARD rule;
