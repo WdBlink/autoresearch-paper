@@ -391,7 +391,6 @@ skills/
     SKILL.md
   karpathy-autoresearch-adapter/
     SKILL.md
-    README.md
   autoresearch-evaluator-engineering/
     SKILL.md
   autoresearch-experiment/
@@ -413,10 +412,11 @@ skills/
 tests/
   test_modular_skill_contracts.py
 scripts/
-  test-all.sh
+  test.sh
 ```
 
 Only the active skill's `SKILL.md` and explicitly linked references are loaded. Core entry points should remain compact and use progressive disclosure for detailed checklists or templates.
+Each modular skill also carries generated `agents/openai.yaml` UI metadata; the repeated metadata path is omitted from the tree above. Skill folders do not carry per-skill README, changelog, or installation guides.
 
 The old 895-line prompt is preserved as `compat/SKILL.v0.20.md`; it is not named `SKILL.md` and therefore is not discoverable as another active skill. The existing runtime tree remains physically in place for this release because its standalone-copy behavior, setup script, tests, references, and dashboard are tightly path-coupled. It is a deprecated compatibility backend, not the semantic implementation of the new Experiment or Evidence skills.
 
