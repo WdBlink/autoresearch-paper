@@ -103,7 +103,8 @@ fi
 
 for path in \
   "${ROOT_DIR}/SKILL.md" \
-  "${ROOT_DIR}/mvp0/SKILL.md" \
+  "${ROOT_DIR}/compat/SKILL.v0.20.md" \
+  "${ROOT_DIR}/mvp0/SKILL.compat.md" \
   "${ROOT_DIR}/mvp0/agents/openai.yaml" \
   "${ROOT_DIR}/mvp/README.md" \
   "${ROOT_DIR}/mvp/research_compiler.py" \
@@ -198,7 +199,7 @@ then rerun:
   scripts/setup.sh
 
 For GitHub installation:
-  npx skills add WdBlink/autoresearch-paper -g --copy
+  npx skills add WdBlink/autoresearch-paper --skill autoresearch-paper -g --copy
 EOF
   exit 1
 fi

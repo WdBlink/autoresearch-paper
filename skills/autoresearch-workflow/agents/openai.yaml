@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Workflow"
+  short_description: "Route an Auto-Research project to one next skill"
+  default_prompt: "Use $autoresearch-workflow to identify the one next skill for this research project."
