@@ -134,6 +134,14 @@ class PaperContractTests(unittest.TestCase):
         self.assertNotIn("unresolved\n  `missing-frozen-evidence` limitation", packaging)
         self.assertIn("never coexist", packaging)
 
+    def test_radar_material_is_only_a_citation_lead(self):
+        body = assert_compact_skill(self, "autoresearch-paper")
+        normalized = " ".join(body.split())
+        self.assertIn("Research Radar", normalized)
+        self.assertIn("citation lead", normalized)
+        self.assertIn("verify the primary source", normalized)
+        self.assertIn("never cite an RSS summary", normalized)
+
 
 if __name__ == "__main__":
     unittest.main()

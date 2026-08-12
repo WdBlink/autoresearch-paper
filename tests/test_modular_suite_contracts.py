@@ -20,6 +20,7 @@ EXPECTED = {
     "autoresearch-discovery",
     "karpathy-autoresearch-adapter",
     "autoresearch-evaluator-engineering",
+    "autoresearch-radar",
     "autoresearch-experiment",
     "autoresearch-evidence",
     "autoresearch-paper",
@@ -35,14 +36,26 @@ FORBIDDEN_ACTIVE_REFERENCES = (
 
 
 class ModularSuiteContractTests(unittest.TestCase):
-    def test_exactly_seven_top_level_skills_are_discoverable(self):
-        discovered = {
-            path.parent.name for path in SKILLS_ROOT.glob("*/SKILL.md")
-        }
+    def test_exactly_eight_top_level_skills_are_discoverable(self):
+        manifests = set(SKILLS_ROOT.rglob("SKILL.md"))
+        expected_manifests = {SKILLS_ROOT / name / "SKILL.md" for name in EXPECTED}
+        self.assertEqual(manifests, expected_manifests)
+
+        discovered = {path.parent.name for path in manifests}
         self.assertEqual(discovered, EXPECTED)
 
         declared = {load_skill(name)[0].get("name") for name in discovered}
         self.assertEqual(declared, EXPECTED)
+
+    def test_each_modular_skill_has_ui_metadata(self):
+        for name in sorted(EXPECTED):
+            metadata = SKILLS_ROOT / name / "agents" / "openai.yaml"
+            with self.subTest(skill=name):
+                self.assertTrue(metadata.is_file(), f"missing UI metadata: {metadata}")
+                text = metadata.read_text()
+                self.assertIn("display_name:", text)
+                self.assertIn("short_description:", text)
+                self.assertIn(f"$" + name, text)
 
     def test_active_skill_links_are_local_existing_and_not_skill_imports(self):
         for name in sorted(EXPECTED):

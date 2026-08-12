@@ -45,6 +45,12 @@ figure, table, and citation to a manifest-linked frozen artifact or verified
 literature source. Preserve status, scope, and uncertainty. Narrow or omit
 unsupported prose; never promote it rhetorically.
 
+Research Radar material is only a citation lead. Before adding it to the
+bibliography or prose, verify the primary source and its metadata, method,
+results, scope, and limitations against the frozen Claim Boundary; **never cite
+an RSS summary** as the scientific source, treat a Radar decision as evidence,
+or use new literature to widen a claim.
+
 Proceed without routine outline, draft, figure, or format approval while the
 research frame remains valid. A limitation already frozen in a valid Claim
 Boundary is a disclosed limitation and does not emit `missing-frozen-evidence`

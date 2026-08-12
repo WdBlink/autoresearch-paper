@@ -149,6 +149,28 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("cannot be reproduced reliably enough to freeze", normalized)
         self.assertIn("do not redefine", normalized)
 
+    def test_adapter_freezes_optional_external_research_policy(self):
+        body = assert_compact_skill(self, "karpathy-autoresearch-adapter")
+        normalized = " ".join(body.split())
+        for token in (
+            "external research policy",
+            "`autoresearch/research-watch-profile.yaml`",
+            "allowed signal types",
+            "minimum evidence level",
+            "literature-guided proposal budget",
+            "out-of-scope action",
+        ):
+            self.assertIn(token, normalized)
+        self.assertIn("only after explicit apply authorization", normalized)
+        self.assertIn("does not run Research Radar", normalized)
+        for field in (
+            "source_scope.authorized_feed_ids|query_terms|excluded_terms",
+            "scan.hours|limit",
+            "policy.minimum_evidence_level|allowed_signal_types|refresh_max_age_minutes",
+            "refresh_trust.producer_identity|ed25519_public_key_path|ed25519_public_key_sha256",
+        ):
+            self.assertIn(field, normalized)
+
 
 if __name__ == "__main__":
     unittest.main()

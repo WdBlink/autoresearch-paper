@@ -3,12 +3,27 @@
 **Autoresearch** planning board. This is a living document, not a commitment;
 versions are assigned only when work ships in [CHANGELOG.md](../CHANGELOG.md).
 
-v0.21 completed the semantic split into 1 thin router, 5 lifecycle skills, and
-1 conditional evaluator capability. Further splitting is not a roadmap goal.
-Future work should improve each stage's local collaboration, field evidence,
+v0.22 extends the v0.21 semantic split into 1 thin router, 5 lifecycle skills,
+and 2 conditional capabilities. Evaluator Engineering builds missing
+measurement; Research Radar monitors authorized sources without becoming a
+lifecycle stage. Further splitting is not a roadmap goal. Future work should
+improve each stage's local collaboration, field evidence, monitoring quality,
 and lifecycle exits without rebuilding an all-in-one controller.
 
 ## On-deck
+
+### Research Radar field evaluation
+
+Run prospective, multi-cycle watches against active research projects. Measure
+fresh-sync reliability, candidate recall, primary-source verification quality,
+deferred-item behavior, false-positive cost, and how often contract-compatible
+signals produce genuinely useful Experiment proposals.
+
+The evaluation must keep the three state layers separate: Radar owns Source
+Cursor and Signal Decision Ledger, while Experiment owns the Adoption Ledger.
+A high feed relevance score is not adoption, novelty, improvement, or SOTA.
+Record successful zero-forwarded cycles as honest outcomes rather than tuning
+the threshold until something is emitted.
 
 ### Stage-local human collaboration
 
@@ -50,6 +65,16 @@ External submission remains a human action unless a future design defines an
 explicitly authorized dissemination boundary. The Paper skill itself will
 continue to stop after producing the compiled manuscript package.
 
+### Additional monitored-source adapters
+
+Evaluate opt-in adapters for scholarly alerts, repository releases, benchmark
+updates, and curated bibliographies. Every adapter must preserve stable source
+identity, fresh-sync evidence, deterministic candidates, complete decisions,
+primary-source verification, provenance-bound deterministic re-extraction, and
+a single atomic commit root with explicit indeterminate recovery.
+Source-specific collection code must not leak into the lifecycle skills or
+weaken the frozen Watch Profile.
+
 ### Atomic compatibility-backend removal
 
 After a documented deprecation window and evidence that active users have
@@ -59,7 +84,7 @@ installer, setup path, and compatibility tests.
 
 Do not move or delete the path-coupled runtime piecemeal. Until atomic removal,
 the backend remains deprecated, non-default, separately tested, and excluded
-from the seven-skill modular architecture.
+from the eight-skill modular architecture.
 
 ## Wishlist
 
@@ -72,11 +97,14 @@ from the seven-skill modular architecture.
 
 ## Anti-roadmap
 
-- **More v0.21 skill splitting.** The current boundaries already map one skill
+- **More top-level lifecycle splitting.** The current boundaries already map one skill
   to one unique product and stop condition. New files or checklists do not earn
   new top-level skills by themselves.
 - **A new all-in-one orchestrator.** The thin router selects one owner and
   stops; it must not accumulate domain procedure or preload the suite.
+- **Radar as a scientific stage or return loop.** Refresh is an operational
+  sidecar action. It cannot reopen Discovery, change the Experiment Contract,
+  adopt a candidate, or add a third scientific return path.
 - **Paper-stage research.** Paper may present and compile frozen evidence but
   cannot change methods, evaluators, experiments, or Claim Boundary decisions.
 - **Silent evaluator relaxation.** Neither Experiment nor Evidence may change

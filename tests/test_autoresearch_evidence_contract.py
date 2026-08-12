@@ -61,6 +61,19 @@ class EvidenceContractTests(unittest.TestCase):
         ):
             self.assertIn(item, package)
 
+    def test_evidence_audits_search_multiplicity_and_verifies_signal_sources(self):
+        body = assert_compact_skill(self, "autoresearch-evidence")
+        normalized = " ".join(body.split())
+        for token in (
+            "total candidate count",
+            "selection path",
+            "data and metrics exposed during search",
+            "multiple-comparison",
+            "RSS summaries",
+            "primary sources",
+        ):
+            self.assertIn(token, normalized)
+
 
 if __name__ == "__main__":
     unittest.main()

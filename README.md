@@ -20,9 +20,9 @@ experimentation, evidence review, and writing in separate contexts.
 
 ## Status
 
-- **Current version:** v0.21.0
+- **Current version:** v0.22.0
 - **Stability:** experimental
-- **Architecture:** seven independently invokable Agent Skills
+- **Architecture:** eight independently invokable Agent Skills
 - **Compatibility:** the previous v0.20 runtime remains available only through
   an explicitly selected, deprecated compatibility entry point
 
@@ -32,7 +32,7 @@ runtime or load the whole lifecycle.
 
 ## Architecture
 
-The suite is **1 thin router + 5 lifecycle skills + 1 conditional capability**:
+The suite is **1 thin router + 5 lifecycle skills + 2 conditional capabilities**:
 
 | Role | Skill | Owns |
 | --- | --- | --- |
@@ -40,11 +40,12 @@ The suite is **1 thin router + 5 lifecycle skills + 1 conditional capability**:
 | Lifecycle | `autoresearch-discovery` | Turn an idea into a falsifiable Research Brief |
 | Lifecycle | `karpathy-autoresearch-adapter` | Map a frozen brief and repository into an Experiment Contract |
 | Conditional capability | `autoresearch-evaluator-engineering` | Build and validate a missing or partial evaluator, then return to Adapter |
+| Conditional capability | `autoresearch-radar` | Monitor authorized research sources and publish verified, contract-aware signals |
 | Lifecycle | `autoresearch-experiment` | Run the bounded Research → Development → Review → Record loop |
 | Lifecycle | `autoresearch-evidence` | Validate the frozen candidate and freeze its Claim Boundary |
 | Lifecycle | `autoresearch-paper` | Produce and compile the manuscript package without reopening research |
 
-All seven can be installed together, but one invocation loads only the selected
+All eight can be installed together, but one invocation loads only the selected
 skill, its focused references, one compact manifest or contract from the prior
 stage, and the necessary linked project files. It does not preload a prior
 package. The router never performs domain work.
@@ -54,10 +55,18 @@ idea
   → Discovery → Research Brief
   → Adapter → Experiment Contract
        ↘ partial/missing evaluator → Evaluator Engineering → Adapter
-  → Experiment → Candidate Package
+       ↘ authorized watch profile → Research Radar ─┐
+  → Experiment ← verified, contract-fit signals ───┘
+               → Candidate Package
   → Evidence → Validated Research Package + Claim Boundary
   → Paper → Manuscript Package
 ```
+
+Research Radar is an asynchronous sidecar, not a sixth lifecycle stage. It may
+run on an explicit request or external schedule, but it cannot change the
+Research Brief, frozen Experiment Contract, evaluator, candidate, or Claim
+Boundary. Experiment alone decides whether a verified signal becomes a bounded
+literature-guided proposal.
 
 ## Choose an entry point
 
@@ -69,6 +78,7 @@ Start with the narrowest skill that matches the artifact already in hand.
 | An idea, constraints, or early literature | `autoresearch-discovery` | `research-brief.md` |
 | A frozen Research Brief and a repository | `karpathy-autoresearch-adapter` | `autoresearch/experiment-contract.md` after explicit apply authorization |
 | Adapter issued `autoresearch/evaluator_plan.md` for `partial` or `missing` readiness | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/manifest.json`, followed by Adapter reclassification |
+| Adapter issued `autoresearch/research-watch-profile.yaml` and a refresh is due | `autoresearch-radar` | `autoresearch/research-radar/manifest.json`, then stop without taking lifecycle control |
 | An Adapter-issued frozen ready Experiment Contract | `autoresearch-experiment` | `autoresearch/candidate-package/manifest.json` |
 | A bound `autoresearch/evidence-request.md` from Evidence | `autoresearch-experiment` | Resume against the linked frozen Experiment Contract; never expand its authority |
 | A bound `autoresearch/evaluator-invalid-return.md` from Experiment | `karpathy-autoresearch-adapter` | Treat the stale contract as ineligible in memory, then return a replacement plan for explicit apply authorization |
@@ -89,6 +99,7 @@ the prior stage's context.
 | Discovery | `research-brief.md` | Adapter |
 | Adapter | `autoresearch/experiment-contract.md` | Experiment |
 | Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for reclassification |
+| Research Radar | `autoresearch/research-radar/manifest.json` | Experiment as an optional, policy-bounded signal input |
 | Experiment | `autoresearch/candidate-package/` | Evidence, only when it contains an accepted candidate |
 | Evidence | `validated-research-package/`, including `claim-boundary.md` | Paper |
 | Paper | `manuscript-package/` | User or a future dissemination capability |
@@ -104,6 +115,16 @@ hands Evidence `autoresearch/candidate-package/manifest.json`, and Evidence
 hands Paper `validated-research-package/manifest.json`. Each consumer opens only
 the linked files needed for its current task.
 
+Adapter separately freezes `autoresearch/research-watch-profile.yaml` after its
+existing explicit apply authorization. Each successful Radar cycle writes an
+immutable run and atomically updates the stable pointer
+`autoresearch/research-radar/manifest.json`. Radar keeps a Source Cursor and
+Signal Decision Ledger; Experiment keeps the separate Adoption Ledger. A cycle
+with zero forwarded signals is still a valid, recorded success. Unproven source
+synchronization, stale cache data, incomplete decisions, failed validation, or
+failure before pointer replacement advances no state. A post-replace durability
+error is reported as commit-indeterminate and requires inspection before retry.
+
 ## Install
 
 List the repository's discoverable skills before selecting one:
@@ -112,19 +133,22 @@ List the repository's discoverable skills before selecting one:
 npx skills add WdBlink/autoresearch-paper --list
 ```
 
+Standard discovery exposes exactly the eight skills in the architecture table.
+The deprecated MVP0 compatibility entry is deliberately excluded.
+
 Install one explicit entry point—for example, Paper:
 
 ```bash
 npx skills add WdBlink/autoresearch-paper --skill autoresearch-paper -g --copy
 ```
 
-Or intentionally install the complete seven-skill suite:
+Or intentionally install the complete eight-skill suite:
 
 ```bash
 npx skills add WdBlink/autoresearch-paper --all -g --copy
 ```
 
-`--all` installs all seven skills for availability; a run still loads only one
+`--all` installs all eight skills for availability; a run still loads only one
 skill at a time. Omit `-g` for a project-local installation. New modular Paper
 users do not run `scripts/setup.sh`; that script belongs to the compatibility
 backend.
@@ -150,6 +174,13 @@ Adapt a repository after the brief is frozen:
 ```text
 Use karpathy-autoresearch-adapter with research-brief.md and this repository.
 Inspect first and return the plan without changing files.
+```
+
+Refresh the project research watch after Adapter has applied its policy:
+
+```text
+Use autoresearch-radar with autoresearch/research-watch-profile.yaml. Refresh
+the authorized source, publish the validated Research Signal Package, and stop.
 ```
 
 Enter directly at Paper when research has already been validated:
@@ -183,15 +214,28 @@ but it will not run claim-changing experiments.
   plus the Research Brief identity/hash/reference, so Evaluator Engineering
   never loads the Brief. It changes only evaluator assets and returns its
   compact manifest to Adapter.
+- **Research Radar owns monitoring, not adoption.** It consumes only an
+  Adapter-issued `autoresearch/research-watch-profile.yaml`, proves a fresh
+  authenticated source synchronization, reads a safe profile-scoped snapshot,
+  records one decision per candidate, verifies forwarded leads against primary
+  sources, publishes immutable content-addressed runs through the sole stable
+  pointer `autoresearch/research-radar/manifest.json`, and stops. An RSS summary
+  is a lead, never scientific evidence or a citable source. Radar cannot change
+  a lifecycle artifact or write Experiment's Adoption Ledger. If pointer
+  durability is indeterminate, it stops for inspection instead of retrying.
 - **Experiment owns candidate search.** It accepts exactly one compact handoff:
   an Adapter-issued frozen contract for a new run, or a bound
   `autoresearch/evidence-request.md` for a resume. A resume opens the exact
-  linked contract and cannot expand its authority. Every attempt is recorded;
+  linked contract and cannot expand its authority. An optional Radar manifest
+  supplies only verified, contract-fit literature-guided proposals within the
+  contract's external-research policy and proposal budget. Every considered
+  signal, selection, rejection, and resulting attempt is recorded;
   evaluator integrity/readiness failures return only to Adapter in
   `autoresearch/evaluator-invalid-return.md`.
 - **Evidence owns scientific validation.** It opens claim-needed files from the
   Candidate Package manifest, freezes only `supported|qualified|unsupported`
-  rows, and never tunes the method. `insufficient-evidence` produces an upstream
+  rows, audits the total search and selection path including Radar-derived
+  candidates, and never tunes the method. `insufficient-evidence` produces an upstream
   request to Experiment, not a Validated Research Package. The request binds
   the exact contract, candidate, evaluator, missing evidence, permitted scope,
   and provenance needed for a safe resume.
@@ -203,7 +247,9 @@ but it will not run claim-changing experiments.
   only an already-frozen deterministic recovery task exactly as recorded, when
   one exists. Only unavailable or failed recovery that leaves the asset
   absent/invalid is terminal; it cannot coexist with
-  `manuscript-package-complete` or authorize new research.
+  `manuscript-package-complete` or authorize new research. Radar output may
+  supply citation leads, but Paper verifies and cites the primary source rather
+  than an RSS summary.
 
 Honest return paths are part of the architecture: `insufficient-evidence`
 returns to Experiment; a partial or missing evaluator detours through Evaluator
@@ -216,6 +262,12 @@ target-specific Evidence or Experiment route. `no-testable-opportunity`,
 literal `next_skill: none` for them and for confirmation-pending states; none is
 permission to weaken the scientific contract.
 
+Radar refresh and evaluator construction are conditional operational detours,
+not scientific return loops. The scientific loops remain exactly two: Evidence
+insufficiency returns to Experiment, and confirmed Paper frame invalidity
+returns to the selected Evidence or Experiment target. There is no automatic
+return to Discovery.
+
 ## Compatibility backend
 
 The **v0.20 compatibility backend** preserves the former Codex Host,
@@ -224,7 +276,7 @@ recompile loop, watchdog, dashboard, and optional MAVIS compatibility behavior.
 It is deprecated, non-default, and not the semantic implementation of the new
 Experiment, Evidence, or Paper skills.
 
-The nested `autoresearch-paper-mvp0` entry point is not one of the seven modular
+The nested `autoresearch-paper-mvp0` entry point is not one of the eight modular
 skills and is not part of standard modular discovery. Install it only when an
 existing v0.20 workflow specifically depends on it:
 
@@ -284,7 +336,7 @@ If this suite contributed to a research artifact, cite the release as:
   author  = {WdBlink},
   year    = {2026},
   url     = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.21.0}
+  version = {0.22.0}
 }
 ```
 
@@ -294,7 +346,7 @@ MIT
 
 [license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
 [license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.21.0-CC785C
+[version-shield]: https://img.shields.io/badge/version-0.22.0-CC785C
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/

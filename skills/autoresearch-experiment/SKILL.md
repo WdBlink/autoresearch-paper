@@ -33,6 +33,12 @@ handoff. Proceed only when that contract:
   rollback, stop, and reauthorization conditions; and
 - links every necessary project file rather than requiring another prior package.
 
+If external monitoring is enabled, the same contract also binds the external
+research policy, Watch Profile identity/hash, stable Radar pointer, allowed
+signal types, minimum evidence level, contract-fit rule, proposal budget, and
+out-of-scope action. A Radar manifest is a linked runtime input, never a third
+handoff mode.
+
 If evaluator identity, integrity, isolation, readiness evidence, or execution is
 absent, mutable, inconsistent, or invalid, do not iterate. Emit
 `experiment-evaluator-invalid` and return only to Adapter
@@ -74,6 +80,23 @@ adoption. Only the bound evaluator and KEEP rule can.
 Read [the bounded loop reference](references/bounded-experiment-loop.md) only
 when starting a run or recovering a recorded run.
 
+## External research signals
+
+Use `autoresearch/research-radar/manifest.json` only when the frozen external
+research policy authorizes it and its profile, run manifest, candidate/decision
+hashes, and primary-source receipts validate. A verified in-scope
+method-opportunity may consume one unit of the literature-guided proposal budget
+and seed one falsifiable candidate. It does not become evidence or a KEEP
+decision.
+
+Record every considered signal in the Experiment **Adoption Ledger** with its
+signal identity, verification and contract fit, proposal operator, adoption or
+rejection reason, resulting candidate/ledger row, and outcome. Signals below the
+minimum evidence level are ignored. A new evaluator, benchmark, dataset,
+novelty-threat response, or contract-incompatible method is out-of-scope and
+must be backlogged or trigger the frozen reauthorization rule; it never changes
+the frozen evaluator, data, baseline, gate, or authority.
+
 ## One transition
 
 Operate one bounded candidate at a time:
@@ -97,8 +120,11 @@ Produce one `autoresearch/candidate-package/`. Its compact
 `autoresearch/candidate-package/manifest.json` links the frozen Experiment
 Contract, evaluator identity/readiness evidence, accepted candidate (or its
 explicit absence), reproducible source/configuration, outcome summary,
-experiment ledger, and evidence/log index. Keep raw evaluator/screening outputs
-or stable references and all accepted/rejected ledger rows.
+experiment ledger, Adoption Ledger, and evidence/log index. Include the total
+candidate count, complete selection path, all data and metrics exposed during
+search, signal provenance, and any multiple-comparison risk. Keep raw
+evaluator/screening outputs or stable references and all accepted/rejected
+ledger rows.
 
 Record one honest outcome: `accepted`, `no-improvement`, `budget-exhausted`, or
 `contract-reauthorization-needed`, with stop reason and remaining budget. Only a

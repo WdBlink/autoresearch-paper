@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.22.0 — 2026-08-13
+
+- Add `autoresearch-radar` as the suite's second conditional capability. The
+  public architecture is now 1 thin router, 5 lifecycle skills, and 2
+  conditional capabilities; Radar is an asynchronous research-monitoring
+  sidecar, never a required lifecycle stage or scientific adoption authority.
+- Let Adapter freeze `autoresearch/research-watch-profile.yaml` only during its
+  existing explicit apply phase. The profile binds the research identity,
+  authorized source, allowed signal types, minimum evidence, contract-fit
+  policy, literature-guided proposal budget, and out-of-scope action.
+- Publish every successful Radar scan as an immutable run and atomically update
+  `autoresearch/research-radar/manifest.json` only after candidate, decision,
+  primary-source, schema, and hash validation. A complete cycle with zero
+  forwarded signals advances processed state; stale or unproven synchronization,
+  incomplete decisions, failed validation, or any failure before pointer
+  replacement advances nothing.
+- Add a fail-closed FOLO local-source adapter: prove a fresh official-UI sync
+  with an external Ed25519 signature, authenticate it against the frozen
+  profile and exact cache/database snapshots, read a
+  disposable read-only cache snapshot, limit extraction to authorized
+  subscriptions and query scope, preserve stable identity and deterministic
+  order, and reject any candidate ledger that differs from a repeated database
+  extraction.
+- Make publication consume only a provenance-bound extraction manifest, vendor
+  the exact database, authority artifacts, profile, public key, refresh receipt,
+  evidence, and primary sources; require strict profile/evidence/primary
+  source receipts, and replace one stable pointer as the sole commit root under
+  a lock. Distinguish pre-replace failure from commit-indeterminate durability
+  so a retry cannot silently double-apply or overwrite concurrent work.
+- Separate the Source Cursor, Radar's Signal Decision Ledger, and Experiment's
+  Adoption Ledger. Radar records every ignored, deferred, or forwarded source
+  item but never marks one adopted; Experiment alone can turn a verified,
+  contract-fit signal into a bounded literature-guided proposal.
+- Treat an RSS summary only as a lead. Forwarded signals and Paper citations
+  require verification against the applicable primary paper, official
+  repository, dataset card, benchmark specification, or other authoritative
+  source.
+- Extend Experiment and Evidence traceability to Radar-derived search:
+  Experiment records considered signals, selection or rejection, and every
+  resulting candidate; Evidence audits the total candidate count, selection
+  path, information exposed during search, primary sources, and
+  multiple-comparison risk.
+- Keep Workflow thin: an explicit refresh may route to Radar, while Radar
+  completion and failure route nowhere. The scientific return loops remain
+  exactly Evidence insufficiency to Experiment and human-confirmed Paper frame
+  invalidity to Evidence or Experiment.
+- Make default and full-depth discovery expose exactly eight standard skills.
+  Rename the nested MVP0 source manifest out of standard discovery while
+  retaining the explicit v0.20 compatibility installer, which materializes its
+  installed target as `SKILL.md` only when deliberately invoked.
+- Add deterministic Radar source-adapter tests, lifecycle integration contracts,
+  an updated release guide, and the v0.22 design and implementation records;
+  preserve the 2026-08-07 v0.21 documents unchanged as history.
+
 ## v0.21.0 — 2026-08-07
 
 - Replace the single broad entry point with seven independently invokable

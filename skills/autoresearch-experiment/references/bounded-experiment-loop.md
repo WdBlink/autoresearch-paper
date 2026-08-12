@@ -30,6 +30,12 @@ the run.
 | Authority | Who or what may make candidate decisions; screening is not adoption authority. |
 | Stop / re-authorization | Success threshold, failure and budget stops, plus every change that requires a new contract. |
 
+When external research is enabled, the contract additionally freezes the Watch
+Profile identity/hash, stable Radar pointer, allowed signal types, minimum
+evidence and contract-fit rules, literature-guided proposal budget, and
+out-of-scope action. A valid in-scope method signal is only another proposal
+operator in Research; it never changes the six bounds or bypasses Review.
+
 ## Four-state loop
 
 Each iteration is one candidate and exactly this sequence:
@@ -63,6 +69,8 @@ Append one JSON object per attempted transition to
 - run and iteration IDs; timestamps; contract and evaluator identifiers;
 - bounded hypothesis, candidate ID, allowed-scope evidence, diff/configuration,
   rollback point, commands, environment and input provenance;
+- signal identity and primary-source receipt when literature-guided, proposal
+  operator, contract-fit decision, and Adoption Ledger disposition/reason;
 - baseline, screening result (if run), evaluator result, metric values,
   evaluator logs, and declared KEEP/DISCARD rule;
 - decision (`keep`, `discard`, `invalid`, or `stop`), restoration result,
@@ -73,6 +81,11 @@ Append one JSON object per attempted transition to
 Rows for rejected, null, invalid, and accepted candidates are equally required.
 Do not overwrite history, erase a proxy failure, or represent a proxy gain as a
 KEEP decision.
+
+At run close, also record the total candidate count, full selection path, every
+dataset/split and metric exposed during search, and the resulting
+multiple-comparison/selection risk. These search-multiplicity facts remain
+visible to independent Evidence even when only one candidate is retained.
 
 At run close, write `autoresearch/candidate-package/manifest.json` as the compact
 index to the contract, evaluator evidence, accepted candidate or explicit

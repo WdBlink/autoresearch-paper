@@ -27,7 +27,8 @@ rows precede artifact-presence fallthrough. Select the first matching row.
 
 The only domain destinations are `autoresearch-discovery`,
 `karpathy-autoresearch-adapter`, `autoresearch-evaluator-engineering`,
-`autoresearch-experiment`, `autoresearch-evidence`, and `autoresearch-paper`.
+`autoresearch-radar`, `autoresearch-experiment`, `autoresearch-evidence`, and
+`autoresearch-paper`.
 Use literal `none` for a terminal outcome, confirmation-pending state, refused
 package, or any other canonical no-route row. Do not route back to Discovery
 after a Research Brief exists.
@@ -41,6 +42,14 @@ Evaluator construction is a conditional operational detour: Adapter sends a
 `partial` or `missing` evaluator to Evaluator Engineering; an Evaluator Package
 returns to Adapter. An evaluator integrity/readiness problem found by Experiment
 also returns to Adapter. Neither path is a scientific return loop.
+
+Research Radar is a conditional operational sidecar, never a lifecycle stage.
+Route an explicit `research-radar-refresh-requested` to it using only the
+Adapter-issued `autoresearch/research-watch-profile.yaml`. Its complete,
+sync-failed, cycle-failed, and commit-indeterminate outcomes all route to
+`none`; the external scheduler or a later explicit request owns any future
+scan. An indeterminate commit must be inspected before another refresh is
+requested.
 
 # Handoff
 
@@ -62,6 +71,6 @@ beyond the compact YAML handoff.
 
 # Boundaries
 
-Do not perform discovery, evaluator engineering, adaptation, experimentation,
-evidence review, or paper writing. The router represents state and selects; the
-selected skill owns all domain procedure.
+Do not perform discovery, evaluator engineering, adaptation, research-source
+scanning, experimentation, evidence review, or paper writing. The router
+represents state and selects; the selected skill owns all domain procedure.

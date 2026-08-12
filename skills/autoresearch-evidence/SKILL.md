@@ -58,6 +58,18 @@ noise, clear negative/regression results, missing coverage, and unresolved
 conflicts. A screening gain or one favorable dataset cannot support a broader
 claim than the evaluated scope.
 
+Audit the complete search history before claim testing: total candidate count,
+selection path, Adoption Ledger, and all data and metrics exposed during search.
+Account explicitly for selection bias and multiple-comparison risk when setting
+uncertainty and claim scope. A retained best run is not an independent test merely
+because only its final files appear in the manifest.
+
+For any Research Radar provenance linked by the Candidate Package, RSS summaries
+are discovery leads rather than Claim evidence. Verify the primary sources and
+their actual methods, results, population, and limitations. Conflicting or
+weaker primary evidence may qualify or reject a claim; it never authorizes method
+tuning in Evidence.
+
 ## Claim Boundary
 
 Write `validated-research-package/claim-boundary.md` with one row per intended

@@ -1,15 +1,21 @@
 # Artifact handoffs
 
-## Primary products
+## Primary lifecycle products
 
-The six stage products are:
+The five lifecycle products are:
 
 1. Research Brief — `research-brief.md`
 2. Experiment Contract — `autoresearch/experiment-contract.md`
-3. Evaluator Package — `autoresearch/evaluator-package/`
-4. Candidate Package — `autoresearch/candidate-package/`
-5. Validated Research Package — `validated-research-package/`
-6. Manuscript Package — `manuscript-package/`
+3. Candidate Package — `autoresearch/candidate-package/`
+4. Validated Research Package — `validated-research-package/`
+5. Manuscript Package — `manuscript-package/`
+
+## Conditional capability products
+
+These are compact sidecar products, not lifecycle stages:
+
+1. Evaluator Package — `autoresearch/evaluator-package/manifest.json`
+2. Research Signal Package — `autoresearch/research-radar/manifest.json`
 
 ## Compact handoff
 
@@ -28,6 +34,10 @@ exists.
 | Status token | Observable state | next_skill | input_artifact | resume_artifact |
 | --- | --- | --- | --- | --- |
 | `required-input-missing` | `Referenced required input is absent` | `none` | `none` | `none` |
+| `research-radar-sync-failed` | `Research Radar cannot prove a fresh source synchronization` | `none` | `autoresearch/research-watch-profile.yaml` | `none` |
+| `research-radar-cycle-failed` | `Research Radar failed before validated state commit` | `none` | `autoresearch/research-watch-profile.yaml` | `none` |
+| `research-radar-commit-indeterminate` | `Research Radar replaced or may have replaced its commit root but durability is unproven` | `none` | `autoresearch/research-watch-profile.yaml` | `none` |
+| `research-radar-cycle-complete` | `Research Radar committed a validated signal package and source state` | `none` | `autoresearch/research-radar/manifest.json` | `none` |
 | `no-testable-opportunity` | `Discovery found no testable opportunity` | `none` | `research-brief.md` | `none` |
 | `repository-not-runnable` | `Repository setup or required invocation cannot run within constraints` | `none` | `research-brief.md` | `none` |
 | `baseline-failed` | `Declared baseline cannot be reproduced reliably enough to freeze` | `none` | `research-brief.md` | `none` |
@@ -46,6 +56,7 @@ exists.
 | `evaluator-package-ready-for-adapter` | `Evaluator Engineering produced a package` | `karpathy-autoresearch-adapter` | `autoresearch/evaluator-package/manifest.json` | `autoresearch/experiment-contract.md` |
 | `evaluator-partial` | `Adapter classified evaluator partial` | `autoresearch-evaluator-engineering` | `autoresearch/evaluator_plan.md` | `autoresearch/evaluator-package/manifest.json` |
 | `evaluator-missing` | `Adapter classified evaluator missing` | `autoresearch-evaluator-engineering` | `autoresearch/evaluator_plan.md` | `autoresearch/evaluator-package/manifest.json` |
+| `research-radar-refresh-requested` | `Explicit external research refresh requested for an Adapter-issued watch profile` | `autoresearch-radar` | `autoresearch/research-watch-profile.yaml` | `autoresearch/research-radar/manifest.json` |
 | `manuscript-package-complete` | `Paper completed the manuscript package` | `none` | `manuscript-package/` | `none` |
 | `no-research-brief` | `Project has no Research Brief` | `autoresearch-discovery` | `none` | `research-brief.md` |
 | `research-brief-no-experiment-contract` | `Research Brief exists and no Experiment Contract exists` | `karpathy-autoresearch-adapter` | `research-brief.md` | `autoresearch/experiment-contract.md` |
@@ -77,6 +88,15 @@ explicit apply authorization, the revised plan and replacement artifact each
 reference the manifest and superseded contract; the stale contract is never
 edited or reused in place. This detour is operational and is not a scientific
 return loop.
+
+Research Radar is a second conditional operational detour. Only an explicit
+`research-radar-refresh-requested` routes its Adapter-issued Watch Profile to
+the Radar. The stable Research Signal Package pointer is a compact conditional
+product; it is not inserted into the lifecycle handoff chain. Radar completion,
+source-sync failure, pre-commit failure, and commit-indeterminate status all
+route to `none`. The indeterminate case must be inspected before retry. A
+platform scheduler may request another scan later, but Workflow never stays
+resident and Radar never becomes a scientific return loop.
 
 The terminal Adapter outcomes `repository-not-runnable` and `baseline-failed`
 are evaluated before artifact-presence fallthrough. Both retain

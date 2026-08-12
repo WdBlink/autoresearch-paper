@@ -10,18 +10,23 @@ PRODUCTS = {
     "autoresearch-discovery": "research-brief.md",
     "karpathy-autoresearch-adapter": "autoresearch/experiment-contract.md",
     "autoresearch-evaluator-engineering": "autoresearch/evaluator-package/",
+    "autoresearch-radar": "autoresearch/research-radar/manifest.json",
     "autoresearch-experiment": "autoresearch/candidate-package/",
     "autoresearch-evidence": "validated-research-package/",
     "autoresearch-paper": "manuscript-package/",
 }
 
-REFERENCE_PRODUCTS = {
+LIFECYCLE_PRODUCTS = {
     "Research Brief": "research-brief.md",
     "Experiment Contract": "autoresearch/experiment-contract.md",
-    "Evaluator Package": "autoresearch/evaluator-package/",
     "Candidate Package": "autoresearch/candidate-package/",
     "Validated Research Package": "validated-research-package/",
     "Manuscript Package": "manuscript-package/",
+}
+
+CONDITIONAL_PRODUCTS = {
+    "Evaluator Package": "autoresearch/evaluator-package/manifest.json",
+    "Research Signal Package": "autoresearch/research-radar/manifest.json",
 }
 
 ALLOWED_OUTBOUND_SKILL_REFERENCES = {
@@ -29,6 +34,7 @@ ALLOWED_OUTBOUND_SKILL_REFERENCES = {
         "autoresearch-discovery",
         "karpathy-autoresearch-adapter",
         "autoresearch-evaluator-engineering",
+        "autoresearch-radar",
         "autoresearch-experiment",
         "autoresearch-evidence",
         "autoresearch-paper",
@@ -36,9 +42,11 @@ ALLOWED_OUTBOUND_SKILL_REFERENCES = {
     "autoresearch-discovery": set(),
     "karpathy-autoresearch-adapter": {
         "autoresearch-evaluator-engineering",
+        "autoresearch-radar",
         "autoresearch-experiment",
     },
     "autoresearch-evaluator-engineering": {"karpathy-autoresearch-adapter"},
+    "autoresearch-radar": set(),
     "autoresearch-experiment": {
         "karpathy-autoresearch-adapter",
         "autoresearch-evidence",
@@ -87,18 +95,24 @@ def sole_handoff_artifacts(skill_name: str) -> set[str]:
 
 
 class ArtifactRoutingTests(unittest.TestCase):
-    def test_workflow_reference_names_exact_canonical_product_chain(self):
+    def test_workflow_reference_separates_lifecycle_and_conditional_products(self):
         reference = (
             SKILLS_ROOT
             / "autoresearch-workflow"
             / "references"
             / "artifact-handoffs.md"
         ).read_text()
-        primary_products = reference.split("## Primary products", 1)[1].split(
-            "## Compact handoff", 1
+        primary_products = reference.split("## Primary lifecycle products", 1)[1].split(
+            "## Conditional capability products", 1
         )[0]
         rows = re.findall(r"(?m)^\d+\. ([^—]+) — `([^`]+)`$", primary_products)
-        self.assertEqual(rows, list(REFERENCE_PRODUCTS.items()))
+        self.assertEqual(rows, list(LIFECYCLE_PRODUCTS.items()))
+
+        conditional = reference.split("## Conditional capability products", 1)[1].split(
+            "## Compact handoff", 1
+        )[0]
+        rows = re.findall(r"(?m)^\d+\. ([^—]+) — `([^`]+)`$", conditional)
+        self.assertEqual(rows, list(CONDITIONAL_PRODUCTS.items()))
 
     def test_each_owner_uses_its_exact_canonical_product_path(self):
         for skill, product in PRODUCTS.items():

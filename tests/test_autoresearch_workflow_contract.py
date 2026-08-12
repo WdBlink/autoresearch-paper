@@ -41,6 +41,10 @@ class WorkflowContractTests(unittest.TestCase):
     def test_route_matrix_is_ordered_and_complete(self):
         expected = [
             ("required-input-missing", "Referenced required input is absent", "none", "none", "none"),
+            ("research-radar-sync-failed", "Research Radar cannot prove a fresh source synchronization", "none", "autoresearch/research-watch-profile.yaml", "none"),
+            ("research-radar-cycle-failed", "Research Radar failed before validated state commit", "none", "autoresearch/research-watch-profile.yaml", "none"),
+            ("research-radar-commit-indeterminate", "Research Radar replaced or may have replaced its commit root but durability is unproven", "none", "autoresearch/research-watch-profile.yaml", "none"),
+            ("research-radar-cycle-complete", "Research Radar committed a validated signal package and source state", "none", "autoresearch/research-radar/manifest.json", "none"),
             ("no-testable-opportunity", "Discovery found no testable opportunity", "none", "research-brief.md", "none"),
             ("repository-not-runnable", "Repository setup or required invocation cannot run within constraints", "none", "research-brief.md", "none"),
             ("baseline-failed", "Declared baseline cannot be reproduced reliably enough to freeze", "none", "research-brief.md", "none"),
@@ -59,6 +63,7 @@ class WorkflowContractTests(unittest.TestCase):
             ("evaluator-package-ready-for-adapter", "Evaluator Engineering produced a package", "karpathy-autoresearch-adapter", "autoresearch/evaluator-package/manifest.json", "autoresearch/experiment-contract.md"),
             ("evaluator-partial", "Adapter classified evaluator partial", "autoresearch-evaluator-engineering", "autoresearch/evaluator_plan.md", "autoresearch/evaluator-package/manifest.json"),
             ("evaluator-missing", "Adapter classified evaluator missing", "autoresearch-evaluator-engineering", "autoresearch/evaluator_plan.md", "autoresearch/evaluator-package/manifest.json"),
+            ("research-radar-refresh-requested", "Explicit external research refresh requested for an Adapter-issued watch profile", "autoresearch-radar", "autoresearch/research-watch-profile.yaml", "autoresearch/research-radar/manifest.json"),
             ("manuscript-package-complete", "Paper completed the manuscript package", "none", "manuscript-package/", "none"),
             ("no-research-brief", "Project has no Research Brief", "autoresearch-discovery", "none", "research-brief.md"),
             ("research-brief-no-experiment-contract", "Research Brief exists and no Experiment Contract exists", "karpathy-autoresearch-adapter", "research-brief.md", "autoresearch/experiment-contract.md"),
@@ -73,6 +78,10 @@ class WorkflowContractTests(unittest.TestCase):
         first_forward = statuses.index("no-research-brief")
         for status in (
             "no-testable-opportunity",
+            "research-radar-sync-failed",
+            "research-radar-cycle-failed",
+            "research-radar-commit-indeterminate",
+            "research-radar-cycle-complete",
             "repository-not-runnable",
             "baseline-failed",
             "evaluator-not-validatable",
@@ -103,6 +112,22 @@ class WorkflowContractTests(unittest.TestCase):
         )
         self.assertNotIn("discovery", loops.casefold())
         self.assertIn("conditional operational detour", reference.casefold())
+
+    def test_radar_is_an_explicit_conditional_sidecar_not_a_scientific_loop(self):
+        routes = {row[0]: row for row in route_rows()}
+        refresh = routes["research-radar-refresh-requested"]
+        self.assertEqual(refresh[2], "autoresearch-radar")
+        self.assertEqual(refresh[3], "autoresearch/research-watch-profile.yaml")
+        self.assertEqual(refresh[4], "autoresearch/research-radar/manifest.json")
+        for status in (
+            "research-radar-sync-failed",
+            "research-radar-cycle-failed",
+            "research-radar-commit-indeterminate",
+            "research-radar-cycle-complete",
+        ):
+            self.assertEqual(routes[status][2], "none")
+        loops = REFERENCE.read_text().split("## Scientific return loops", 1)[1]
+        self.assertNotIn("radar", loops.casefold())
 
 
 if __name__ == "__main__":

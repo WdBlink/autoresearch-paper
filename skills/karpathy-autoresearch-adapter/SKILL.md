@@ -40,7 +40,38 @@ Research Brief requirements carried by that plan.
 Return a plan in chat and stop unless the user gives **explicit apply
 authorization**. The plan names the future product, mutable/forbidden surfaces,
 baseline, candidate isolation, invocation, scoring and KEEP/DISCARD rule,
-resource bounds, output paths, Git discipline, and a fresh-agent check.
+resource bounds, output paths, optional external research policy, Git discipline,
+and a fresh-agent check.
+
+## Optional external research policy
+
+Adapter may design one auxiliary `autoresearch/research-watch-profile.yaml` for
+the frozen Research Brief and mapped repository. It is not a lifecycle handoff
+and cannot redefine the gap, contribution, hypothesis, evaluator requirements,
+or claim. The plan must state whether external monitoring is disabled or define
+its source instances and queries, allowed signal types, minimum evidence level,
+contract-fit rules, literature-guided proposal budget, refresh and retention
+bounds, stable signal pointer, and out-of-scope action.
+
+Persist the profile **only after explicit apply authorization**. Bind it to the
+Research Brief identity/hash, repository identity, approved adaptation plan,
+and—when ready—the Experiment Contract identity/policy. Its stable input pointer
+is `autoresearch/research-radar/manifest.json`; a future profile revision needs
+the same apply boundary and never rewrites an active frozen contract in place.
+
+For `folo-local`, freeze the source instance and this exact operational subset:
+`source_scope.authorized_feed_ids|query_terms|excluded_terms`,
+`scan.hours|limit`,
+`policy.minimum_evidence_level|allowed_signal_types|refresh_max_age_minutes`,
+and `refresh_trust.producer_identity|ed25519_public_key_path|ed25519_public_key_sha256`.
+The public-key reference is execution configuration, not research evidence.
+Never infer feed authorization, source identity, or a trust anchor from
+candidate content.
+
+The conditional capability owner is `autoresearch-radar`; Adapter does not run
+Research Radar, refresh FOLO, classify source items, or adopt signals. It only
+defines how later signals may be measured against this project's execution
+boundary.
 
 ## Evaluator classification
 
@@ -80,7 +111,8 @@ contract in place.
 ## Apply only after authorization
 
 After explicit apply authorization, persist the approved design as
-`autoresearch/adaptation-plan.md`.
+`autoresearch/adaptation-plan.md` and, only when the approved plan enables
+external monitoring, the auxiliary `autoresearch/research-watch-profile.yaml`.
 
 For `ready`, create `autoresearch/experiment-contract.md` as the sole compact
 prior-stage handoff to Experiment (`autoresearch-experiment`). It must link the
@@ -88,8 +120,11 @@ frozen `research-brief.md` and frozen evaluator evidence, bind the evaluator
 identity, command, inputs/splits/seeds, scoring, gates and readiness evidence,
 and define target, baseline, mutable/forbidden files, candidate isolation,
 KEEP/DISCARD rule, budget, rollback, stop/reauthorization conditions, and
-runtime outputs. A fresh agent must be able to execute it without loading the
-Adapter conversation or another prior package.
+runtime outputs. When monitoring is enabled, it also freezes the external
+research policy, profile identity/hash, allowed signal types, minimum evidence
+level, contract-fit rule, literature-guided proposal budget, stable Radar
+pointer, and out-of-scope action. A fresh agent must be able to execute it
+without loading the Adapter conversation or another prior package.
 
 For `partial` or `missing`, create at most
 `autoresearch/evaluator_plan.md` plus the approved adaptation plan, then stop.
@@ -115,6 +150,7 @@ resume artifact.
 
 Never redefine the gap, conduct discovery, implement an evaluator, run the
 research loop or an experiment, validate final claims, gather evidence, or write
-the paper. Do not mutate in plan-only mode. Do not route to
+the paper. Do not mutate in plan-only mode. A Watch Profile grants no experiment
+authority and is never a second Research Brief. Do not route to
 `autoresearch-experiment` until an Adapter-issued `ready` contract is frozen;
 otherwise the single next owner is `autoresearch-evaluator-engineering` or none.

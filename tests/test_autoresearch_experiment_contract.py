@@ -86,6 +86,31 @@ class ExperimentContractTests(unittest.TestCase):
         ):
             self.assertIn(item, package)
 
+    def test_external_research_is_a_contract_bounded_proposal_source(self):
+        body = assert_compact_skill(self, "autoresearch-experiment")
+        section = body.split("## External research signals", 1)[1].split(
+            "## One transition", 1
+        )[0]
+        normalized = " ".join(section.split())
+        for token in (
+            "literature-guided proposal",
+            "external research policy",
+            "minimum evidence level",
+            "contract fit",
+            "never changes the frozen evaluator",
+            "out-of-scope",
+        ):
+            self.assertIn(token, normalized)
+
+    def test_adoption_and_search_multiplicity_are_recorded(self):
+        body = assert_compact_skill(self, "autoresearch-experiment")
+        normalized = " ".join(body.split())
+        self.assertIn("Adoption Ledger", normalized)
+        self.assertIn("signal identity", normalized)
+        self.assertIn("total candidate count", normalized)
+        self.assertIn("selection path", normalized)
+        self.assertIn("data and metrics exposed during search", normalized)
+
 
 if __name__ == "__main__":
     unittest.main()

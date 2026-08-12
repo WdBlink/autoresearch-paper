@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoResearch Radar"
+  short_description: "Refresh verified external research signals"
+  default_prompt: "Use $autoresearch-radar to scan an Adapter-issued watch profile and produce a verified Research Signal Package."

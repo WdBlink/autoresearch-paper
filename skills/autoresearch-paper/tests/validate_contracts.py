@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_SKILL = "compat/SKILL.v0.20.md"
+MVP0_COMPAT_SKILL = "mvp0/SKILL.compat.md"
 
 
 def read(path: str) -> str:
@@ -33,7 +34,7 @@ def main() -> int:
         "SKILL.md",
         LEGACY_SKILL,
         "mvp/README.md",
-        "mvp0/SKILL.md",
+        MVP0_COMPAT_SKILL,
         "mvp0/agents/openai.yaml",
         "mvp/research_compiler.py",
         "mvp/worker_adapter.py",
@@ -125,7 +126,7 @@ def main() -> int:
 
     require(
         contains(
-            "mvp0/SKILL.md",
+            MVP0_COMPAT_SKILL,
             "three-layer L0/L1/L2 Watchdog",
             "DELEGATED_ENGINEERING_REVIEW",
             "one `tick`",
@@ -133,6 +134,14 @@ def main() -> int:
             "does not claim 24h, 7x24",
         ),
         "MVP0 skill must expose the complete P6 Watchdog without long-stability claims",
+        errors,
+    )
+    require(
+        contains(
+            "scripts/install-mvp0.sh",
+            'mvp0/SKILL.compat.md" "${SHARED_DIR}/SKILL.md',
+        ),
+        "explicit MVP0 installer must publish the compatibility source as the installed SKILL.md",
         errors,
     )
     require(

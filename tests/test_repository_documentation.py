@@ -8,10 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class RepositoryDocumentationTests(unittest.TestCase):
     def test_readme_describes_the_exact_modular_architecture(self):
         text = (ROOT / "README.md").read_text()
-        self.assertIn("1 thin router + 5 lifecycle skills + 1 conditional capability", text)
+        self.assertIn("1 thin router + 5 lifecycle skills + 2 conditional capabilities", text)
         for name in (
             "autoresearch-workflow", "autoresearch-discovery",
             "karpathy-autoresearch-adapter", "autoresearch-evaluator-engineering",
+            "autoresearch-radar",
             "autoresearch-experiment", "autoresearch-evidence", "autoresearch-paper",
         ):
             self.assertIn(name, text)
@@ -107,3 +108,20 @@ class RepositoryDocumentationTests(unittest.TestCase):
             "provenance recorded in its generated `agents/openai.yaml`",
             spec,
         )
+
+    def test_radar_design_spec_preserves_the_conditional_sidecar_boundary(self):
+        spec = (
+            ROOT
+            / "docs/superpowers/specs/2026-08-12-autoresearch-radar-design.md"
+        ).read_text()
+        for wording in (
+            "1 thin router + 5 lifecycle skills + 2 conditional capabilities",
+            "autoresearch/research-watch-profile.yaml",
+            "autoresearch/research-radar/manifest.json",
+            "Source Cursor",
+            "Signal Decision Ledger",
+            "Adoption Ledger",
+            "RSS summary is a lead",
+        ):
+            self.assertIn(wording, spec)
+        self.assertIn("The scientific return loops remain exactly two", spec)
