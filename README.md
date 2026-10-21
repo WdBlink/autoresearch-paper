@@ -11,6 +11,7 @@
 [![License: MIT][license-shield]][license-url]
 [![Version][version-shield]][repo-url]
 [![Agent Skills][skills-shield]][skills-url]
+[![Get it on Agensi][agensi-shield]][agensi-url]
 
 </div>
 
@@ -304,6 +305,13 @@ or infrastructure to define an evaluator. Do not use it for one-off drafts,
 blog posts, slide decks, or camera-ready submission automation.
 
 ## Install
+
+> **One-prompt install via Agensi ($9.99, one-time).** Prefer not to manage the
+> GitHub install? [Autoresearch Paper: Codex + Claude Code ML Research
+> Pipeline][agensi-url] is a curated stable build (v0.20.1, single skill,
+> experimental MVP-0 preview removed) that has passed Agensi's security scan.
+> Your agent installs it from one prompt. The code below stays free and
+> MIT-licensed.
 
 Primary install path:
 
@@ -693,3 +701,5 @@ Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted wit
 [repo-url]: https://github.com/WdBlink/autoresearch-paper
 [skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
 [skills-url]: https://skills.sh/
+[agensi-shield]: https://img.shields.io/badge/Agensi-%249.99-6b4fbb
+[agensi-url]: https://www.agensi.io/skills/autoresearch-paper-codex-claude-code-ml-research-pipeline
