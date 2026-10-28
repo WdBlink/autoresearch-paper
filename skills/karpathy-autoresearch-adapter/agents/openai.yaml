@@ -1,0 +1,4 @@
+interface:
+  display_name: "Karpathy Autoresearch Adapter"
+  short_description: "Adapt a repository into an Experiment Contract"
+  default_prompt: "Use $karpathy-autoresearch-adapter to plan a repository-specific Experiment Contract before applying it."

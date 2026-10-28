@@ -1,0 +1,139 @@
+#!/bin/sh
+set -eu
+umask 077
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+requirements="$script_dir/requirements.txt"
+runtime_input=${AUTORESEARCH_FOLO_RUNTIME_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/autoresearch-folo-source}
+python_command=${AUTORESEARCH_FOLO_PYTHON:-python3.11}
+
+if command -v "$python_command" >/dev/null 2>&1; then
+    inspector_python="$python_command"
+elif command -v python3 >/dev/null 2>&1; then
+    inspector_python="python3"
+else
+    printf '%s\n' '{"error":"Python 3.11 is required (set AUTORESEARCH_FOLO_PYTHON)","status":"error"}' >&2
+    exit 2
+fi
+
+json_error() {
+    "$inspector_python" - "$1" <<'PY'
+import json
+import sys
+print(json.dumps({"status": "error", "error": sys.argv[1]}, sort_keys=True), file=sys.stderr)
+PY
+}
+
+runtime_base=$(
+    "$inspector_python" - "$runtime_input" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+def fail(message):
+    print(json.dumps({"status": "error", "error": message}, sort_keys=True), file=sys.stderr)
+    raise SystemExit(2)
+
+target = Path(os.path.abspath(os.path.expanduser(sys.argv[1])))
+current = Path(target.anchor)
+for part in target.parts[1:]:
+    current /= part
+    try:
+        details = os.lstat(current)
+    except FileNotFoundError:
+        continue
+    except OSError as exc:
+        fail(f"unable to inspect runtime path ({type(exc).__name__})")
+    if stat.S_ISLNK(details.st_mode):
+        fail("runtime path and its existing ancestors must not be symbolic links")
+protected = [Path.home() / "Library/Application Support/Folo"]
+for variable in ("FOLO_APP_SUPPORT", "FOLO_LEVELDB_PATH"):
+    value = os.environ.get(variable)
+    if value:
+        protected.append(Path(value).expanduser())
+for raw_root in protected:
+    root = raw_root.resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        continue
+    fail("runtime must be outside protected FOLO data")
+print(target)
+PY
+) || exit 2
+
+venv="$runtime_base/venv"
+marker="$runtime_base/requirements.sha256"
+"$inspector_python" - "$venv" "$marker" <<'PY' || exit 2
+import json
+import os
+import stat
+import sys
+
+def fail(message):
+    print(json.dumps({"status": "error", "error": message}, sort_keys=True), file=sys.stderr)
+    raise SystemExit(2)
+
+for index, label in ((1, "runtime venv"), (2, "runtime requirements marker")):
+    path = sys.argv[index]
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError:
+        continue
+    except OSError as exc:
+        fail(f"unable to inspect {label} ({type(exc).__name__})")
+    if stat.S_ISLNK(details.st_mode):
+        fail(f"{label} must not be a symbolic link")
+    if index == 1 and not stat.S_ISDIR(details.st_mode):
+        fail("runtime venv must be a directory")
+    if index == 2 and (
+        not stat.S_ISREG(details.st_mode) or details.st_nlink != 1
+    ):
+        fail("runtime requirements marker must be a single-link regular file")
+PY
+
+if ! command -v "$python_command" >/dev/null 2>&1; then
+    printf '%s\n' '{"error":"Python 3.11 is required (set AUTORESEARCH_FOLO_PYTHON)","status":"error"}' >&2
+    exit 2
+fi
+
+python_version=$("$python_command" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+if [ "$python_version" != "3.11" ]; then
+    json_error "AUTORESEARCH_FOLO_PYTHON must be Python 3.11 (found $python_version)"
+    exit 2
+fi
+
+requirements_hash=$(shasum -a 256 "$requirements" | awk '{print $1}')
+installed_hash=""
+if [ -f "$marker" ]; then
+    installed_hash=$(sed -n '1p' "$marker")
+fi
+
+if [ ! -x "$venv/bin/python" ] || [ "$installed_hash" != "$requirements_hash" ]; then
+    mkdir -p "$runtime_base"
+    lock="$runtime_base/bootstrap.lock"
+    if ! mkdir "$lock" 2>/dev/null; then
+        json_error "runtime bootstrap is already in progress"
+        exit 2
+    fi
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
+    bootstrap_log=$(mktemp "$runtime_base/.bootstrap.XXXXXX")
+    if ! "$python_command" -m venv --clear "$venv" >"$bootstrap_log" 2>&1; then
+        json_error "unable to create isolated FOLO runtime"
+        exit 2
+    fi
+    if ! "$venv/bin/python" -m pip install --quiet --disable-pip-version-check --no-deps -r "$requirements" >"$bootstrap_log" 2>&1; then
+        json_error "unable to install isolated FOLO runtime dependencies"
+        exit 2
+    fi
+    marker_temp=$(mktemp "$runtime_base/.requirements.XXXXXX")
+    printf '%s\n' "$requirements_hash" > "$marker_temp"
+    mv -f "$marker_temp" "$marker"
+    rm -f "$bootstrap_log"
+    rmdir "$lock"
+    trap - EXIT HUP INT TERM
+fi
+
+exec "$venv/bin/python" "$script_dir/folo_source.py" "$@"

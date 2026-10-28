@@ -1,0 +1,156 @@
+---
+name: karpathy-autoresearch-adapter
+description: Use when mapping a repository and frozen Research Brief into a plan-first, repository-specific Experiment Contract or evaluator plan.
+---
+
+# Karpathy Autoresearch Adapter
+
+## Sole handoff modes
+
+Accept exactly one compact input per invocation:
+
+| Mode | Sole input artifact |
+| --- | --- |
+| Research brief | `research-brief.md` |
+| Evaluator package return | `autoresearch/evaluator-package/manifest.json` |
+| Evaluator-invalid return | `autoresearch/evaluator-invalid-return.md` |
+
+## Core contract
+
+Act as the sole evaluator-readiness classifier. Map the repository, constraints,
+and frozen `research-brief.md` into execution design without redefining the gap,
+contribution, hypothesis, or claims. This stage owns implementation/run/
+measurement design, not evaluator construction, experiments, or science claims.
+
+The only ready-state lifecycle product is
+`autoresearch/experiment-contract.md`. `autoresearch/adaptation-plan.md` is an
+approved design record; `autoresearch/evaluator_plan.md` is the compact handoff
+for an evaluator detour. Adapter never emits a partial Experiment Contract.
+
+## Plan first
+
+Default to read-only repository inspection. Examine documentation, manifests,
+CI, entry points, tests, benchmarks, data/fixtures, evaluator commands, and
+existing artifacts. Cite the frozen Research Brief and repository evidence.
+If `autoresearch/evaluator-package/manifest.json` returns from Evaluator
+Engineering, read that manifest first and open only linked evidence needed for
+reclassification. It must bind the originating evaluator plan and the frozen
+Research Brief requirements carried by that plan.
+
+Return a plan in chat and stop unless the user gives **explicit apply
+authorization**. The plan names the future product, mutable/forbidden surfaces,
+baseline, candidate isolation, invocation, scoring and KEEP/DISCARD rule,
+resource bounds, output paths, optional external research policy, Git discipline,
+and a fresh-agent check.
+
+## Optional external research policy
+
+Adapter may design one auxiliary `autoresearch/research-watch-profile.yaml` for
+the frozen Research Brief and mapped repository. It is not a lifecycle handoff
+and cannot redefine the gap, contribution, hypothesis, evaluator requirements,
+or claim. The plan must state whether external monitoring is disabled or define
+its source instances and queries, allowed signal types, minimum evidence level,
+contract-fit rules, literature-guided proposal budget, refresh and retention
+bounds, stable signal pointer, and out-of-scope action.
+
+Persist the profile **only after explicit apply authorization**. Bind it to the
+Research Brief identity/hash, repository identity, approved adaptation plan,
+and—when ready—the Experiment Contract identity/policy. Its stable input pointer
+is `autoresearch/research-radar/manifest.json`; a future profile revision needs
+the same apply boundary and never rewrites an active frozen contract in place.
+
+For `folo-local`, freeze the source instance and this exact operational subset:
+`source_scope.authorized_feed_ids|query_terms|excluded_terms`,
+`scan.hours|limit`,
+`policy.minimum_evidence_level|allowed_signal_types|refresh_max_age_minutes`,
+and `refresh_trust.producer_identity|ed25519_public_key_path|ed25519_public_key_sha256`.
+The public-key reference is execution configuration, not research evidence.
+Never infer feed authorization, source identity, or a trust anchor from
+candidate content.
+
+The conditional capability owner is `autoresearch-radar`; Adapter does not run
+Research Radar, refresh FOLO, classify source items, or adopt signals. It only
+defines how later signals may be measured against this project's execution
+boundary.
+
+## Evaluator classification
+
+Classify repository evidence using exactly one status:
+
+- `ready`: evidence establishes a runnable deterministic comparison and score or
+  gate, fixed inputs and splits, candidate-edit isolation, discrimination and
+  known-outcome checks, and repeatability adequate for the declared budget.
+- `partial`: some credible measurement exists, but any required ready evidence
+  is absent, weak, unstable, or not yet bound.
+- `missing`: no credible evaluator exists.
+
+A deterministic command alone is insufficient. Missing readiness evidence means
+`partial`, not `ready`. Readiness authorizes bounded development measurement; it
+is not external scientific validity. Do not fabricate a judge or infer readiness
+from documentation promises.
+
+## Evaluator-invalid operational return
+
+`autoresearch/evaluator-invalid-return.md` is pre-existing durable invalidation
+evidence. In plan-only mode, read and verify its bound Experiment Contract
+identity/hash, evaluator identity and failure evidence, candidate and ledger
+state, and provenance. Treat the bound contract as ineligible for reuse in
+memory only, then reclassify from the return evidence and linked files and
+return the replacement plan in chat. Keep the worktree unchanged: do not write
+or edit the stale contract or persist any plan or replacement artifact.
+
+After explicit apply authorization, persist the revised
+`autoresearch/adaptation-plan.md` plus exactly one replacement artifact:
+replacement `autoresearch/evaluator_plan.md` for `partial` or `missing`, or a
+replacement `autoresearch/experiment-contract.md` only for `ready`. The revised
+plan and replacement artifact must each reference the invalid-return manifest
+and superseded contract identity/hash. Preserve candidate/ledger state and state
+whether the replacement may resume it, and never edit or reuse the stale
+contract in place.
+
+## Apply only after authorization
+
+After explicit apply authorization, persist the approved design as
+`autoresearch/adaptation-plan.md` and, only when the approved plan enables
+external monitoring, the auxiliary `autoresearch/research-watch-profile.yaml`.
+
+For `ready`, create `autoresearch/experiment-contract.md` as the sole compact
+prior-stage handoff to Experiment (`autoresearch-experiment`). It must link the
+frozen `research-brief.md` and frozen evaluator evidence, bind the evaluator
+identity, command, inputs/splits/seeds, scoring, gates and readiness evidence,
+and define target, baseline, mutable/forbidden files, candidate isolation,
+KEEP/DISCARD rule, budget, rollback, stop/reauthorization conditions, and
+runtime outputs. When monitoring is enabled, it also freezes the external
+research policy, profile identity/hash, allowed signal types, minimum evidence
+level, contract-fit rule, literature-guided proposal budget, stable Radar
+pointer, and out-of-scope action. A fresh agent must be able to execute it
+without loading the Adapter conversation or another prior package.
+
+For `partial` or `missing`, create at most
+`autoresearch/evaluator_plan.md` plus the approved adaptation plan, then stop.
+The evaluator plan is the sole compact prior-stage handoff to
+`autoresearch-evaluator-engineering`. It carries the frozen Research Brief
+identity/hash/reference, its frozen evaluation requirements, permitted design
+latitude that cannot redefine them, necessary project files, risks, and missing
+readiness evidence. Do not create an Experiment Contract. After an Evaluator
+Package returns, reclassify it here and create a final contract only if all
+`ready` evidence exists.
+
+## Stop and boundaries
+
+Emit terminal `repository-not-runnable` when repository setup or required
+invocation cannot run under the stated constraints. Emit terminal
+`baseline-failed` when the declared baseline cannot be reproduced reliably
+enough to freeze. Use `research-brief.md` as the compact terminal input for both
+and route nowhere. Report operational evidence; do not redefine the research
+question, evaluation requirement, or scientific claim to escape either outcome.
+Preserve an already-authorized `autoresearch/adaptation-plan.md` and its failure
+evidence as internal records when they exist, but never advertise an automatic
+resume artifact.
+
+Never redefine the gap, conduct discovery, implement an evaluator, run the
+research loop or an experiment, validate final claims, gather evidence, or write
+the paper. Do not mutate in plan-only mode. A Watch Profile grants no experiment
+authority and is never a second Research Brief. Do not route to
+`autoresearch-experiment` until an Adapter-issued `ready` contract is frozen;
+otherwise the single next owner is `autoresearch-evaluator-engineering` or none.
