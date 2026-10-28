@@ -7,27 +7,25 @@ requirements="$script_dir/requirements.txt"
 runtime_input=${AUTORESEARCH_FOLO_RUNTIME_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/autoresearch-folo-source}
 python_command=${AUTORESEARCH_FOLO_PYTHON:-python3.11}
 
-if ! command -v "$python_command" >/dev/null 2>&1; then
+if command -v "$python_command" >/dev/null 2>&1; then
+    inspector_python="$python_command"
+elif command -v python3 >/dev/null 2>&1; then
+    inspector_python="python3"
+else
     printf '%s\n' '{"error":"Python 3.11 is required (set AUTORESEARCH_FOLO_PYTHON)","status":"error"}' >&2
     exit 2
 fi
 
 json_error() {
-    "$python_command" - "$1" <<'PY'
+    "$inspector_python" - "$1" <<'PY'
 import json
 import sys
 print(json.dumps({"status": "error", "error": sys.argv[1]}, sort_keys=True), file=sys.stderr)
 PY
 }
 
-python_version=$($python_command -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if [ "$python_version" != "3.11" ]; then
-    json_error "AUTORESEARCH_FOLO_PYTHON must be Python 3.11 (found $python_version)"
-    exit 2
-fi
-
 runtime_base=$(
-    "$python_command" - "$runtime_input" <<'PY'
+    "$inspector_python" - "$runtime_input" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -68,7 +66,7 @@ PY
 
 venv="$runtime_base/venv"
 marker="$runtime_base/requirements.sha256"
-"$python_command" - "$venv" "$marker" <<'PY' || exit 2
+"$inspector_python" - "$venv" "$marker" <<'PY' || exit 2
 import json
 import os
 import stat
@@ -95,6 +93,18 @@ for index, label in ((1, "runtime venv"), (2, "runtime requirements marker")):
     ):
         fail("runtime requirements marker must be a single-link regular file")
 PY
+
+if ! command -v "$python_command" >/dev/null 2>&1; then
+    printf '%s\n' '{"error":"Python 3.11 is required (set AUTORESEARCH_FOLO_PYTHON)","status":"error"}' >&2
+    exit 2
+fi
+
+python_version=$("$python_command" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+if [ "$python_version" != "3.11" ]; then
+    json_error "AUTORESEARCH_FOLO_PYTHON must be Python 3.11 (found $python_version)"
+    exit 2
+fi
+
 requirements_hash=$(shasum -a 256 "$requirements" | awk '{print $1}')
 installed_hash=""
 if [ -f "$marker" ]; then
