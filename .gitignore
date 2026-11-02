@@ -41,6 +41,9 @@ results.tsv
 # Local OPC execution evidence; never publish transient review state.
 /.harness/
 
+# Isolated implementation worktrees.
+/.worktrees/
+
 # OS temp / build
 *.log
 tmp/

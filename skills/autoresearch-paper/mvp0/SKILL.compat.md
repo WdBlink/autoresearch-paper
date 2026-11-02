@@ -1,6 +1,6 @@
 ---
 name: autoresearch-paper-mvp0
-description: Run the Codex-hosted AutoResearch MVP-0 P1–P6 loop: compile and freeze a falsifiable Research IR, dispatch a fixed Claude Code/MiniMax Worker, record evidence, decide the Gate, recompile bounded successors, and supervise the run with a three-layer L0/L1/L2 Watchdog. Use for MVP-0 research-loop tests and bounded unattended execution. This does not claim 24h, 7x24, production readiness, SOTA, or paper-writing completion.
+description: 'Run the Codex-hosted AutoResearch MVP-0 P1–P6 loop: compile and freeze a falsifiable Research IR, dispatch a fixed Claude Code/MiniMax Worker, record evidence, decide the Gate, recompile bounded successors, and supervise the run with a three-layer L0/L1/L2 Watchdog. Use for MVP-0 research-loop tests and bounded unattended execution. This does not claim 24h, 7x24, production readiness, SOTA, or paper-writing completion.'
 ---
 
 # AutoResearch Paper MVP0

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Paper"
+  short_description: "Write a paper from frozen validated research"
+  default_prompt: "Use $autoresearch-paper to turn this Validated Research Package into a submission-ready manuscript."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Evidence"
+  short_description: "Validate results and freeze the Claim Boundary"
+  default_prompt: "Use $autoresearch-evidence to validate this frozen candidate and produce its Claim Boundary."

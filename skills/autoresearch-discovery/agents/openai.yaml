@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Discovery"
+  short_description: "Turn an idea into a falsifiable Research Brief"
+  default_prompt: "Use $autoresearch-discovery to turn this idea into a falsifiable Research Brief."

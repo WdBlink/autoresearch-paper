@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto-Research Experiment"
+  short_description: "Run bounded search inside an Experiment Contract"
+  default_prompt: "Use $autoresearch-experiment to run the frozen Research, Development, Review, and Record loop."

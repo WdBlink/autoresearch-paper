@@ -1,0 +1,6 @@
+ccl_simplesnappy @ git+https://github.com/cclgroupltd/ccl_simplesnappy.git@3d085230baa8c46cf2090ebba29bf6e8eab31087
+ccl_chromium_reader @ git+https://github.com/cclgroupltd/ccl_chromium_reader.git@9639a318ce0f7b546e1d8d02d89423ab6b4ae202
+PyYAML==6.0.3
+cryptography==50.0.0
+cffi==2.0.0
+pycparser==2.23
