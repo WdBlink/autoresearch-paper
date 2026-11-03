@@ -1,557 +1,870 @@
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset=".github/logo-light.svg">
-    <img alt="Autoresearch Paper" src=".github/logo-light.svg" width="440">
-  </picture>
-</div>
+> This development branch replaces the former autoresearch-paper source tree
+> with the complete `uditgoenka/autoresearch` v2.3.0 base at
+> `7bddd056dfd0b0ded8360588d8101b1ecb5c0baa`. All upstream commands and hooks
+> are retained. New paper work uses `$autoresearch paper` or `/autoresearch:paper`.
+> The new paper source is `foundation/`, bundled by the upstream transform and
+> installed with the same installer. See [paper integration](docs/PAPER_INTEGRATION.md)
+> and [knowledge migration](docs/KNOWLEDGE_MIGRATION.md) for scope and verification.
 
 <div align="center">
 
-[![License: MIT][license-shield]][license-url]
-[![Version][version-shield]][repo-url]
-[![Agent Skills][skills-shield]][skills-url]
+# Autoresearch
+
+**Turn [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenCode](https://opencode.ai), [OpenAI Codex](https://developers.openai.com/codex), [pi](https://github.com/earendil-works/pi-coding-agent), or Muse into a relentless improvement engine.**
+
+Based on [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) — constraint + mechanical metric + autonomous iteration = compounding gains.
+
+[![Claude Code Skill](https://img.shields.io/badge/Claude_Code-Skill-blue?logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
+[![OpenCode](https://img.shields.io/badge/OpenCode-Skill-purple)](https://opencode.ai)
+[![Codex](https://img.shields.io/badge/Codex-Skill-green?logo=openai&logoColor=white)](https://developers.openai.com/codex)
+[![pi](https://img.shields.io/badge/pi-Extension-teal)](https://github.com/earendil-works/pi-coding-agent)
+[![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/uditgoenka/autoresearch/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+[![Based on](https://img.shields.io/badge/Based_on-Karpathy's_Autoresearch-orange)](https://github.com/karpathy/autoresearch)
+[![Follow @iuditg](https://img.shields.io/badge/Follow-@iuditg-000000?style=flat&logo=x&logoColor=white)](https://x.com/intent/follow?screen_name=iuditg)
+[![Support](https://img.shields.io/badge/Support-PayPal-00457C?style=flat&logo=paypal&logoColor=white)](https://paypal.me/uditgoenka)
+
+<br>
+
+*"Set the GOAL → The agent runs the LOOP → You wake up to results"*
+
+*You don't need AGI. You need a goal, a metric, and a loop that never quits.*
+
+**Supports Claude Code, OpenCode, OpenAI Codex, pi, and Muse for the core skill, bundled runtime, installation, and verification surface. Hook guardrails ship for Claude Code (native hooks) and pi (extension events).**
+
+> **Fork-and-flush:** metric loops escape plateaus the way [Cai et al. (arXiv:2610.07447)](https://arxiv.org/abs/2610.07447) do. At 33% and 66% of the budget, or after 5 iterations with no `keep`, the loop forks fresh-context branches from the best commit so far, runs each briefly, and keeps the winner. Half the branches pick their own ideas (randomness); the other half each get a distinct experiment from a stateless Advisor that reads the results log ([Zhang et al., arXiv:2610.07625](https://arxiv.org/abs/2610.07625)); `Guided: R` sets the split. The orchestrator answers a plateau with `FORK` before it gives up. See [guide/autoresearch.md](guide/autoresearch.md#getting-unstuck-fork-and-flush).
+
+> **v2.2.0 — Autonomous Orchestrator:** Type a plain-language goal to `/autoresearch` and it classifies your goal, derives a Success predicate, confirms it once, then loops across subcommands until done. No manual chaining required. `Metric:`/`Verify:` invocations run the classic loop unchanged. See [guide/autoresearch-orchestrator.md](guide/autoresearch-orchestrator.md).
+
+<br>
+
+[How It Works](#how-it-works) · [Commands](#commands) · [Quick Start](#quick-start) · [Guides](guide/) · [FAQ](#faq)
 
 </div>
 
-Autoresearch Paper helps AI researchers keep long-running paper projects
-honest: it makes agents prove the algorithm or experiment works before they
-start writing.
+---
 
-## Status
+```
+     PLAN             LOOP            DEBUG             FIX             SECURE            SHIP
+ ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+ │   Goal   │     │  Modify  │     │   Find   │     │   Fix    │     │  STRIDE  │     │  Stage   │
+ │  Metric  │────▶│  Verify  │────▶│   Bugs   │────▶│  Errors  │────▶│  OWASP   │────▶│  Deploy  │
+ │  Scope   │     │Keep/Drop │     │  Trace   │     │  Repair  │     │ Red Team │     │ Release  │
+ └──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘
+ /autoresearch:   /autoresearch    /autoresearch:   /autoresearch:   /autoresearch:   /autoresearch:
+   plan                              debug            fix              security         ship
 
-- **Current version:** v0.18.0
-- **Stability:** Experimental; bounded stage-crossing acceptance target
-- **Tier coverage:** `arxiv` (open) · `conference` (gated) · `journal-q1` (gated)
-- **Direction:** Claude Code is the canonical Harness entry point. MiniMax M3
-  workers, authenticated lifecycle authority, evidence gates, typed patrol,
-  owned cleanup, the launchd-backed durable state loop, evaluator admission,
-  capsule-bound MiniMax/Codex production transport, replayed scientific
-  acceptance, deterministic integrity-failure routing, and two-stage gated
-  learning promotion, and bounded seven-fault/multi-session acceptance are
-  implemented.
-  The packaged `claude-research-conformance-v1` workflow is a closed M1
-  conformance fixture: it journals operation IDs and verifies terminal
-  evidence, but does not claim to be the production topic-to-paper trigger.
-  The production loop now has external registration, tick leases, canonical
-  revisions, fresh context capsules, and evaluator-eligibility blocking;
-  bounded fault/restart evidence is complete. The scientific-figure path now
-  binds source data, transformations, renderer identity, commands, outputs,
-  hashes, a figure-stage-frozen expected set, an exact inventory, and
-  output-bound human review before writing.
-  v0.18 adds the compiled Research Ledger Dashboard: one explicitly selected
-  plan, fresh read-only inspection, bounded bound-log and dossier views,
-  loopback-only serving, local assets, and no browser lifecycle authority.
-  New staged plans freeze a human-owned optimization contract and exactly one
-  first-stage envelope. CP-01 uses the strongest allowed Codex reviewer, while
-  the deterministic controller remains authoritative. Each candidate gets one
-  logical isolated Gate decision; terminal MiniMax reports receive fresh
-  non-M3 review before at most one next stage is compiled.
-  v0.17 makes `state/staged_research/v1/` the sole runtime truth;
-  `state/progress.json` and `state/research-dossier.md` are rebuildable,
-  non-authoritative views. Capacity v2 separates per-stage and global Worker
-  limits from STAGE-REVIEW and named checkpoint capacity. An initial signed
-  contract may pre-authorize exactly one named next stage, and the controller
-  may cross only after the prior stage has a terminal decision, MiniMax report,
-  and fresh strongest-policy review. Silence is never approval.
-  Observation-only bootstrap stages have an explicit non-Gate terminal path:
-  preflight freezes path/hash/symbol/line bindings, the shipped executable
-  validator checks the promoted inventory, and the controller records no
-  Gate-accepted or reusable evidence before the mandatory strong review.
-  Terminal scientific report content remains MiniMax-authored; after the call,
-  the controller adds only the otherwise unknowable role-visible provenance
-  hash to the canonical report.
-  v0.16.2 expands content-addressed review material into the actual CP-01
-  audit context, rejects underfunded multi-call policies, and uses a real
-  Claude-to-first-work-unit run as field acceptance. It rejects unavailable
-  Claude executables and non-UTF-8 sources before budget mutation and reserves
-  dispatch/scientific capacity under one controller lock. v0.16.1 added typed negative frontier
-  advice, conservative unknown-usage charging, fail-fast stage-review routing,
-  and signed prospective capacity grants without refunding launched calls.
-  v0.17 claims only a bounded stage-crossing capability and acceptance target:
-  one first-stage-terminal to second-stage-Worker-start crossing. It does not
-  claim second-stage completion, scientific success, 24h or 7×24 stability,
-  production readiness, or full cutover.
-  MAVIS is available only as explicit legacy compatibility. See
-  [`skills/autoresearch-paper/references/claude-code-runtime.md`](skills/autoresearch-paper/references/claude-code-runtime.md), the design notes in
-  [`docs/evolution/design-review-2026-06-26.md`](docs/evolution/design-review-2026-06-26.md)
-  and forward-looking plans in [`docs/ROADMAP.md`](docs/ROADMAP.md).
-- **Maintenance:** issues and PRs welcome; major refactors land in
-  feature branches first.
+ ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+ │  Probe   │     │ Scenario │     │ Predict  │     │  Reason  │
+ │ Require- │     │   Edge   │     │ 5-Expert │     │  Debate  │
+ │  ments   │     │  Cases   │     │  Swarm   │     │ Converge │
+ └──────────┘     └──────────┘     └──────────┘     └──────────┘
+ /autoresearch:   /autoresearch:   /autoresearch:   /autoresearch:
+   probe            scenario         predict          reason
 
-## Table of Contents
+ ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+ │  Learn   │     │ Improve  │     │   Eval   │     │ Baseline │
+ │   Docs   │     │ Research │     │ Analyze  │     │   Diff   │
+ │   Gen    │     │   PRDs   │     │ Results  │     │ Verdict  │
+ └──────────┘     └──────────┘     └──────────┘     └──────────┘
+ /autoresearch:   /autoresearch:   /autoresearch:   /autoresearch:
+   learn            improve          evals            regression
+```
 
-1. [Why](#why)
-2. [Features](#features)
-3. [Quick Start](#quick-start)
-4. [Architecture](#architecture)
-5. [When To Use](#when-to-use)
-6. [Install](#install)
-7. [Dependencies](#dependencies)
-8. [Usage](#usage)
-9. [Workflow](#workflow)
-10. [Repository Layout](#repository-layout)
-11. [FAQ](#faq)
-12. [Boundaries](#boundaries)
-13. [Contributing](#contributing)
-14. [Tests](#tests)
-15. [Changelog](#changelog)
-16. [Citation](#citation)
-17. [License](#license)
+---
 
-## Why
+## Why This Exists
 
-Long-running AI research runs often fail in the same way: agents explore for
-hours, lose the thread, retry the same weak direction, then write an honest
-paper about a near-zero contribution. Autoresearch Paper makes that failure
-visible and recoverable with evaluator freeze, research acceptance gates,
-heartbeat watchdogs, and manifest-driven cleanup.
+[Karpathy's autoresearch](https://github.com/karpathy/autoresearch) demonstrated that a 630-line Python script could autonomously improve ML models overnight — **100 experiments per night** — by following simple principles: one metric, constrained scope, fast verification, automatic rollback, git as memory.
 
-## Features
+**Claude Autoresearch generalizes these principles to ANY domain.** Not just ML — code, content, marketing, sales, HR, DevOps, or anything with a number you can measure.
 
-- Blocks writing until the research gate passes or the human owner waives it.
-- Tracks failed directions so agents pivot structurally instead of repeating
-  the same dead end.
-- Separates runtime stalls from scientific no-improvement using typed failures.
-- Requires a plan-bound, independently registered L0/L1/L2 assurance closure
-  before any unattended durable Worker can start.
-- Requires signed, expiring, replay-protected pause, resume, stop, waiver,
-  worker cancellation, and cleanup actions.
-- Removes only exact-path, token-bound, plan-owned ephemeral resources.
-- Verifies paper packages with artifact-only reviewer checks, not producer
-  self-claims.
-- Dispatches schema-bounded MiniMax M3 workers through Claude Code and reserves
-  a frozen budget before sparse Codex checkpoint audits.
-- Registers a session-independent launchd trigger with exactly-one tick claims,
-  rebuildable canonical state, and fresh hash-bound task capsules.
-- Treats `state/staged_research/v1/` as the only staged runtime authority and
-  uses `rebuild-staged-projections` to rebuild `state/progress.json` plus
-  `state/research-dossier.md` as disposable operator projections.
-- Blocks unattended conference/journal autonomy until evaluator authority,
-  replay, regression, immutable inputs, search space, and complexity policy
-  pass executable admission; any identity drift revokes eligibility.
-- Serves one plan through a compiled Research Ledger Dashboard without adding
-  a second progress store, a Node.js runtime dependency, or browser controls.
+**v2.1.0 is a major architecture rebuild.** The monolithic SKILL.md (813 lines, ~100K tokens per invocation) is replaced with a thin 41-line routing file and 12 self-contained command files (94–120 lines each, ~5–8K tokens per invocation). That is a **95% token reduction** with the same capability surface.
+
+---
+
+## How It Works
+
+```
+LOOP (N iterations or until done):
+  1. Review current state + git history + results log
+  2. Pick the next change (based on what worked, what failed, what's untried)
+  3. Make ONE focused change
+  4. Git commit (before verification)
+  5. Run mechanical verification (tests, benchmarks, scores)
+  6. If improved → keep. If worse → git revert. If crashed → fix or skip.
+  7. Log the result
+  8. Repeat until N iterations complete or goal is met.
+```
+
+Every improvement stacks. Every failure auto-reverts. Progress is logged in TSV format.
+
+### The Setup Phase
+
+Before looping, Claude performs a one-time setup:
+
+1. **Read context** — reads all in-scope files
+2. **Define goal** — extracts or asks for a mechanical metric
+3. **Define scope** — which files can be modified vs read-only
+4. **Establish baseline** — runs verification on current state (iteration #0)
+5. **Confirm and go** — shows setup, then begins the loop
+
+### 8 Critical Rules
+
+| # | Rule |
+|---|------|
+| 1 | **Bounded by default** — every command has a default iteration count; unlimited is opt-in via `Iterations: unlimited` |
+| 2 | **Read before write** — understand full context before modifying |
+| 3 | **One change per iteration** — atomic changes; if it breaks, you know why |
+| 4 | **Mechanical search signal, independent acceptance** — no subjective "looks good"; the optimized metric never certifies behavior preservation |
+| 5 | **Automatic rollback** — failed changes revert instantly |
+| 6 | **Simplicity wins** — equal results + less code = keep |
+| 7 | **Git is memory** — experiments committed with `experiment:` prefix; agent reads `git log` + `git diff` before each iteration |
+| 8 | **When stuck, think harder** — re-read, combine near-misses, try radical changes |
+
+---
+
+## Hooks & Safety
+
+Hooks are defense-in-depth guardrails, not a security sandbox. Claude Code ships the hook surface natively; pi ships the same guardrails as extension events (`tool_call`, `before_agent_start`, `input`, `session_start`, `session_shutdown`). OpenCode, Codex, and Muse ship the core skill/runtime/install surface without hook parity.
+
+### What's Protected
+
+| Hook | What it does | Event |
+|------|-------------|-------|
+| **scout-block** | Blocks node_modules/, .git/, __pycache__/, etc. from filling your context | PreToolUse |
+| **privacy-block** | Blocks .env, SSH keys, credentials from being read in sessions | PreToolUse |
+| **dangerous-cmd-block** | Blocks force-push, `rm -rf`, `git reset --hard` | PreToolUse |
+| **iteration-context** | Injects recent TSV iteration data after context compaction | UserPromptSubmit |
+| **subagent-context** | Gives subagents awareness of active loop state | SubagentStart |
+| **dev-rules-reminder** | Re-injects plan path and code standards after compaction | UserPromptSubmit |
+| **simplify-gate** | Warns at 400 LOC, blocks at 800 LOC before shipping | UserPromptSubmit |
+| **session-init** | Sets up project context at session start | SessionStart |
+| **stop-notify** | Terminal notification + optional webhook on session end | SessionEnd |
+
+### Configuration
+
+All hooks are **on by default**. Disable individually only for troubleshooting:
+
+```bash
+# Disable a specific hook
+export AR_DISABLE_SCOUT_BLOCK=1
+export AR_DISABLE_PRIVACY_BLOCK=1
+export AR_DISABLE_DANGEROUS_CMD_BLOCK=1
+# ... etc for each hook name
+```
+
+Optional webhook for session completion notifications:
+
+```bash
+export AR_NOTIFY_WEBHOOK=https://hooks.slack.com/services/...
+```
+
+Customize blocked directories with a `.ckignore` file (gitignore syntax) at your project root.
+
+See [guide/hooks.md](guide/hooks.md) for full reference.
+
+Release preparation and contributor verification live in [scripts/release.md](scripts/release.md).
+
+---
+
+## Commands
+
+| Command | What it does | Default Iterations |
+|---------|--------------|--------------------|
+| `/autoresearch` | **Classic:** Core iterate loop: modify → verify → keep/discard · **Orchestrator:** free-form goal → auto-select pipeline → loop until predicate met | 25 / goal-bounded |
+| `/autoresearch:plan` | Convert goal into validated config | one-shot |
+| `/autoresearch:debug` | Hunt bugs via hypothesis iteration | 15 |
+| `/autoresearch:fix` | Crush errors one-by-one to zero | 20 |
+| `/autoresearch:security` | STRIDE + OWASP audit with red-team | 15 |
+| `/autoresearch:ship` | Ship through 8 phases | linear |
+| `/autoresearch:scenario` | Generate edge cases across 12 dimensions | 20 |
+| `/autoresearch:predict` | 5 expert personas debate | one-shot |
+| `/autoresearch:learn` | Scout → generate docs → validate → fix | 10 |
+| `/autoresearch:reason` | Adversarial debate with blind judges | 8 |
+| `/autoresearch:probe` | 8 personas interrogate requirements | 15 |
+| `/autoresearch:improve` | Research ICP, discover improvements, generate PRDs | 15 |
+| `/autoresearch:evals` | Analyze iteration results: trends, plateaus | one-shot |
+| `/autoresearch:regression` | Stability gate: baseline vs candidate, verdict STABLE/UNSTABLE | one-shot |
+
+**Universal flags:** `Iterations: N`, `Iterations: unlimited`, `--evals`, `--evals-interval N`, `--chain <targets>`, `--<subcommand>` shorthand.
+
+**All commands use interactive setup when invoked without arguments.** Just type the command — the agent asks for what it needs with smart defaults based on your codebase.
+
+> **OpenCode users:** Commands use underscore naming (`/autoresearch_debug`, `/autoresearch_fix`, etc.). All 14 commands available.
+>
+> **Codex users:** Invoke via `$autoresearch` mention syntax. Subcommands are keywords: `$autoresearch debug`, `$autoresearch plan`, etc.
+
+### Quick Decision Guide
+
+| I want to... | Use |
+|--------------|-----|
+| Give a plain-language goal, let it self-orchestrate | `/autoresearch <goal>` (bare, no Metric/Verify) |
+| Improve test coverage / reduce bundle size / any metric | `/autoresearch` |
+| Run bounded iterations | Add `Iterations: N` to any command |
+| Don't know what metric to use | `/autoresearch:plan` |
+| Run a security audit | `/autoresearch:security` |
+| Ship a PR / deployment / release | `/autoresearch:ship` |
+| Optimize without breaking existing tests | Add `Guard: npm test` |
+| Hunt all bugs in a codebase | `/autoresearch:debug` |
+| Fix all errors (tests, types, lint) | `/autoresearch:fix` |
+| Debug then auto-fix | `/autoresearch:debug --fix` |
+| Check if something is ready to ship | `/autoresearch:ship --checklist-only` |
+| Explore edge cases for a feature | `/autoresearch:scenario` |
+| Generate test scenarios | `/autoresearch:scenario --format test-scenarios` |
+| Get expert opinions before starting | `/autoresearch:predict` |
+| Analyze from multiple angles then debug | `/autoresearch:predict --chain debug` |
+| Generate docs for a new codebase | `/autoresearch:learn --mode init` |
+| Update existing docs after changes | `/autoresearch:learn --mode update` |
+| Debate an architecture decision | `/autoresearch:reason --domain software` |
+| Surface hidden constraints before starting | `/autoresearch:probe` |
+| Pre-flight a fuzzy goal then loop | `/autoresearch:probe --chain plan,autoresearch` |
+| Discover what to build next for your ICP | `/autoresearch:improve` |
+| Research competitors and generate PRDs | `/autoresearch:improve --depth deep` |
+| Probe requirements then research improvements | `/autoresearch:probe --improve` |
+| Analyze trends and plateaus across past runs | `/autoresearch:evals` |
+| Check if a run has stalled | `/autoresearch:evals --file *-results.tsv` |
+| Verify a change won't regress before pushing | `/autoresearch:regression` |
+| Gate a PR: predict, fix, re-gate, then ship | `/autoresearch:regression --predict --fix --ship` |
+
+---
 
 ## Quick Start
 
-```text
-/autoresearch-paper — turn a research brief into a gated paper pipeline.
-/autoresearch-paper status — inspect canonical, scheduler, Worker, process, log, and watchdog state without mutation.
-/autoresearch-paper dashboard — open the loopback-only Research Ledger for one selected plan.
-/autoresearch-paper stop — exact-once runtime shutdown, then report exact residual resources.
-```
+### Claude Code
 
-## Architecture
-
-The target control plane is Claude Code, with a deterministic file-backed
-controller between model output and formal plan state. Legacy MAVIS resources
-are compatibility-only. The research flow is:
-
-```
-Claude Code control plane
-        │
-        ▼
-deterministic controller ── canonical staged/durable state ── evidence ledger
-        │
-        ├── L0 launchd health supervisor (health-only, zero model calls)
-        ├── L1 launchd durable work trigger (leases + state advance)
-        └── L2 controller Worker heartbeat receipts
-                │
-                ├── MiniMax/Claude Worker proposals
-                └── sparse Codex checkpoints + independent retry lineage
-```
-
-L0, L1, and L2 are bound by one immutable activation receipt but keep distinct
-scheduler/command identities. Legacy Mavis cron, `plan-l0-guard.py`, and
-`last_seen.jsonl` remain compatibility artifacts rather than activation proof.
-
-**Research gate (T6.1/T6.2):** The controller binds evaluator, evidence,
-threshold, candidate, and measured verdict hashes. Bare PASS text is rejected.
-Conference and journal writing additionally require an applied CP-04 final
-evidence audit; waivers are signed human records.
-
-**Unattended autonomy gate:** Conference and journal-q1 durable triggers cannot
-register or advance without a current evaluator-admission receipt. The
-controller revalidates authority, replay, regression, inputs, search space,
-complexity policy, and exact evaluator identity on every autonomy boundary.
-
-**Resource manifest:** Every target-owned removable resource is recorded in
-`resource_manifest.json` with an exact path, ownership nonce, and scope.
-Cleanup requires an authenticated receipt and refuses shared or escaping paths.
-
-**Pause / resume:** Both actions require a signed, expiring, replay-protected
-human record. The deterministic controller writes canonical receipts and keeps
-the durable plan state available across Claude sessions.
-
-**Bounded staged continuation:** Capacity v2 keeps the active stage's Worker
-quota, the plan-global Worker allowance, terminal `STAGE-REVIEW`, and
-CP-01/CP-02/CP-04 (optionally CP-03) in separate non-transferable classes. A
-frontier top-up never increases Worker capacity. If the initial signed
-`authorize_contract` names exactly one next stage, `advance-staged-research`
-may derive one bound continuation receipt after terminal decision/report/review
-evidence and start exactly one Worker for that next stage. No response or
-operator silence counts as approval.
-
-For the deeper plan structure, see
-[`skills/autoresearch-paper/SKILL.md`](skills/autoresearch-paper/SKILL.md).
-
-## When To Use
-
-Use this when you have a research idea, a target venue, and enough material
-or infrastructure to define an evaluator. Do not use it for one-off drafts,
-blog posts, slide decks, or camera-ready submission automation.
-
-## Install
-
-Primary install path:
+**Option A — npx install (recommended):**
 
 ```bash
-npx skills add WdBlink/autoresearch-paper -g
+npx skills add uditgoenka/autoresearch
 ```
 
-Upgrade copied installations to v0.18.0 with a full bundle refresh so the
-runtime and response schema move together:
+All 14 commands are available after restarting Claude Code.
 
+**Option B — Plugin install:**
+
+```
+/plugin marketplace add uditgoenka/autoresearch
+/plugin install autoresearch@autoresearch
+```
+
+> **Note:** Start a new Claude Code session after installing. Reference files aren't resolvable in the same session where installation happened — this is a Claude Code platform limitation.
+
+**Updating (no reinstall needed):**
+```
+/plugin update autoresearch
+```
+
+Run `/reload-plugins` to activate. No need to uninstall or re-clone.
+
+**Option C — Manual copy:**
 ```bash
-npx skills add WdBlink/autoresearch-paper -g --copy
+git clone https://github.com/uditgoenka/autoresearch.git
+
+# Copy skill + subcommands to your project
+cp -r autoresearch/.claude/skills/autoresearch .claude/skills/autoresearch
+cp -r autoresearch/.claude/commands/autoresearch .claude/commands/autoresearch
+cp autoresearch/.claude/commands/autoresearch.md .claude/commands/autoresearch.md
 ```
 
-Then verify local runtime dependencies from the installed skill directory:
-
+Or install globally:
 ```bash
-scripts/setup.sh
+cp -r autoresearch/.claude/skills/autoresearch ~/.claude/skills/autoresearch
+cp -r autoresearch/.claude/commands/autoresearch ~/.claude/commands/autoresearch
+cp autoresearch/.claude/commands/autoresearch.md ~/.claude/commands/autoresearch.md
 ```
 
-Install the focused scientific figure capability at the audited upstream
-revision. Do not install the complete collection merely for this workflow:
-
+**Option D — Guided installer:**
 ```bash
-gh skill install K-Dense-AI/scientific-agent-skills \
-  scientific-visualization \
-  --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 \
-  --agent claude-code --scope user
-
-# Repeat only when Codex does not share the Claude/user skill directory.
-gh skill install K-Dense-AI/scientific-agent-skills \
-  scientific-visualization \
-  --pin 70a0d595e54b8d92ca54f216d4315e0ab8c7d967 \
-  --agent codex --scope user
+git clone https://github.com/uditgoenka/autoresearch.git
+cd autoresearch
+./scripts/install.sh --claude --global
 ```
 
-`scientific-schematics` is optional and proposal-only. If installed, it may
-draft method or architecture diagrams, but neither its generated image nor an
-AI quality score passes the repository-owned figure gate.
+### OpenCode Quick Start
 
-For a project-level install, omit `-g`:
-
+**Option A — Guided installer (recommended):**
 ```bash
-npx skills add WdBlink/autoresearch-paper
+git clone https://github.com/uditgoenka/autoresearch.git
+cd autoresearch
+./scripts/install.sh --opencode --global
 ```
 
-### Legacy Mavis Runtime Registration
+**Option B — Manual copy:**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
 
-This skill can be invoked from Agent Skills-compatible runtimes after `npx`
-install. The target worker and frontier-advisor path does not require MAVIS.
-Old watchdog agent, cron, hook, and cleanup fixtures require it only when the
-caller explicitly selects the legacy compatibility path.
-
-If your Mavis build does not scan Agent Skills directories, register the
-installed source directory into your Mavis skill root as a symlink or copy.
-Keep one source of truth; avoid maintaining a stale manual copy.
-
-## Dependencies
-
-`scripts/setup.sh` checks the runtime surface and blocks with repair
-instructions if anything required is missing.
-
-| Dependency | Why it is needed |
-|---|---|
-| Claude Code | primary Harness host and MiniMax M3 dispatch |
-| Mavis CLI | optional legacy team-plan/watchdog compatibility |
-| Python 3 | bundled guards, cleanup, tests |
-| Codex CLI | registered sparse frontier-advisor checkpoints |
-| Node.js / npx | GitHub skill installation |
-| Scientific Visualization skill | focused deterministic publication-figure guidance and helpers |
-| Scientific Schematics skill | optional proposal-only method-diagram generation; never acceptance authority |
-| jq | JSON validation during checks |
-| launchctl | macOS launchd L0 rescue mode |
-| pdflatex + bibtex | LaTeX package verification |
-| pdftotext | rendered PDF marker checks |
-
-## Usage
-
-```text
-/autoresearch-paper
-
-Topic: energy-aware UAV swarm coverage under wind disturbance.
-Target: ICRA 2027.
-Materials: PDFs and simulator notes in a local folder.
+cp -r autoresearch/.opencode/skills/autoresearch .opencode/skills/autoresearch
+cp autoresearch/.opencode/commands/autoresearch*.md .opencode/commands/
 ```
 
-The skill asks for missing fields, confirms the tier, shows a readable plan
-preview, and only starts the controller after an explicit "go".
+Or globally:
+```bash
+cp -r autoresearch/.opencode/skills/autoresearch ~/.config/opencode/skills/autoresearch
+cp autoresearch/.opencode/commands/autoresearch*.md ~/.config/opencode/commands/
+```
 
-During a run:
+> All 14 commands available as `/autoresearch_debug`, `/autoresearch_fix`, `/autoresearch_improve`, etc.
 
-| Command | Action |
-|---|---|
-| `/autoresearch-paper status` | show plan progress, research gate, stale count, and resource health |
-| `/autoresearch-paper dashboard` | serve one selected plan through the loopback-only, GET/HEAD-only Research Ledger |
-| `/autoresearch-paper pause` | soft-pause through `control/pause_requested.json` |
-| `/autoresearch-paper resume` | resume and verify/repair watchdog resources |
-| `/autoresearch-paper stop` | apply signed stop; disable L0, L1, retry, and identity-matching Workers exactly once; report residuals |
-| `/autoresearch-paper cleanup` | apply one approved receipt per owned resource |
-| `/autoresearch-paper rescue-status` | show L0/watchdog health and rescue history |
+### Codex Quick Start
 
-## Workflow
+**Option A — Guided installer (recommended):**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
+cd autoresearch
+./scripts/install.sh --codex --global
+```
 
-| Stage | What happens |
-|---|---|
-| Brief | parse topic, target venue, and materials |
-| Tier | choose `arxiv`, `conference`, or `journal-q1` with fallback confirmation |
-| Plan | generate `plan.yaml` from tier templates and prompt assets |
-| Bootstrap | freeze model policy and create controller, evaluator, failure, and ownership state |
-| Run | dispatch bounded MiniMax M3 tasks through the Claude Code controller |
-| Frontier audit | reserve budget, send a registered checkpoint to Codex, validate, then record controller consumption |
-| Patrol | file-backed target patrol and `last_seen.jsonl` detect runtime stalls |
-| Research Gate | T6.1/T6.2 record hash-bound PASS/FAIL evidence or authenticated waiver |
-| Figure Gate | v0.16 freezes expected IDs only when the controller authorizes the figure-production stage; T6.4 binds exact manifests, outputs, and human reviews (legacy v0.15 CP-01 receipts retain their historical timing) |
-| Deliver | produce `paper.tex`, bibliography, figures, readiness report, next steps |
-| Cleanup | stop reports residuals; each deletion consumes a scoped receipt |
+**Option B — Manual copy:**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
+cp -r autoresearch/.agents/skills/autoresearch ~/.codex/skills/autoresearch
+```
 
-## Repository Layout
+> Invoke via `$autoresearch` mention syntax. Subcommands are keywords: `$autoresearch plan`, `$autoresearch debug`, `$autoresearch evals`, etc.
+> The installed Codex package includes the bundled orchestrator and regression helpers under `plugins/autoresearch/skills/autoresearch/` and `.agents/skills/autoresearch/`.
+
+### pi Quick Start
+
+**Option A — Guided installer (recommended):**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
+cd autoresearch
+./scripts/install.sh --pi --global
+```
+
+**Option B — pi package install:**
+```bash
+pi install git:github.com/uditgoenka/autoresearch
+```
+
+**Option C — Try without installing:**
+```bash
+pi -e ./pi-extension
+```
+
+> Invoke commands as pi prompt templates: `/autoresearch`, `/autoresearch_debug`, `/autoresearch_fix`, … (underscore names). The dispatcher is a skill: `/skill:autoresearch`.
+> The pi extension ports the Claude hook guardrails (scout/privacy/dangerous-cmd block, iteration context, simplify gate, stop-notify) to pi extension events. See [`pi-extension/README.md`](pi-extension/README.md) for the full hook→event mapping and `AR_DISABLE_*` flags.
+
+### Muse Quick Start
+
+**Option A — Guided installer (recommended):**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
+cd autoresearch
+./scripts/install.sh --muse --global
+```
+
+**Option B — Manual install with the Muse CLI:**
+```bash
+git clone https://github.com/uditgoenka/autoresearch.git
+muse skills install autoresearch/.muse/skills/autoresearch --scope user
+```
+
+Or project-local, so every Muse session in that project picks it up. Run it from your project folder:
+```bash
+cd /path/to/your-project
+bash /path/to/autoresearch/scripts/install.sh --muse --local
+```
+
+> Invoke by asking Muse to use the autoresearch skill with a subcommand keyword: `autoresearch plan`, `autoresearch debug`, `autoresearch fix`, etc.
+> The installed Muse package includes the bundled orchestrator and regression helpers under `.muse/skills/autoresearch/`.
+
+### Run It
 
 ```
-autoresearch-paper/
+/autoresearch
+Goal: Increase test coverage from 72% to 90%
+Scope: src/**/*.test.ts, src/**/*.ts
+Metric: coverage % (higher is better)
+Verify: npm test -- --coverage | grep "All files"
+Iterations: 25
+```
+
+Claude reads all files, establishes a baseline, and starts iterating — one change at a time. Keeps improvements, auto-reverts failures, logs everything. Stops after N iterations or when you interrupt.
+
+---
+
+## /autoresearch:plan — Goal to Config
+
+The hardest part isn't the loop — it's defining Scope, Metric, and Verify correctly. `/autoresearch:plan` converts your plain-language goal into a validated, ready-to-execute configuration.
+
+```
+/autoresearch:plan
+Goal: Make the API respond faster
+```
+
+Walks through 5 steps: capture goal → define scope → define metric → define direction → validate verify command (dry-run). Every gate is mechanical — scope must resolve to files, metric must output a number, verify must pass a dry-run. Emits a `handoff.json` for chaining.
+
+---
+
+## /autoresearch:debug — Autonomous Bug Hunter
+
+Scientific method meets autoresearch loop. Doesn't stop at one bug — iteratively hunts ALL bugs using falsifiable hypotheses, evidence-based investigation, and 7 investigation techniques.
+
+```
+/autoresearch:debug
+Scope: src/api/**/*.ts
+Symptom: API returns 500 on POST /users
+Iterations: 15
+```
+
+**How it works:** Gather symptoms → Recon → Hypothesize (specific, testable) → Test (one experiment per iteration) → Classify (confirmed/disproven/inconclusive) → Log → Repeat.
+
+Every finding requires code evidence (file:line + reproduction steps). Every disproven hypothesis is logged — equally valuable.
+
+| Flag | Purpose |
+|------|---------|
+| `--fix` | After hunting, auto-switch to `/autoresearch:fix` |
+| `--scope <glob>` | Limit investigation scope |
+| `--symptom "<text>"` | Pre-fill symptom |
+| `--severity <level>` | Minimum severity to report |
+
+---
+
+## /autoresearch:fix — Autonomous Error Crusher
+
+Takes a broken state and iteratively repairs it until everything passes. ONE fix per iteration. Atomic, committed, verified, auto-reverted on failure.
+
+```
+/autoresearch:fix
+Iterations: 20
+```
+
+Auto-detects what's broken (tests, types, lint, build) → Prioritizes (blockers first) → Fixes ONE thing → Commits → Verifies error count decreased → Guard check → Keep/Revert → Repeat. **Stops automatically when error count hits zero.**
+
+| Flag | Purpose |
+|------|---------|
+| `--target <command>` | Explicit verify command |
+| `--guard <command>` | Safety command that must always pass |
+| `--category <type>` | Only fix specific type (test, type, lint, build) |
+| `--from-debug` | Read findings from latest debug session |
+
+**Chain them:** `/autoresearch:debug` → `/autoresearch:fix --from-debug`
+
+---
+
+## /autoresearch:security — Autonomous Security Audit
+
+Read-only security audit using STRIDE threat modeling, OWASP Top 10 sweeps, and red-team adversarial analysis with 4 hostile personas.
+
+```
+/autoresearch:security
+Iterations: 15
+```
+
+Codebase recon → asset inventory → trust boundaries → STRIDE threat model → attack surface map → autonomous testing loop → structured report. Every finding requires code evidence (file:line + attack scenario).
+
+| Flag | Purpose |
+|------|---------|
+| `--diff` | Only audit files changed since last audit |
+| `--fix` | Auto-fix confirmed Critical/High findings |
+| `--fail-on <severity>` | Exit non-zero for CI/CD gating |
+
+**Output:** Creates `security/{date}-{slug}/` with 7 structured report files.
+
+---
+
+## /autoresearch:ship — Universal Shipping Workflow
+
+Ship anything through 8 phases: **Identify → Inventory → Checklist → Prepare → Dry-run → Ship → Verify → Log.**
+
+```
+/autoresearch:ship --auto
+```
+
+Auto-detects what you're shipping (code PR, deployment, blog post, email campaign, sales deck, research paper, design assets) and generates domain-specific checklists — every item mechanically verifiable.
+
+| Flag | Purpose |
+|------|---------|
+| `--dry-run` | Validate everything but don't ship |
+| `--auto` | Auto-approve if checklist passes |
+| `--force` | Skip non-critical items (blockers still enforced) |
+| `--rollback` | Undo last ship action |
+| `--monitor N` | Post-ship monitoring for N minutes |
+| `--checklist-only` | Just check readiness |
+
+**9 supported types:** code-pr, code-release, deployment, content, marketing-email, marketing-campaign, sales, research, design.
+
+---
+
+## /autoresearch:scenario — Scenario Explorer
+
+Autonomous scenario exploration engine. Takes a seed scenario and iteratively generates situations across 12 dimensions — happy paths, errors, edge cases, abuse, scale, concurrency, temporal, data variation, permissions, integrations, recovery, and state transitions.
+
+```
+/autoresearch:scenario
+Scenario: User attempts to checkout with multiple payment methods
+Iterations: 20
+```
+
+Seed analysis → Decompose into 12 dimensions → Generate ONE situation per iteration → Classify (new/variant/duplicate) → Expand edge cases → Log → Repeat.
+
+| Flag | Purpose |
+|------|---------|
+| `--domain <type>` | software, product, business, security, marketing |
+| `--depth <level>` | shallow (10), standard (20), deep (50+) |
+| `--format <type>` | use-cases, user-stories, test-scenarios, threat-scenarios |
+| `--focus <area>` | edge-cases, failures, security, scale |
+
+---
+
+## /autoresearch:predict — Multi-Persona Prediction
+
+Before you debug, fix, or ship — get 5 expert perspectives in 2 minutes.
+
+Simulates a team (Architect, Security Analyst, Performance Engineer, Reliability Engineer, Devil's Advocate) who independently analyze your code, debate findings, and reach consensus.
+
+```
+/autoresearch:predict --chain debug
+```
+
+- `--chain debug` — pre-ranked hypotheses before debugging
+- `--chain security` — multi-persona red team analysis
+- `--chain scenario,debug,fix` — full quality pipeline
+
+---
+
+## /autoresearch:learn — Autonomous Documentation Engine
+
+Scout codebase → generate docs → validate → fix → repeat. 4 modes: init (create from scratch), update (refresh existing), check (read-only health report), summarize (quick overview).
+
+```
+/autoresearch:learn --mode init --depth deep
+Iterations: 10
+```
+
+Dynamic doc discovery, project-type detection, validation-fix loop, git-diff scoping for updates, selective single-doc update with `--file`. Auto-generates Mermaid architecture diagrams, API reference, testing guide, config guide, and cross-reference links.
+
+---
+
+## /autoresearch:reason — Adversarial Refinement
+
+Extends autoresearch to **subjective domains** where no objective metric exists. The blind judge panel is the fitness function.
+
+```
+/autoresearch:reason
+Task: Should we use event sourcing for our order management system?
+Domain: software
+Iterations: 8
+```
+
+**How it works:** Generate-A → Critic attacks → Author-B responds → Synthesizer merges → Blind judge panel (randomized labels) picks winner → Winner becomes new A → Repeat until convergence. Every agent is a cold-start fresh invocation — no history bleed.
+
+| Flag | Purpose |
+|------|---------|
+| `--judges N` | Judge count (3-7, odd preferred) |
+| `--convergence N` | Consecutive wins to converge (default 3) |
+| `--mode <mode>` | convergent (default), creative, debate |
+| `--domain <type>` | software, product, business, security, research, content |
+| `--chain <targets>` | Chain converged output to any autoresearch command |
+
+**Output:** Creates `reason/{date}-{slug}/` with lineage.md, candidates.md, judge-transcripts.md, reason-results.tsv, handoff.json.
+
+---
+
+## /autoresearch:probe — Adversarial Requirement Interrogation
+
+Eight adversarial personas interrogate user and codebase together until net-new constraints saturate. Output is the 5 autoresearch primitives (Goal/Scope/Metric/Direction/Verify) plus a `handoff.json` ready to feed any downstream command.
+
+```
+/autoresearch:probe --chain plan,autoresearch
+Topic: Add multi-tenant isolation to the database layer
+```
+
+**The 8 personas:** Skeptic, Edge-Case Hunter, Scope Sentinel, Ambiguity Detective, Contradiction Finder, Prior-Art Investigator, Success-Criteria Auditor, Constraint Excavator.
+
+| Flag | Purpose |
+|------|---------|
+| `--depth <level>` | shallow (5 rounds), standard (15), deep (30) |
+| `--adversarial` | Rotate Skeptic + Contradiction Finder + Edge-Case Hunter to front |
+| `--mode <mode>` | interactive (default) or autonomous |
+| `--chain <targets>` | plan, predict, debug, scenario, reason, fix, ship, learn |
+
+**Output:** Creates `probe/{date}-{slug}/` with probe-spec.md, constraints.tsv, autoresearch-config.yml, handoff.json.
+
+---
+
+## /autoresearch:improve — Product Improvement Engine
+
+Research what to build next. Discovers ICP challenges via deep multi-source research, scores and ranks improvements, generates per-feature PRDs with evidence chains.
+
+```
+/autoresearch:improve
+Goal: Improve onboarding conversion
+ICP: B2B SaaS product managers at 50-500 person companies
+```
+
+**How it works:** Resolve product context → Research across 5 categories (ICP challenges, competitor gaps, market trends, UX & experience, revenue & growth) → Saturate → ICP binary gate → Tiered ranking (Must-have / Nice-to-have / Moonshot) → User selects features → Generate PRDs.
+
+| Flag | Purpose |
+|------|---------|
+| `--icp "<text>"` | Ideal customer profile |
+| `--discover` | Force codebase scan even with existing context |
+| `--no-discover` | Skip auto-discover |
+| `--depth <level>` | shallow (5), standard (15), deep (30+) |
+| `--seeds <categories>` | Override default research categories |
+
+**Output:** Creates `improve/{date}-{slug}/` with research-findings.md, improvement-plan.md, per-feature PRDs, summary.md, improve-results.tsv, handoff.json.
+
+**Terminal emitter** — improve is the last link in any autoresearch chain. PRDs are consumed by external tools (`/ck:plan`, `/ck:cook`), not by other autoresearch commands.
+
+**Chain into improve:** `/autoresearch:probe --improve`, `/autoresearch:predict --improve`, `/autoresearch:debug --improve`.
+
+---
+
+## /autoresearch:evals — Results Analyzer
+
+Analyzes `*-results.tsv` files from any autoresearch run. Surfaces trends, plateau detection, convergence signals, and iteration efficiency. Backward compatible with v2.0.x TSV format.
+
+```
+/autoresearch:evals
+/autoresearch:evals --file coverage-results.tsv
+```
+
+**Adaptive checkpoints:** floor(max_iterations/3), minimum 1 checkpoint. Reports per-checkpoint delta, stall detection, best iteration, and a recommendation (continue / stop / change strategy).
+
+**Inline evals during a run:**
+```
+/autoresearch
+Goal: Reduce bundle size below 200kb
+Iterations: 30
+--evals-interval 10
+```
+
+Prints a checkpoint report every 10 iterations without interrupting the loop.
+
+---
+
+## /autoresearch:regression — Stability Gate
+
+Before you push, prove the change didn't break what already worked. Captures baseline behavior from a `git worktree` of the base ref, diffs the candidate across **8 dimensions**, and emits a single **STABLE / UNSTABLE** verdict.
+
+```
+/autoresearch:regression --predict --evals --fix --ship
+```
+
+**Core invariant:** a regression is a **green→red transition only**. Pre-existing failures (red→red), new tests (absent→red), and flaky tests (flake→red) are classified and excluded — never counted as regressions.
+
+**Tiered verdict:**
+- **HARD gate** (any green→red = UNSTABLE): `functional`, `api-contract`, `data-migration`, `integration-e2e`
+- **SCORE** (0–100, noise-tolerant, weighted; UNSTABLE below threshold 95): `flakiness` .30, `performance` .30, `resource` .20, `visual-ui` .20
+
+| Flag | Purpose |
+|------|---------|
+| `--select auto` | Use detected affected-test mapper (jest `--findRelatedTests`, nx affected) else FULL suite — never a silent subset |
+| `--samples N` / `--noise-band %` | Tune the perf statistical gate (default 7 samples/side, Mann–Whitney U) |
+| `--fix` / `--fix-cycles N` | Re-gate after fixing; each cycle must strictly shrink the blocking-set (max 3) |
+| `--predict` | Pre-empt likely regressions before the gate runs |
+| `--reason` | Adversarial root-cause when a regression's cause is ambiguous |
+| `--debug` | Force the bisect Hunter (HARD dims passing 3/3 reproduction) |
+| `--max-runs N` | Ceiling on dims×axes×samples×cells (warn+confirm past 200) |
+
+**Output:** Creates `regression/{date}-{slug}/` with regression-results.tsv, stability-report.md, dimensions/<dim>.md, baseline/, evals-summary.md, handoff.json.
+
+> **data-migration is hard-guarded:** opt-in, and refuses any DB URL that isn't ephemeral/allowlisted (`*test*`, `*ci*`, container). Migrations are forward-only by default.
+
+---
+
+## Guard — Prevent Regressions
+
+When optimizing a metric, the loop might break existing behavior. **Guard** is an optional safety net.
+
+```
+/autoresearch
+Goal: Reduce API response time to under 100ms
+Verify: npm run bench:api | grep "p95"
+Guard: npm test
+```
+
+- **Verify** = "Did the metric improve?" (the goal)
+- **Guard** = "Did anything else break?" (the safety net)
+
+If the metric improves but the guard fails, Claude reworks the optimization (up to 2 attempts). Guard/test files are never modified.
+
+> **Credit:** Guard was contributed by [@pronskiy](https://github.com/pronskiy) (JetBrains) in [PR #7](https://github.com/uditgoenka/autoresearch/pull/7).
+
+---
+
+## Results Tracking
+
+Every iteration is logged in TSV format:
+
+```tsv
+iteration  commit   metric  delta   status    description
+0          a1b2c3d  85.2    0.0     baseline  initial state
+1          b2c3d4e  87.1    +1.9    keep      add tests for auth edge cases
+2          -        86.5    -0.6    discard   refactor test helpers (broke 2 tests)
+3          c3d4e5f  88.3    +1.2    keep      add error handling tests
+```
+
+Run `/autoresearch:evals` at any time to analyze trends across any TSV file. Adaptive checkpoints fire at floor(max_iterations/3) intervals.
+
+---
+
+## Crash Recovery
+
+| Failure | Response |
+|---------|----------|
+| Syntax error | Fix immediately, don't count as iteration |
+| Runtime error | Attempt fix (max 3 tries), then move on |
+| Resource exhaustion | Revert, try smaller variant |
+| Infinite loop / hang | Kill after timeout, revert |
+| External dependency | Skip, log, try different approach |
+
+---
+
+## Repository Structure
+
+```
+autoresearch/
 ├── README.md
-├── skills/
-│   └── autoresearch-paper/
-│       ├── SKILL.md
-│       ├── scripts/
-│       │   └── setup.sh
-│       ├── dashboard/                 # pinned React/Vite build source
-│       ├── assets/
-│       │   ├── task-prompt-snippets.md
-│       │   └── first-action-last-seen-hook.md
-│       ├── references/
-│       │   ├── goal-keywords.md
-│       │   ├── tier-decision-tree.md
-│       │   ├── plan-template-arxiv.md
-│       │   ├── plan-template-conference.md
-│       │   ├── plan-template-journal-q1.md
-│       │   ├── task-prompt-snippets.md
-│       │   ├── research-state-contract.md
-│       │   ├── lifecycle-contract.md
-│       │   ├── claude-code-runtime.md
-│       │   ├── frontier-response.schema.json
-│       │   ├── figure-artifact.schema.json
-│       │   ├── figure-requirements.schema.json
-│       │   ├── scientific-figure-pipeline.md
-│       │   ├── watchdog-prompt-template.md
-│       │   ├── first-action-last-seen.md
-│       │   ├── reviewer-readiness-rubric.md
-│       │   ├── bootstrap-watchdog.sh
-│       │   ├── launchd/
-│       │   ├── dashboard/             # precompiled runtime assets
-│       │   └── scripts/
-│       │       ├── dashboard_server.py
-│       │       └── harness-runtime.py
-│       └── tests/
-└── docs/
+├── COMPARISON.md                                  ← Karpathy's vs Claude Autoresearch
+├── guide/                                         ← Guides — one per command + advanced patterns
+├── scripts/
+│   ├── install.sh                                 ← Guided installer (Claude Code + OpenCode + Codex + Muse)
+│   ├── transform.sh                               ← Single transform: .claude/ → .opencode/ + .agents/ + .muse/
+│   ├── release.sh                                 ← Release automation
+│   └── release.md                                 ← Release checklist
+├── .claude/
+│   ├── skills/autoresearch/
+│   │   ├── SKILL.md                               ← Thin routing table (41 lines)
+│   │   └── references/                            ← 3 focused reference files
+│   │       ├── security-checklist.md              ← STRIDE + OWASP
+│   │       ├── predict-personas.md                ← 5 personas + adversarial set
+│   │       └── reason-judge-protocol.md           ← Adversarial refinement loop
+│   └── commands/
+│       ├── autoresearch.md                        ← Core loop (self-contained, ~100 lines)
+│       └── autoresearch/                          ← 13 subcommand files (self-contained)
+│           ├── plan.md
+│           ├── debug.md
+│           ├── fix.md
+│           ├── security.md
+│           ├── ship.md
+│           ├── scenario.md
+│           ├── predict.md
+│           ├── learn.md
+│           ├── reason.md
+│           ├── improve.md
+│           ├── probe.md
+│           ├── evals.md
+│           └── regression.md
+├── .opencode/                                     ← OpenCode port (via transform.sh)
+│   ├── skills/autoresearch/
+│   └── commands/                                  ← 14 command files (autoresearch_*.md)
+├── .agents/                                       ← Codex port (via transform.sh)
+│   └── skills/autoresearch/
+├── .muse/                                         ← Muse port (via transform.sh)
+│   └── skills/autoresearch/
+├── plugins/                                       ← Codex plugin metadata
+│   └── openai.yaml
+└── LICENSE
 ```
+
+---
 
 ## FAQ
 
-**Q: Can I run it on Codex CLI or Claude Code without Mavis?**
-A: Yes. Policy, bounded MiniMax M3 workers, CP-01–CP-04 Codex gates,
-authenticated lifecycle actions, the durable trigger/state loop, evaluator
-admission/verdicts, patrol, and owned cleanup all run without MAVIS. Pass
-`--legacy-mavis` only for an old compatibility fixture.
+**Q: I don't know what metric to use.**
+A: Run `/autoresearch:plan` — it analyzes your codebase, suggests metrics, and dry-runs the verify command before you launch.
 
-**Q: The research gate rejected my run. Can I waive it?**
-A: Yes, with an expiring HMAC-signed `waive_acceptance` record. A Markdown
-string cannot waive the gate. Negative-result waiver is arxiv-only.
+**Q: What changed in v2.2.0?**
+A: The root `/autoresearch` command now supports an autonomous orchestrator mode. Type a plain-language goal (e.g., `/autoresearch help me fix the login bug`) instead of `Metric:`/`Verify:` and the orchestrator classifies your goal, derives a verifiable Success predicate, confirms it once, then loops across subcommands until done. Classic metric-loop behavior is unchanged when `Metric:` or `Verify:` are present.
 
-**Q: What if the watchdog keeps reporting stalls?**
-A: Check `last_seen.jsonl` and the L0 corruption guard output. Common
-causes: a worker task exceeded the 30-minute ceiling, the plan dir
-moved, or the JSONL is being written outside the plan dir. The rescue
-daemon (`references/scripts/plan-rescue-daemon.py`) is the entry point
-for diagnosis.
+**Q: What changed in v2.1.0?**
+A: Architecture rebuild. The monolithic SKILL.md (813 lines, ~100K tokens) is replaced with a thin routing file + 12 self-contained command files (~5–8K tokens each). 95% token reduction. A new `/autoresearch:evals` command analyzes iteration results. Every looping command now has a bounded default instead of running unlimited.
 
-**Q: Does the skill write the final paper?**
-A: It produces a structured paper draft and evidence bundle. It does not
-submit to venues, does not promise a camera-ready PDF, and does not
-replace human authorship of novel claims. See [Boundaries](#boundaries).
+**Q: How do bounded defaults work?**
+A: Every looping command ships with a sensible default (e.g., `/autoresearch` defaults to 25 iterations). Override inline: `Iterations: 50` for more, `Iterations: unlimited` for the old unbounded behavior.
 
-**Q: How is cleanup different from stop?**
-A: `stop` changes controller status and runs a crash-safe shutdown that disables
-the plan's L0, L1, frontier retry, and identity-matching Worker processes. It
-does not grant aggregate deletion authority. `cleanup` removes only
-individually approved, owned resource generations. Neither deletes paper
-outputs.
+**Q: How does /autoresearch:evals work?**
+A: Point it at any `*-results.tsv` file from a previous run. It reports trends, plateau detection, and a recommendation. Use `--evals-interval N` during a live run to get checkpoint reports without interrupting the loop.
 
-## Boundaries
+**Q: Does this work with any project?**
+A: Yes. Any language, framework, or domain. Install via plugin (Claude Code), installer script, or manual copy.
 
-The skill produces a structured paper draft and evidence bundle. It does
-not submit to venues, does not promise a camera-ready PDF, and does not
-replace human authorship of novel claims. If the topic has no measurable
-evaluator, the skill downgrades to `arxiv` or stops for clarification.
+**Q: Does this work with OpenCode?**
+A: Yes. Run `./scripts/install.sh --opencode --global` or manually copy `.opencode/` files. Commands use underscore naming (`/autoresearch_debug`, `/autoresearch_evals`, etc.). All 14 commands available.
+
+**Q: Does this work with OpenAI Codex?**
+A: Yes. Run `./scripts/install.sh --codex --global` or copy `.agents/skills/autoresearch/` to `~/.codex/skills/autoresearch`. Invoke via `$autoresearch` mention syntax.
+
+**Q: Does this work with Muse?**
+A: Yes. Run `./scripts/install.sh --muse --global`, or `muse skills install autoresearch/.muse/skills/autoresearch --scope user`. Ask Muse to use the autoresearch skill with a subcommand keyword (`autoresearch plan`, `autoresearch debug`, etc.). Hook guardrails are Claude Code-only.
+
+**Q: How do I stop the loop?**
+A: `Ctrl+C` or add `Iterations: N` to your inline config. Claude commits before verifying, so your last successful state is always in git.
+
+**Q: Can I use this for non-code tasks?**
+A: Absolutely. Sales emails, marketing copy, HR policies, runbooks — anything with a measurable metric. See [Examples by Domain](guide/examples-by-domain.md).
+
+**Q: Does /autoresearch:security modify my code?**
+A: No. Read-only by default. Use `--fix` to opt into auto-remediation of confirmed Critical/High findings.
+
+**Q: What's the difference between /autoresearch:predict and /autoresearch:reason?**
+A: Predict is a one-shot analysis — 5 experts debate your existing code. Reason is an iterative refinement loop — competing candidates are generated, critiqued, synthesized, and blind-judged over multiple rounds until convergence. Use predict for analysis before acting; use reason for decisions where no objective metric exists.
+
+**Q: What is handoff.json?**
+A: A structured file emitted by plan, probe, reason, and other commands that carries Goal/Scope/Metric/Verify config for downstream commands. When you `--chain plan,autoresearch`, the chain reads handoff.json automatically.
+
+---
 
 ## Contributing
 
-Run `scripts/setup.sh test` before opening a pull request. Changes that touch
-watchdog, L0, cleanup, or research gate behavior should add or update runtime
-contract tests under `tests/`.
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Tests
+Areas of interest: new domain examples, verification script templates, CI/CD integrations, real-world benchmarks. All guides are in [guide/](guide/).
 
-```bash
-cd skills/autoresearch-paper
-scripts/setup.sh test
-```
+---
 
-The test path runs contract validation, exhaustive runtime unit/negative tests,
-and a complete no-MAVIS fake-Claude/fake-Codex integration flow.
+## Star History
 
-## Changelog
+<a href="https://www.star-history.com/?repos=uditgoenka%2Fautoresearch&type=timeline&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=uditgoenka/autoresearch&type=timeline&theme=dark&legend=bottom-right&v=20260319" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=uditgoenka/autoresearch&type=timeline&legend=bottom-right&v=20260319" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=uditgoenka/autoresearch&type=timeline&legend=bottom-right&v=20260319" />
+ </picture>
+</a>
 
-Per-version notes live in
-[`skills/autoresearch-paper/SKILL.md#versioning`](skills/autoresearch-paper/SKILL.md#versioning).
-Quick highlights:
-
-- **v0.18.0** — adds the compiled, loopback-only Research Ledger Dashboard
-  over fresh `inspect-plan-runtime` results, including typed absence,
-  live/stale/empty/partial/mismatch/stopped/error presentation, bounded bound-log
-  access, rebuildable dossier viewing, restrictive CSP, and Python-only
-  installed serving. It also adds typed provider-quota recovery and exact-once logical
-  retry lineages for named checkpoints. Adds the Claude-native runtime
-  assurance closure: independent launchd L0 and L1 services, controller-owned
-  L2 Worker heartbeats, interval validation, activation/test receipts, and
-  health-only L1 recovery with zero model calls. A separate least-authority
-  trigger can resume a due initial CP-01 quota retry before L1 admission.
-- **v0.17.2** — closes the remaining real Plan021 CP-01 findings: validator
-  schema versions require JSON integers rather than booleans, and a Worker
-  cannot pre-author Controller-owned role-visible provenance. Frozen source
-  inventory and stage-report conformance suites now contain twelve and ten
-  cases respectively; the former proves the actual CLI receipt path. Plan021
-  and Plan022 remain immutable negative evidence; the field
-  gate requires a fresh plan and fresh real review. A pre-authorization
-  `prepare-staged-research` pass now closes the Plan024 hash/receipt loop before
-  any owner signature is created. Observation preflight also records exact
-  Runtime path/hash, byte identity, and the ten-case conformance result for the
-  terminal report validator, closing Plan025's sole CP-01 finding. The Worker
-  output contract also preserves exact source `symbol`/`line_start` bindings
-  separately from the generic input manifest, closing the Plan026 field defect
-  where a valid inventory was rejected before content validation.
-- **v0.17.1** — explicitly inactive observation-only evaluation profiles and
-  a CP-01-frozen, conformance-tested terminal-report validator close the
-  execution-contract gaps found by real GPT-5.6 CP-01 field review. The
-  six-role terminal review sees candidate, decision, and validation evidence;
-  only an exact strongest-model `accept` may start the authorized next Worker.
-  Older three-role terminal-review packets fail closed and require a fresh
-  versioned stage/review path.
-- **v0.17.0** — sole-authority staged state with rebuildable projections,
-  capacity v2 class isolation, and one idempotent, explicitly pre-authorized
-  stage crossing through the start of one next-stage Worker. The isolated
-  Codex surface now disables multi-agent features without the obsolete
-  `agents.enabled=false` override, and an unattended Claude controller must be
-  explicitly pre-authorized rather than relying on `auto` permission prompts.
-  Observation-only Stage 1 now has a deterministic non-Gate terminal route,
-  exact source symbol/line selection, an executable receipt-producing
-  validator, and independent plan-local/Runtime byte-identity evidence.
-  Canonical stage reports also remove a real-call circular dependency by
-  allowing the controller to inject only the completed Worker's role-visible
-  hash into otherwise unchanged MiniMax-authored content.
-  Legacy capacity v1 retains existing-plan lifecycle/replay compatibility but
-  cannot use automatic stage crossing. No second-stage completion, scientific
-  success, long-soak, production-readiness, or full-cutover claim is made.
-- **v0.16.2** — field-loop recovery for substantive CP-01 evidence closure,
-  aggregate frontier-budget admission, isolated single-reviewer Codex
-  transport, external read-only Worker inputs, disclosed closed evaluators,
-  and a real first-work-unit acceptance artifact.
-- **v0.16.1** — field recovery for frontier response/usage classification,
-  a measured ChatGPT reservation floor, signed append-only capacity top-ups,
-  content-addressed stage material, and deterministic CP-01/STAGE-REVIEW
-  routing. No launched-call refund or apply-time capsule synthesis is added.
-- **v0.16.0** — bounded rolling stages, exact role-visible-state records,
-  non-fungible CP-01/02/04 capacity, separately budgeted Gate transport
-  retries, accept/reject/escalate evidence, fresh terminal strong review, and
-  figure-inventory freeze at the authorized figure-production stage.
-- **v0.15.0** — MiniMax M3 may draft the top-level research plan, but Codex
-  `gpt-5.6-sol` at `ultra` must independently accept the exact CP-01 evidence
-  bundle before any worker dispatch; reviewer identity and policy hash remain
-  revalidated by downstream consumers.
-  The author family is controller-declared provenance, not cryptographic model
-  attestation.
-- **v0.14.1** — frontier preflight before budget reservation, strict response
-  schema compatibility, Git-safe HTTPS-only Codex routing, durable transport
-  event streaming, and conservative accounting for uncertain sends. See the
-  [CP-01 incident report](skills/autoresearch-paper/references/frontier-transport-incident-2026-07-25.md).
-- **v0.14.0** — source-bound scientific figure manifests, offline path/hash
-  validation, post-KEEP pre-writing gates, focused Scientific Visualization
-  integration, and optional proposal-only Scientific Schematics.
-- **v0.13.0** — seven production fault scenarios, multi-session soak evidence,
-  and claim gates bounded to the measured interval; no 24h/7×24 claim.
-- **v0.12.0** — audited episode memory, defect-versus-lapse diagnosis,
-  replay/regression-gated proposal receipts, and human-only evaluator proposals.
-- **v0.11.0** — controller-owned evaluator snapshots, replayed scientific
-  acceptance, and isolated goal/evaluator integrity failure routing.
-- **v0.10.0** — capsule-bound MiniMax dispatch and Codex request derivation,
-  with controller-only exact-once durable result commits.
-- **v0.9.0** — launchd-backed durable trigger, generation-bound tick leases,
-  canonical plan revisions, fresh context capsules, metadata-only Guardian,
-  and executable evaluator admission for unattended conference/journal plans.
-- **v0.8.0** — Claude Code target cutover with authenticated human actions,
-  hash-bound evaluator and CP-01–CP-04 gates, typed failures, target patrol and
-  owned cleanup, plus no-MAVIS end-to-end conformance.
-- **v0.7.0** — CLI → tool migration. The legacy
-  `mavis agent|cron|session|hook|archive` CLI subcommands are removed by
-  the runtime; the skill is rewired to use the native `mavis` tool
-  (agent/cron/session) and direct file writes for hooks
-  (`~/.mavis/hooks/...`). Only `mavis team plan ...` remains a CLI
-  (with the v0.7 rename `abort` → `cancel`). `mavis communication send`
-  is marked deprecated.
-- **v0.6.0** — Agent Skills monorepo layout (`npx skills add` support),
-  cleanup-script subcommand fix, full test bundle under `tests/`.
-- **v0.4.0** — Platform-portable daemon pattern (no Linux `setsid`
-  dependency), producer discipline, model preload for in-process NN
-  pipelines.
-- **v0.3.1** — V6 evidence-driven optimization rounds (verifier
-  spot-check, 0% framing recipe, wide-table camera-ready fix).
-- **v0.3.0** — Rescue Layer (L0 guard, watchdog daemon, abort gate,
-  workspace isolation) and three failure-mode FMs.
-- **v0.2.0** — Three-tier plan templates and heartbeat contract.
-
-For the complete history, see the git log of
-`skills/autoresearch-paper/SKILL.md`.
-
-## Citation
-
-If this skill contributed to a paper or research artifact, you can cite the
-release as:
-
-```bibtex
-@software{autoresearch_paper,
-  title  = {Autoresearch Paper: A Research-First Brief-to-Paper Pipeline
-            with Evaluator Freeze and Heartbeat Watchdog},
-  author = {WdBlink},
-  year   = {2026},
-  url    = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.18.0}
-}
-```
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
 
-Forged with [Skill Forge](https://github.com/motiful/skill-forge) · Crafted with [Readme Craft](https://github.com/motiful/readme-craft)
+---
 
-[license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
-[license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.18.0-CC785C
-[repo-url]: https://github.com/WdBlink/autoresearch-paper
-[skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
-[skills-url]: https://skills.sh/
+## Credits
+
+- **[Andrej Karpathy](https://github.com/karpathy)** — for [autoresearch](https://github.com/karpathy/autoresearch)
+- **Cai, Ziakas, Kontonis, Pearce, Sen, Krishnamurthy, Garg, Papailiopoulos** — for [Fork-and-Flush](https://arxiv.org/abs/2610.07447)
+- **Zhang, Ji, Sun, Li, et al.** — for [Stateless Language Agents](https://arxiv.org/abs/2610.07625) (the Advisor behind guided branches)
+- **[Anthropic](https://anthropic.com)** — for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the skills system
+- **[OpenCode](https://opencode.ai)** — for the OpenCode terminal agent
+- **[OpenAI](https://openai.com)** — for [Codex](https://developers.openai.com/codex) and the agent skills standard
+
+---
+
+<div align="center">
+
+## About the Author
+
+<a href="https://udit.co">
+  <img src="https://avatars.githubusercontent.com/uditgoenka" width="80" style="border-radius: 50%;" alt="Udit Goenka" />
+</a>
+
+**[Udit Goenka](https://udit.co)** — AI Product Expert, Founder & Angel Investor
+
+Self-taught builder who went from a slow internet connection in India to founding multiple companies and helping 700+ startups generate over ~$25m in revenue.
+
+**Building:** [TinyCheque](https://tinycheque.com) (India's first agentic AI venture studio) · [Firstsales.io](https://firstsales.io) (sales automation)
+
+**Investing:** 38 startups backed, 6 exits. Focused on early-stage AI and SaaS.
+
+**Connect:** [udit.co](https://udit.co) · [@iuditg](https://x.com/iuditg) · [@uditgoenka](https://github.com/uditgoenka) · [Newsletter](https://udit.co/blog)
+
+> *"Autonomy scales when you constrain scope, clarify success, mechanize verification, and let agents optimize tactics while humans optimize strategy."*
+
+</div>

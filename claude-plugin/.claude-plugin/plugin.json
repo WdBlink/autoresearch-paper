@@ -1,0 +1,21 @@
+{
+  "name": "autoresearch",
+  "description": "Autonomous improvement engine. 15 commands: iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression, paper.",
+  "version": "2.3.0",
+  "author": {
+    "name": "Udit Goenka",
+    "url": "https://github.com/uditgoenka"
+  },
+  "repository": "https://github.com/uditgoenka/autoresearch",
+  "license": "MIT",
+  "homepage": "https://github.com/uditgoenka/autoresearch",
+  "keywords": [
+    "autonomous",
+    "iteration",
+    "optimization",
+    "debugging",
+    "security-audit",
+    "shipping",
+    "evals"
+  ]
+}
