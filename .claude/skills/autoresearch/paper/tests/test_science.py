@@ -73,6 +73,7 @@ class ScienceChecks(unittest.TestCase):
 
     def writing_packet(self):
         figures, rendered = self.figure_packet()
+        literature, _ = self.catalog_packet()
         assertion = {"id": "A1", "claim_id": "C1", "text": "The candidate mean error was 4.333333 m.",
                      "statistics": rendered["statistics_path"], "measure": "candidate.mean",
                      "value": 13 / 3, "unit": "m", "denominator": 3,
@@ -88,8 +89,11 @@ class ScienceChecks(unittest.TestCase):
         self.put("paper/main.tex", assertion["text"] + "\n" + "\n".join(item["text"] for item in document["limitations"]))
         self.put("paper/references.bib", "@misc{fixture, title={Synthetic software fixture}}")
         packet = {"manuscript": "paper/main.tex", "assertions": "paper/assertions.json",
-                  "bibliography": "paper/references.bib", "artifacts": self.paths(),
-                  "_plan": self.plan, "_history": {"figures": figures}}
+                  "bibliography": literature["bibliography"], "artifacts": self.paths(),
+                  "section_packets": [{"id": "S1", "path": "paper/main.tex", "purpose": "Report the actual comparison",
+                                       "claim_ids": ["C1"], "citation_keys": [], "evidence": [rendered["statistics_path"]],
+                                       "baseline": None, "line_limit_exception": None}],
+                  "_plan": self.plan, "_history": {"figures": figures, "literature": literature}}
         return packet, document
 
     def test_real_records_are_paired_at_case_level(self):
@@ -300,7 +304,7 @@ class ScienceChecks(unittest.TestCase):
 
     def catalog_packet(self):
         self.put("literature/source.txt", "Synthetic software source: a paired case example.")
-        self.put("literature/metadata.txt", "This is software fixture metadata, not a real publication.")
+        self.put("literature/metadata.txt", "Synthetic software source; Offline Fixture; 2026; Software fixture; fixture:S1. This is not a real publication.")
         catalog = {"question_formed_at": "2026-11-03T00:00:00Z",
                    "searches": [{"query": "paired case error", "method": "keyword", "result_ids": ["S1", "S2"]}],
                    "naive_baseline_ids": ["S1"], "hard_negative_ids": ["S2"],
@@ -316,7 +320,23 @@ class ScienceChecks(unittest.TestCase):
                         "purpose": "Topical hit with wrong statistical unit", "decision": "exclude",
                         "read_status": "registered", "exclusion_reason": "Incompatible unit"}]}
         self.put("literature/catalog.json", catalog)
-        return {"catalog": "literature/catalog.json", "artifacts": self.paths()}, catalog
+        identity = {"title": "Synthetic software source", "authors": ["Offline Fixture"], "year": 2026,
+                    "venue": "Software fixture", "identifier": "fixture:S1"}
+        claim = {"id": "LC1", "text": "The source describes a paired case example.",
+                 "evidence_spans": [{"path": "literature/source.txt", "quote": "a paired case example"}]}
+        record = {"key": "fixture", "candidate_id": "S1", **identity, "url": catalog["candidates"][0]["url"],
+                  "taxonomy_cell": "paired-case", "depth": "B", "status": "verified", "claims": [claim]}
+        self.put("literature/citation_plan.jsonl", json.dumps(record) + "\n")
+        verification = {"records": [{"key": "fixture", "status": "verified", "checked_at": "2026-11-03T02:00:00Z",
+                                     "identity": identity, "source_sha256": self.hash("literature/source.txt"),
+                                     "evidence": ["literature/metadata.txt"],
+                                     "claim_checks": [{"claim_id": "LC1", "status": "supported", "evidence_spans": claim["evidence_spans"]}]}],
+                        "batches": []}
+        self.put("literature/citation_verification.json", verification)
+        self.put("literature/references.bib", "@misc{fixture, title={Synthetic software source}, author={Offline Fixture}, year={2026}, howpublished={Software fixture}}")
+        return {"catalog": "literature/catalog.json", "artifacts": self.paths(),
+                "bibliography": "literature/references.bib", "citation_plan": "literature/citation_plan.jsonl",
+                "citation_verification": "literature/citation_verification.json"}, catalog
 
     def test_literature_preserves_purpose_baseline_and_hard_negative(self):
         packet, _ = self.catalog_packet()
@@ -348,6 +368,271 @@ class ScienceChecks(unittest.TestCase):
         self.put("nonfinite.json", '{"measurement": NaN}')
         with self.assertRaisesRegex(ValueError, "nonfinite"):
             science.strict_json(self.root, "nonfinite.json")
+
+
+    def citation_record(self):
+        return json.loads((self.root / "literature/citation_plan.jsonl").read_text())
+
+    def test_citation_plan_and_verification_are_required(self):
+        packet, _ = self.catalog_packet()
+        packet.pop("citation_plan")
+        self.assertIn("evidence path", science.validate("literature", packet, self.root)[0])
+
+    def test_bibliographic_identity_and_claim_binding_are_checked(self):
+        packet, _ = self.catalog_packet()
+        self.put(packet["bibliography"], "@misc{fixture,title={Different source},author={Offline Fixture},year={2026}}")
+        self.assertIn("BibTeX title identity", science.validate("literature", packet, self.root)[0])
+        packet, _ = self.catalog_packet()
+        verification = science.strict_json(self.root, packet["citation_verification"])
+        verification["records"][0]["claim_checks"][0]["claim_id"] = "another-claim"
+        self.put(packet["citation_verification"], verification)
+        self.assertIn("claim binding", science.validate("literature", packet, self.root)[0])
+
+    def test_source_verification_expires_when_source_bytes_change(self):
+        packet, _ = self.catalog_packet()
+        self.put("literature/source.txt", (self.root / "literature/source.txt").read_text() + " Edited source version.")
+        self.assertIn("stale after source change", science.validate("literature", packet, self.root)[0])
+
+    def test_preprint_cannot_be_upgraded_to_conference_without_official_evidence(self):
+        packet, _ = self.catalog_packet()
+        self.put(packet["bibliography"], "@inproceedings{fixture,title={Synthetic software source},author={Offline Fixture},year={2026},booktitle={Software fixture}}")
+        self.assertIn("acceptance evidence", science.validate("literature", packet, self.root)[0])
+        record = self.citation_record()
+        record["acceptance"] = {"status": "accepted", "authority": "arxiv_self_report", "evidence": "literature/metadata.txt", "version": "camera-ready"}
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertIn("official proceedings", science.validate("literature", packet, self.root)[0])
+        record["acceptance"]["authority"] = "official_proceedings"
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertEqual([], science.validate("literature", packet, self.root))
+
+    def test_final_writing_rejects_unresolved_citation_even_below_twenty(self):
+        packet, _ = self.writing_packet()
+        record = self.citation_record()
+        record["status"] = "read"
+        self.put("literature/citation_plan.jsonl", json.dumps(record) + "\n")
+        verification = science.strict_json(self.root, "literature/citation_verification.json")
+        verification["records"][0]["status"] = "unresolved"
+        self.put("literature/citation_verification.json", verification)
+        self.assertIn("unresolved citation identity", science.validate("write", packet, self.root)[0])
+
+    def test_lqs_unknown_inputs_are_not_invented_and_arithmetic_is_checked(self):
+        packet, _ = self.catalog_packet()
+        self.put("literature/lqs.md", "Software-test score convention; no inferred reputation or acceptance.")
+        packet["artifacts"] = self.paths()
+        record = self.citation_record()
+        record["lqs"] = {"dimensions": {"recency": 8, "impact": None, "venue": 6, "institution": None, "acceptance": 3},
+                         "total": 7, "convention": "literature/lqs.md"}
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertIn("fabricated total", science.validate("literature", packet, self.root)[0])
+        record["lqs"]["total"] = None
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertEqual([], science.validate("literature", packet, self.root))
+        record["lqs"]["dimensions"].update(impact=4, institution=5)
+        record["lqs"]["total"] = 0
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertIn("LQS arithmetic", science.validate("literature", packet, self.root)[0])
+        record["lqs"]["total"] = 8*.30 + 4*.25 + 6*.20 + 5*.10 + 3*.15
+        self.put(packet["citation_plan"], json.dumps(record) + "\n")
+        self.assertEqual([], science.validate("literature", packet, self.root))
+
+    def many_citations(self, count):
+        packet, catalog = self.catalog_packet()
+        source = catalog["candidates"][0]
+        original = self.citation_record()
+        check = science.strict_json(self.root, packet["citation_verification"])["records"][0]
+        records, checks, bibliography, identity_evidence = [], [], [], []
+        for index in range(count):
+            key, candidate_id = f"key{index:02}", f"source{index:02}"
+            candidate = copy.deepcopy(source)
+            candidate.update(id=candidate_id, title=f"Synthetic source {index}", url=f"https://example.invalid/{index}")
+            catalog["candidates"].append(candidate)
+            record = copy.deepcopy(original)
+            record.update(key=key, candidate_id=candidate_id, title=candidate["title"], url=candidate["url"], identifier=f"fixture:{index}")
+            record["claims"][0]["id"] = "LC" + str(index)
+            records.append(record)
+            checked = copy.deepcopy(check)
+            checked.update(key=key, identity={name: record[name] for name in science.IDENTITY_FIELDS})
+            checked["claim_checks"][0]["claim_id"] = record["claims"][0]["id"]
+            checks.append(checked)
+            bibliography.append(f"@misc{{{key},title={{{record['title']}}},author={{Offline Fixture}},year={{2026}},howpublished={{Software fixture}}}}")
+            identity_evidence.append("; ".join(str(value) for value in [record["title"], "Offline Fixture", 2026, record["venue"], record["identifier"]]))
+        self.put(packet["catalog"], catalog)
+        self.put(packet["citation_plan"], "\n".join(json.dumps(record) for record in records) + "\n")
+        self.put(packet["bibliography"], "\n".join(bibliography))
+        self.put("literature/metadata.txt", "\n".join(identity_evidence))
+        verification = {"records": checks, "batches": []}
+        self.put(packet["citation_verification"], verification)
+        return packet, records, verification
+
+    def test_each_twenty_citations_needs_ordered_batch_record(self):
+        packet, records, verification = self.many_citations(20)
+        self.assertIn("twenty accumulated citations", science.validate("literature", packet, self.root)[0])
+        self.put("literature/batch.txt", "Checked twenty synthetic source identities and bound claims.")
+        packet["artifacts"] = self.paths()
+        verification["batches"] = [{"keys": [record["key"] for record in records], "checked_at": "2026-11-03T03:00:00Z",
+                                    "evidence": "literature/batch.txt"}]
+        self.put(packet["citation_verification"], verification)
+        self.assertEqual([], science.validate("literature", packet, self.root))
+        verification["batches"][0]["keys"].reverse()
+        self.put(packet["citation_verification"], verification)
+        self.assertIn("skips or reorders", science.validate("literature", packet, self.root)[0])
+
+    def test_final_tail_citation_requires_individual_identity_and_claim_verification(self):
+        write, _ = self.writing_packet()
+        literature, records, verification = self.many_citations(21)
+        self.put("literature/batch.txt", "The first twenty synthetic citation identities and claims were checked.")
+        verification["batches"] = [{"keys": [record["key"] for record in records[:20]],
+                                    "checked_at": "2026-11-03T03:00:00Z", "evidence": "literature/batch.txt"}]
+        self.put(literature["citation_verification"], verification)
+        literature["artifacts"] = self.paths()
+        write["artifacts"] = self.paths()
+        write["_history"]["literature"] = literature
+        # No second batch receipt is needed when every tail record was actually checked.
+        self.assertEqual([], science.validate("write", write, self.root))
+        records[-1]["status"] = "read"
+        verification["records"][-1]["status"] = "unresolved"
+        self.put(literature["citation_plan"], "\n".join(json.dumps(record) for record in records) + "\n")
+        self.put(literature["citation_verification"], verification)
+        self.assertEqual([], science.validate("literature", literature, self.root))
+        self.assertIn("unresolved citation identity: key20", science.validate("write", write, self.root)[0])
+        records[-1]["status"] = "verified"
+        verification["records"][-1]["status"] = "verified"
+        verification["records"][-1]["claim_checks"][0]["status"] = "unresolved"
+        self.put(literature["citation_plan"], "\n".join(json.dumps(record) for record in records) + "\n")
+        self.put(literature["citation_verification"], verification)
+        self.assertIn("unsupported/unresolved citation claims", science.validate("write", write, self.root)[0])
+
+    def test_generated_tex_limit_and_existing_large_source_exception(self):
+        packet, _ = self.writing_packet()
+        original = (self.root / "paper/main.tex").read_text()
+        large = original + "\n" + "\n".join("% preserved source " + str(i) for i in range(305))
+        self.put("paper/main.tex", large)
+        self.assertIn("exceeds 300 lines", science.validate("write", packet, self.root)[0])
+        self.put("revisions/main-baseline.tex", large)
+        baseline = {"path": "revisions/main-baseline.tex", "sha256": self.hash("revisions/main-baseline.tex")}
+        packet["section_packets"][0].update(baseline=baseline,
+            line_limit_exception={"reason": "Preserve this existing large source without unrelated splitting", "baseline_sha256": baseline["sha256"]})
+        packet["artifacts"] = self.paths()
+        self.assertEqual([], science.validate("write", packet, self.root))
+        self.put("revisions/main-baseline.tex", original)
+        self.assertIn("baseline changed", science.validate("write", packet, self.root)[0])
+
+    def test_included_sections_need_unique_ownership_and_claim_location(self):
+        packet, _ = self.writing_packet()
+        self.put("paper/section.tex", "Additional background material.")
+        self.put("paper/main.tex", (self.root / "paper/main.tex").read_text() + "\n\\input{section}\n")
+        packet["artifacts"] = self.paths()
+        self.assertIn("lack section packets", science.validate("write", packet, self.root)[0])
+        self.put("paper/main.tex", (self.root / "paper/main.tex").read_text().replace(r"\input{section}", r"\input section.tex"))
+        self.assertIn("lack section packets", science.validate("write", packet, self.root)[0])
+        extra = {"id": "S2", "path": "paper/section.tex", "purpose": "Provide background", "claim_ids": ["C1"],
+                 "citation_keys": [], "evidence": ["literature/source.txt"], "baseline": None, "line_limit_exception": None}
+        packet["section_packets"].append(extra)
+        self.assertIn("not located", science.validate("write", packet, self.root)[0])
+        extra["claim_ids"] = []
+        self.assertEqual([], science.validate("write", packet, self.root))
+        packet["section_packets"].append(copy.deepcopy(extra))
+        self.assertIn("duplicate section", science.validate("write", packet, self.root)[0])
+
+    def test_actual_citation_keys_cannot_be_unplanned_or_dropped(self):
+        packet, _ = self.writing_packet()
+        self.put("paper/main.tex", (self.root / "paper/main.tex").read_text() + "\n\\cite{unknown-source}\n")
+        packet["section_packets"][0]["citation_keys"] = ["unknown-source"]
+        self.assertIn("absent/dropped/unverified", science.validate("write", packet, self.root)[0])
+
+    def review_packet(self):
+        literature, _ = self.catalog_packet()
+        statement = "The source describes a paired case example."
+        document = {"assertions": [{"id": "A1", "claim_id": "LC1", "kind": "source_claim", "strength": "source_bounded",
+                                    "text": statement, "citation_keys": ["fixture"]}],
+                    "limitations": [{"kind": "scope", "text": "This synthesis covers only the verified source."}],
+                    "prose_review": {"problem": "Classify evidence units", "choice": "Compare source methods",
+                                     "finding": statement, "scope": "One verified synthetic source"}, "revisions": []}
+        self.put("paper/assertions.json", document)
+        self.put("paper/main.tex", statement + "\n\\cite{fixture}\n" + document["limitations"][0]["text"])
+        packet = {"manuscript": "paper/main.tex", "assertions": "paper/assertions.json",
+                  "bibliography": literature["bibliography"], "artifacts": self.paths(),
+                  "section_packets": [{"id": "S1", "path": "paper/main.tex", "purpose": "Explain the bounded source claim",
+                                       "claim_ids": ["LC1"], "citation_keys": ["fixture"], "evidence": ["literature/source.txt"],
+                                       "baseline": None, "line_limit_exception": None}],
+                  "_brief": {"paper_type": "survey", "not_applicable": {"experiment": "No empirical experiment in the approved synthesis"}},
+                  "_history": {"literature": literature}, "_plan": {}}
+        return packet, document
+
+    def test_non_empirical_survey_has_a_source_bounded_writing_path(self):
+        packet, _ = self.review_packet()
+        self.assertEqual([], science.validate("write", packet, self.root))
+        packet["_brief"] = {"paper_type": "original"}
+        self.assertEqual([], science.validate("write", packet, self.root))
+
+    def test_review_cannot_turn_unverified_source_into_a_general_claim(self):
+        packet, document = self.review_packet()
+        document["assertions"][0]["text"] = "All studies universally use the case as a unit."
+        self.put("paper/assertions.json", document)
+        self.put("paper/main.tex", document["assertions"][0]["text"] + "\n\\cite{fixture}\n" + document["limitations"][0]["text"])
+        self.assertIn("planned claim", science.validate("write", packet, self.root)[0])
+
+    def test_review_evidence_diagram_is_bound_to_verified_claims_and_raw_spans(self):
+        write, _ = self.review_packet()
+        self.put("figures/synthesis.svg", '<svg xmlns="http://www.w3.org/2000/svg"><text>Case-level synthesis</text></svg>')
+        self.put("figures/synthesis.tex", "Fixture source & Case-level unit \\\\ ")
+        trace = {"kind": "evidence_diagram", "figure_sha256": self.hash("figures/synthesis.svg"),
+                 "table_sha256": self.hash("figures/synthesis.tex"),
+                 "source_hashes": {"literature/source.txt": self.hash("literature/source.txt")},
+                 "claim_ids": ["LC1"], "citation_keys": ["fixture"]}
+        self.put("figures/synthesis.trace.json", trace)
+        packet = {"mode": "evidence_diagram", "figure": "figures/synthesis.svg", "table": "figures/synthesis.tex",
+                  "trace": "figures/synthesis.trace.json", "caption": "A bounded source-method synthesis, not numerical experiment results.",
+                  "claim_ids": ["LC1"], "citation_keys": ["fixture"],
+                  "evidence_spans": [{"path": "literature/source.txt", "quote": "a paired case example"}],
+                  "artifacts": self.paths(), "_brief": write["_brief"], "_history": write["_history"]}
+        self.assertEqual([], science.validate("figures", packet, self.root))
+        self.put("figures/synthesis.svg", '<svg xmlns="http://www.w3.org/2000/svg"><text>Changed diagram</text></svg>')
+        self.assertIn("stale/mismatched", science.validate("figures", packet, self.root)[0])
+
+    def final_packet(self):
+        write, _ = self.writing_packet()
+        self.put("paper/main.pdf", "%PDF-1.4\nSynthetic unit test header; actual compilation is checked by the controller.\n")
+        write["manuscript_pdf"] = "paper/main.pdf"
+        self.put("review/report.md", "Unit-test reviewer evidence; full independent review is a controller check.")
+        self.put("revision/history.json", {"status": "initial_draft", "changes": []})
+        completion = {"source": ["paper/main.tex"], "pdf": ["paper/main.pdf"],
+                      "bibliography": [write["bibliography"]],
+                      "citation_plan": ["literature/citation_plan.jsonl"],
+                      "citation_verification": ["literature/citation_verification.json"],
+                      "review": ["review/report.md"], "revision": ["revision/history.json"],
+                      "snapshot": ["snapshot/version.json"]}
+        required = {path for role, paths in completion.items() if role != "snapshot" for path in paths}
+        self.put("snapshot/version.json", {"files": {path: self.hash(path) for path in required}})
+        history = {**write["_history"], "write": write,
+                   "review": {"artifacts": ["review/report.md"]}}
+        return {"completion": completion, "artifacts": self.paths(), "_history": history, "_plan": self.plan}
+
+    def test_all_eight_completion_roles_and_snapshot_members_are_required(self):
+        packet = self.final_packet()
+        self.assertEqual([], science.validate_delivery(packet, self.root))
+        packet["completion"].pop("citation_plan")
+        self.assertIn("eight completion roles", science.validate_delivery(packet, self.root)[0])
+
+    def test_snapshot_cannot_stand_in_for_its_missing_artifacts(self):
+        packet = self.final_packet()
+        packet["artifacts"].remove("revision/history.json")
+        self.assertIn("unbound science evidence", science.validate_delivery(packet, self.root)[0])
+        packet["artifacts"] = self.paths()
+        self.put("review/report.md", "Edited after snapshot.")
+        self.assertIn("stale artifact", science.validate_delivery(packet, self.root)[0])
+
+    def test_snapshot_must_cover_all_non_snapshot_delivery_roles(self):
+        packet = self.final_packet()
+        snapshot = science.strict_json(self.root, "snapshot/version.json")
+        snapshot["files"].pop("paper/main.pdf")
+        self.put("snapshot/version.json", snapshot)
+        self.assertIn("omits completion artifacts", science.validate_delivery(packet, self.root)[0])
+
+    def test_initial_draft_does_not_need_fabricated_revision_history(self):
+        packet = self.final_packet()
+        self.put("revision/history.json", {"status": "revised", "changes": []})
+        self.assertIn("revision history contradicts", science.validate_delivery(packet, self.root)[0])
 
 
 if __name__ == "__main__":

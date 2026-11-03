@@ -154,3 +154,115 @@ the `after` text must occur in the manuscript. Equality is a structured
 fidelity check; it does not replace the independent reviewer reading both prose
 versions and comparing them with evidence. A revision-free initial draft uses
 an empty revisions array, not fabricated editing history.
+
+## Citation identity, claim bindings, and twenty-citation batches
+
+The literature packet additionally includes `bibliography`, `citation_plan`, and
+`citation_verification` paths. The plan is JSONL, one record per citation key:
+
+```json
+{"key":"fixture","candidate_id":"S1","title":"Synthetic source","authors":["Offline Fixture"],"year":2026,"venue":"Software fixture","identifier":"fixture:S1","url":"https://example.invalid/S1","taxonomy_cell":"case-comparison","depth":"B","status":"verified","claims":[{"id":"LC1","text":"The source uses the case as its independent unit.","evidence_spans":[{"path":"literature/source.txt","quote":"case as its independent unit"}]}]}
+```
+
+`status` is `candidate`, `read`, or `verified`, distinct from inclusion and
+A/B/C/D use depth. Only a read primary source can become verified. A D-depth
+candidate is dropped and cannot silently appear in the manuscript. Identity
+(title, authors, year, venue, identifier) and citation key are explicit; the
+BibTeX entry must agree with title/year, and each key is unique. BibTeX macros
+that cannot be resolved by the bounded parser must be materialized first.
+A conference `@inproceedings` upgrade additionally requires
+`acceptance:{status:"accepted",authority:"official_proceedings"|"official_decision",evidence:path,version:text}`.
+The official record must identify the venue and the host must match the actual
+publication version. A self-reported arXiv acceptance remark is not this record.
+An optional `lqs` has `dimensions` (recency, impact, venue, institution, acceptance),
+`total`, and a bound `convention` path. Source weights are 0.30/0.25/0.20/0.10/0.15;
+known values are 0–10. Any unknown dimension is `null` and forces `total:null`,
+rather than inventing missing citation or reputation inputs.
+
+The verification JSON is:
+
+```json
+{"records":[{"key":"fixture","status":"verified","checked_at":"2026-11-03T02:00:00Z","identity":{"title":"Synthetic source","authors":["Offline Fixture"],"year":2026,"venue":"Software fixture","identifier":"fixture:S1"},"source_sha256":"<read_path SHA-256>","evidence":["literature/metadata.txt"],"claim_checks":[{"claim_id":"LC1","status":"supported","evidence_spans":[{"path":"literature/source.txt","quote":"case as its independent unit"}]}]}],"batches":[]}
+```
+
+Identity evidence is a nonempty local source/verification record containing the
+checked title, each author, year, venue, and identifier. Claims have exact
+resolvable source spans. This verifies record relationships and byte identity;
+the independent source reader remains responsible for semantic support and
+external truth. It is not a network verification service.
+
+For every full block of 20 non-D plan records, provide a batch record
+`{keys:[the twenty keys in plan order], checked_at:ISO, evidence:path}`. Blocks
+cannot skip keys or use a changed order. A final smaller block can be recorded
+but is not a substitute for any missing full block. Final writing and delivery
+require every non-D reference and claim to be verified/supported, including the
+last block below 20. For 21 citations, the first twenty need a batch receipt;
+the twenty-first still needs its individual verified identity and supported claim
+records. It does not need a second aggregate batch receipt. The eight-role delivery gate rejects unresolved citation
+identity or support; a historical 80% verification proportion is not enough.
+
+## Section work and source snapshots
+
+A write packet includes `section_packets`, a nonempty list:
+
+```json
+[{"id":"S1","path":"paper/main.tex","purpose":"Explain the supported comparison and its limits","claim_ids":["C1"],"citation_keys":["fixture"],"evidence":["figures/results.tex.stats.json"],"baseline":null,"line_limit_exception":null}]
+```
+
+Every authored TeX source reached by `\\input`/`\\include` must have a section
+packet; generated accepted tables are derived source artifacts, not independent
+sections. Each section's claims must occur in assertions, citations must resolve
+to its actual source text, and evidence must be bound. Source paths cannot be
+owned twice. New `.tex` sources above 300 lines fail. An existing large source
+may declare `baseline:{path,sha256}` and
+`line_limit_exception:{reason,baseline_sha256}`; the baseline is a bound, hashed
+source artifact already above the limit. This explicit deviation preserves an
+existing source rather than demanding an unrelated split. An initial draft has
+`baseline:null`; a substantive revision also records the preserved baseline and
+fidelity comparisons. The round controller owns the five-large-files workload
+limit and before-round source hashes; this module owns source-size validation.
+
+## Non-empirical survey/review path
+
+When the approved Brief is `paper_type: review` or `survey` and explicitly marks
+experiment not applicable, no synthetic numeric experiment is required. A
+writing assertion may instead be:
+
+```json
+{"id":"A1","claim_id":"LC1","kind":"source_claim","strength":"source_bounded","text":"The source uses the case as its independent unit.","citation_keys":["fixture"]}
+```
+
+Source-bounded assertions are also valid background claims in empirical papers;
+they never waive the empirical experiment stage. The exact claim must be present
+in the verified citation plan and manuscript,
+with each cited key's supported claim check. It cannot be upgraded to a causal
+or universal claim merely by removing the numeric fields.
+
+A figures packet can use `mode: evidence_diagram`, `figure`, `table`, `trace`,
+`caption`, `claim_ids`, `citation_keys`, and `evidence_spans`. Its trace is
+`{kind:"evidence_diagram",figure_sha256,table_sha256,source_hashes:{path:sha256},claim_ids:[...],citation_keys:[...]}`.
+It requires the same verified source claims and literal evidence spans; SVG or
+PDF must be a real file and table must be nonempty TeX. Diagram layout and
+whether its interpretation is scientifically justified remain independent
+visual/semantic review obligations. Numeric figures always use the stricter
+raw-data recomputation path and cannot opt into this mode to bypass it.
+
+## Eight-role final delivery
+
+`validate('delivery', packet, root)` and `validate_delivery(packet, root)` both
+check a final packet with `completion`, `_history`, `_brief`, `_plan` and the
+full `artifacts` list. `completion` has exactly eight nonempty path arrays:
+`source`, `pdf`, `bibliography`, `citation_plan`, `citation_verification`,
+`review`, `revision`, and `snapshot`. Every underlying file, not only its
+manifest, belongs in the artifact closure. `source` is actual `.tex`; `pdf`
+starts with a PDF header; bibliography/plan/verification must be the accepted
+current records; review must contain actual nonempty review evidence.
+
+A revision role includes JSON `{status:"initial_draft"|"revised",changes:[]}`;
+a revised draft supplies changes including source `baseline`, `after`, and
+`reason`. An initial draft records that identity rather than fabricating a
+revision. At least one snapshot role is JSON `{files:{relative_path:sha256}}`
+covering every other completion-role artifact. Every entry must resolve and
+match its current bytes; snapshot inventories do not replace the artifacts.
+The controller still verifies independent review, actual compilation, R6,
+quality gates, final binding freshness, and clean-package rebuilding.

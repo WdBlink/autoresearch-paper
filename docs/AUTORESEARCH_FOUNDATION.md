@@ -2,7 +2,8 @@
 
 本分支已直接把仓库根目录替换为 `uditgoenka/autoresearch` 的完整源码。
 它不再运行旧 autoresearch-paper，也没有把上游旁置在 third_party 中。
-论文能力通过上游新增 `paper` 子命令进入相同的入口、transform 和 installer。
+完整科研流程现在是 `/autoresearch` 的默认入口；写作是证据和图表之后的阶段。
+经典指标循环移到辅助命令 `/autoresearch:iterate`，仍经同一 transform 和 installer 分发。
 
 - 上游地址：https://github.com/uditgoenka/autoresearch
 - 固定版本：v2.3.0，`7bddd056dfd0b0ded8360588d8101b1ecb5c0baa`，2026-10-31。
@@ -16,11 +17,13 @@
 
 `python3 scripts/verify-baseline.py` 检查所有上游路径和模式，并报告本地补丁。
 补丁范围由 [`upstream-patches.json`](../foundation/upstream-patches.json) 固定；
-原始文件没有因为新子命令而丢失，改变的入口/脚本/manifest 和生成副本可审阅。
+原始文件没有因为入口调整而丢失，改变的入口/脚本/manifest 和生成副本可审阅。
 
 上游依然包含完整 classic metric loop、orchestrator、原有 14 个命令、hooks、
-rollback、两个循环、单次 subjective dispatch 和 helper scripts。新增 paper
-是第 15 个命令，源码为 `foundation/`，经过同一 transform 进入所有 Skill 分发。
+rollback、两个循环、单次 subjective dispatch 和 helper scripts。总计仍为 15 个命令：
+完整研究主入口、原经典循环的新 iterate 名称、原有 13 个辅助命令。科研源码为
+`foundation/`，经过同一 transform 进入所有 Skill 分发；内部 `paper/` 目录只是分发
+包名，不再暴露有歧义的 paper 子 Skill。
 它的阶段知识、typed local actions、单一 paper ledger、逐项交付/审阅与最终导出
 已形成实际路径，见 [集成使用及验证](PAPER_INTEGRATION.md) 和
 [逐项迁移矩阵](KNOWLEDGE_MIGRATION.md)。

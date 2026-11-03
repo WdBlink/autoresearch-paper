@@ -103,6 +103,7 @@ transform_opencode() {
     sed \
       -e 's/`AskUserQuestion`/`question`/g' \
       -e 's/AskUserQuestion/question/g' \
+      -e 's|/autoresearch:iterate|/autoresearch_iterate|g' \
       -e 's|/autoresearch:plan|/autoresearch_plan|g' \
       -e 's|/autoresearch:debug|/autoresearch_debug|g' \
       -e 's|/autoresearch:fix|/autoresearch_fix|g' \
@@ -115,8 +116,9 @@ transform_opencode() {
       -e 's|/autoresearch:probe|/autoresearch_probe|g' \
       -e 's|/autoresearch:evals|/autoresearch_evals|g' \
       -e 's|/autoresearch:improve|/autoresearch_improve|g' \
-      -e 's|/autoresearch:paper|/autoresearch_paper|g' \
+      -e 's|/autoresearch:iterate|/autoresearch_iterate|g' \
       -e 's|/autoresearch:regression|/autoresearch_regression|g' \
+      -e 's|name: autoresearch:iterate|name: autoresearch_iterate|g' \
       -e 's|name: autoresearch:plan|name: autoresearch_plan|g' \
       -e 's|name: autoresearch:debug|name: autoresearch_debug|g' \
       -e 's|name: autoresearch:fix|name: autoresearch_fix|g' \
@@ -129,7 +131,7 @@ transform_opencode() {
       -e 's|name: autoresearch:probe|name: autoresearch_probe|g' \
       -e 's|name: autoresearch:evals|name: autoresearch_evals|g' \
       -e 's|name: autoresearch:improve|name: autoresearch_improve|g' \
-      -e 's|\.\./\.\./commands/autoresearch/paper\.md|../../commands/autoresearch_paper.md|g' \
+      -e 's|\.\./\.\./commands/autoresearch/iterate\.md|../../commands/autoresearch_iterate.md|g' \
       -e 's|\.\./\.\./commands/autoresearch/<name>\.md|../../commands/autoresearch_<name>.md|g' \
       -e 's|\.claude/skills/|.opencode/skills/|g' \
       -e 's|\.claude/commands/|.opencode/commands/|g' \
@@ -172,7 +174,7 @@ transform_codex() {
 
   adapt_codex() {
     sed \
-      -e 's|\.\./\.\./commands/autoresearch/paper\.md|paper.md|g' \
+      -e 's|\.\./\.\./commands/autoresearch/iterate\.md|iterate.md|g' \
       -e 's|\.\./\.\./commands/autoresearch/<name>\.md|<name>.md|g' \
       -e 's|\.\./\.\./commands/autoresearch\.md|autoresearch.md|g' \
       -e 's/`AskUserQuestion`/`request_user_input`/g' \
@@ -189,7 +191,7 @@ transform_codex() {
       -e 's|/autoresearch:probe|\$autoresearch probe|g' \
       -e 's|/autoresearch:evals|\$autoresearch evals|g' \
       -e 's|/autoresearch:improve|\$autoresearch improve|g' \
-      -e 's|/autoresearch:paper|\$autoresearch paper|g' \
+      -e 's|/autoresearch:iterate|\$autoresearch iterate|g' \
       -e 's|/autoresearch:regression|\$autoresearch regression|g' \
       -e 's|/autoresearch|\$autoresearch|g' \
       -e 's|\.claude/skills/|skills/autoresearch/|g' \
@@ -225,10 +227,10 @@ transform_codex() {
   mkdir -p "$dst_agents/agents"
   cat > "$dst_agents/agents/openai.yaml" <<'YAML'
 interface:
-  display_name: "Autoresearch"
-  short_description: "Autonomous goal-directed iteration engine"
+  display_name: "Autoresearch · Research to Paper"
+  short_description: "Research, venue calibration, experiments and evidence-bound writing"
   brand_color: "#7C3AED"
-  default_prompt: "Set a goal, define a metric, let Codex loop until done"
+  default_prompt: "Start from my research question and materials; build evidence before writing the paper"
 
 policy:
   allow_implicit_invocation: true
@@ -252,7 +254,7 @@ transform_muse() {
 
   adapt_muse() {
     sed \
-      -e 's|\.\./\.\./commands/autoresearch/paper\.md|paper.md|g' \
+      -e 's|\.\./\.\./commands/autoresearch/iterate\.md|iterate.md|g' \
       -e 's|\.\./\.\./commands/autoresearch/<name>\.md|<name>.md|g' \
       -e 's|\.\./\.\./commands/autoresearch\.md|autoresearch.md|g' \
       -e 's|\.claude/skills/autoresearch/|@@MUSE_SKILL@@/|g' \
@@ -260,6 +262,7 @@ transform_muse() {
       -e 's|\.claude/commands/|@@MUSE_SKILL@@/|g' \
       -e 's/`AskUserQuestion`/`request_user_input`/g' \
       -e 's/AskUserQuestion/request_user_input/g' \
+      -e 's|/autoresearch:iterate|autoresearch iterate|g' \
       -e 's|/autoresearch:plan|autoresearch plan|g' \
       -e 's|/autoresearch:debug|autoresearch debug|g' \
       -e 's|/autoresearch:fix|autoresearch fix|g' \
@@ -335,7 +338,7 @@ transform_hooks() {
 
 # --- pi Transform ---
 # Differences from canonical .claude/: colon → underscore in command names,
-# /autoresearch:X → /autoresearch_X, AskUserQuestion → ctx.ui. The 14 commands
+# /autoresearch:X → /autoresearch_X, AskUserQuestion → ctx.ui. The 15 commands
 # become flat prompt templates under pi-extension/prompts/; the skill +
 # references live under pi-extension/skills/autoresearch/.
 
@@ -350,6 +353,7 @@ transform_pi() {
     sed \
       -e 's/`AskUserQuestion`/`ctx.ui`/g' \
       -e 's/AskUserQuestion/ctx.ui/g' \
+      -e 's|/autoresearch:iterate|/autoresearch_iterate|g' \
       -e 's|/autoresearch:plan|/autoresearch_plan|g' \
       -e 's|/autoresearch:debug|/autoresearch_debug|g' \
       -e 's|/autoresearch:fix|/autoresearch_fix|g' \
@@ -363,6 +367,7 @@ transform_pi() {
       -e 's|/autoresearch:evals|/autoresearch_evals|g' \
       -e 's|/autoresearch:improve|/autoresearch_improve|g' \
       -e 's|/autoresearch:regression|/autoresearch_regression|g' \
+      -e 's|name: autoresearch:iterate|name: autoresearch_iterate|g' \
       -e 's|name: autoresearch:plan|name: autoresearch_plan|g' \
       -e 's|name: autoresearch:debug|name: autoresearch_debug|g' \
       -e 's|name: autoresearch:fix|name: autoresearch_fix|g' \
@@ -378,7 +383,7 @@ transform_pi() {
       -e 's|name: autoresearch:regression|name: autoresearch_regression|g' \
       -e 's|\.claude/skills/|pi-extension/skills/|g' \
       -e 's|\.claude/commands/|pi-extension/prompts/|g' \
-      -e 's|\.\./\.\./commands/autoresearch/paper\.md|../../prompts/autoresearch_paper.md|g' \
+      -e 's|\.\./\.\./commands/autoresearch/iterate\.md|../../prompts/autoresearch_iterate.md|g' \
       -e 's|\.\./\.\./commands/autoresearch/<name>\.md|../../prompts/autoresearch_<name>.md|g' \
       -e 's|\.\./\.\./commands/autoresearch\.md|../../prompts/autoresearch.md|g' \
       "$1"

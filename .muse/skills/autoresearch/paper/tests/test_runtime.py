@@ -8,7 +8,7 @@ from lib.runtime import Controller, Refusal, digest, read_json, safe, tex_withou
 
 def brief():
     return {'question': 'Offline software check', 'venue': 'Synthetic', 'direction': 'software', 'paper_type': 'original',
-            'resources': {'local_cpu': True}, 'software_fixture': True, 'reviewers': ['reviewer'],
+            'scope': 'Software only', 'angle': 'Contract test', 'audience': 'Developer', 'resources': {'local_cpu': True}, 'software_fixture': True, 'reviewers': ['reviewer'],
             'deliverable_plan': [{'id': 'F1', 'kind': 'figure', 'title': 'Fixture', 'purpose': 'Software check',
                                   'acceptance_criteria': ['correct numbers'], 'evidence_requirements': ['raw logs']}]}
 
@@ -24,7 +24,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_exact_approval_and_no_history_reset(self):
         with self.assertRaises(Refusal): self.ctl.approve('wrong', 'fixture')
-        with self.assertRaisesRegex(Refusal, 'approval'): self.ctl.prepare_round(['evidence.json'])
+        with self.assertRaisesRegex(Refusal, 'approval'): self.ctl.ready(self.ctl.load())
         with self.assertRaisesRegex(Refusal, 'already exists'): self.ctl.init(brief())
         self.approve()
         self.assertEqual('software fixture', self.ctl.load()['approval']['basis'])

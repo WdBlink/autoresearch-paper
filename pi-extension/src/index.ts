@@ -32,7 +32,7 @@ export default function autoresearchPi(pi: ExtensionAPI): void {
 
   // 2. Contribute the autoresearch skill + command prompt templates.
   //    skills/autoresearch/SKILL.md  → /skill:autoresearch (dispatcher)
-  //    prompts/autoresearch.md      → /autoresearch        (classic loop)
+  //    prompts/autoresearch.md      → /autoresearch        (research workflow)
   //    prompts/autoresearch/*.md    → /autoresearch_debug, /autoresearch_fix, ...
   pi.on("resources_discover", () => {
     return {

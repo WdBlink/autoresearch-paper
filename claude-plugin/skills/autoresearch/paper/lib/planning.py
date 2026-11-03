@@ -208,9 +208,10 @@ def calibrate(packet, root):
         _need(template.get('status') == 'not_available' and _text(template.get('reason')),
               'Template must be available or explicitly unavailable with a reason')
         _need(template.get('evidence') == rules['path'], 'Unavailable template needs the actual official-rule evidence')
+    from . import venue_tools
+    comparison = venue_tools.comparison_report(packet, root)
     records, designs, ids, pdf_hashes = [], {}, set(), set()
     samples = _list(packet.get('samples'), 'venue.samples')
-    _need(len(samples) >= 3 or _text(packet.get('sampling_limitations')), 'Fewer than three samples needs a sampling limitation')
     for sample in samples:
         _dict(sample, 'venue sample')
         sample_id = sample.get('id')
@@ -229,21 +230,32 @@ def calibrate(packet, root):
         record = {**measured, 'source': sample['pdf'], 'sample_id': sample_id, 'venue_label': sample['venue_label'],
                   'year': sample['year'], 'acceptance_evidence': sample['acceptance_evidence'],
                   'direction_match': sample['direction_match']}
+        if 'publication_date' in sample:
+            record['publication_date'] = sample['publication_date']
         records.append(record)
-        design = _dict(sample.get('design'), 'sample design')
-        for plural in ('figures', 'tables'):
-            entries = _list(design.get(plural, []), 'sample design.' + plural, nonempty=False)
-            _need(len(entries) == measured['counts'][plural], 'Design notes must cover each measured ' + plural)
-            for item in entries:
-                _dict(item, 'sample design item')
-                allowed = venue_profile.FIGURE_TYPES if plural == 'figures' else venue_profile.TABLE_TYPES
-                _need(item.get('type') in allowed, 'Unknown sample design type')
-                _need(item.get('placement') in venue_profile.PLACEMENTS, 'Sample design needs actual placement')
-        designs[sample_id] = design
+        designs[sample_id] = venue_tools.validate_design(sample, measured)
     profile = venue_profile.build_profile(records, packet['venue'], packet['direction'], {'papers': designs})
+    policy = venue_tools.sampling_report(packet, records)
+    selected = next(row for row in comparison['candidates'] if row['id'] == comparison['selected_id'])
+    _need(policy['kind'] == selected['kind'], 'Journal and conference samples cannot be merged into one venue profile')
+    profile['sampling_policy'] = policy
+    profile['page_accounting'] = venue_tools.page_budget_report(packet, root, records)
+    profile['visual_designs'] = designs
+    profile['visual_read_declarations'] = {sample['id']: copy.deepcopy(sample['visual_read']) for sample in samples}
     plan = _json(_artifact(root, packet, 'figure_table_plan'))
-    checked = venue_profile.check_plan(profile, plan)
-    return {'measurements': records, 'venue_profile': profile, 'venue_plan_check': checked}
+    checked = check_calibrated_plan(profile, plan)
+    return {'measurements': records, 'venue_profile': profile, 'venue_plan_check': checked, 'venue_comparison': comparison}
+
+
+
+def check_calibrated_plan(profile, data):
+    result = venue_profile.check_plan(profile, data)
+    if profile.get('sampling_policy', {}).get('budget_is_reference_only'):
+        count_errors = [message for message in result['errors'] if message.startswith('planned ') and 'outside the venue band' in message]
+        result['errors'] = [message for message in result['errors'] if message not in count_errors]
+        result['warnings'].extend(message + '; fewer than 8 samples: count band is reference only' for message in count_errors)
+        result['status'] = 'fail' if result['errors'] else ('warn' if result['warnings'] else 'pass')
+    return result
 
 
 def _without_clock(value):
@@ -256,11 +268,13 @@ def _without_clock(value):
 
 def venue(packet, root):
     computed = calibrate(packet, root)
+    from . import venue_tools
+    venue_tools.validate_selection(packet, root)
     brief = packet.get('_brief', {})
     for field in ('venue', 'direction', 'paper_type'):
-        if brief.get(field):
+        if brief.get(field) and not (field == 'venue' and brief[field] == 'undecided'):
             _need(packet[field] == brief[field], 'Venue calibration changed the approved ' + field)
-    for field in ('measurements', 'venue_profile', 'venue_plan_check'):
+    for field in ('measurements', 'venue_profile', 'venue_plan_check', 'venue_comparison'):
         actual = _json(_artifact(root, packet, field))
         _need(_without_clock(actual) == _without_clock(computed[field]), 'Stored ' + field + ' differs from recomputed PDF evidence')
     _need(computed['venue_plan_check']['status'] != 'fail', '; '.join(computed['venue_plan_check']['errors']))
@@ -294,7 +308,7 @@ def plan(packet, root):
     venue_packet = history.get('venue')
     if venue_packet:
         profile = _json(_artifact(root, venue_packet, 'venue_profile'))
-        result = venue_profile.check_plan(profile, data)
+        result = check_calibrated_plan(profile, data)
         _need(result['status'] != 'fail', '; '.join(result['errors']))
 
 

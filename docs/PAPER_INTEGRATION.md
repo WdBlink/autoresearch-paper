@@ -1,10 +1,10 @@
 # 用上游 Autoresearch 执行论文工作
 
-本分支将完整上游作为根目录基础。`/autoresearch:paper` 或 `$autoresearch paper`
-进入同一 Skill 中的新论文子命令。原有命令、helper、hooks 和迭代协议继续分发，
-不是在旧科研运行时外面加一层调度器。`foundation/` 是新增源码，
-`.claude/commands/autoresearch/paper.md` 是子命令协议，
-`scripts/transform.sh` 是各平台副本的生成入口。
+本分支以完整上游源码为基础。`/autoresearch` 或 `$autoresearch` 默认完成科研全流程，
+写作在文献、实验/证据和图表之后；`/autoresearch:iterate` 是辅助经典循环。
+`foundation/` 是科研源码，`.claude/commands/autoresearch.md` 是主协议，
+`scripts/transform.sh` 是各平台副本的生成入口。内部 `paper/` 是兼容分发路径，
+不再有 `autoresearch:paper` 子命令。原有 helper、hooks 和迭代协议继续保留。
 
 ## 安装与入口
 
@@ -15,15 +15,17 @@ bash scripts/install.sh --codex --global --config-dir /absolute/test-config --fo
 ```
 
 这是自定义测试目录示例；本任务没有更改当前安装或任何全局模型配置。
-安装后的论文程序是 `skills/autoresearch/paper/scripts/paper.py`。
-仓库入口为 `python3 scripts/paper.py --run /absolute/private-run --help`。
+安装后的论文程序是 `skills/autoresearch/paper/scripts/research.py`。
+仓库入口为 `python3 scripts/research.py --run /absolute/private-run --help`。
 完整交接需要 Python 3.10+、TeX、Poppler；PDF 统计图需要 Matplotlib。
 缺少实际能力时明确报错，不以文本检查替代 PDF/统计运行。
 
 ## 研究与写作交接
 
-宿主准备真实 Brief，列出问题、venue、方向、论文类型、可用材料、路线、资源授权，
-以及每一项必交图、表、章节与稿件。`init` 返回精确内容及 digest；宿主转达该版本
+宿主准备真实 Brief，列出问题、scope、angle、audience、venue、方向、论文类型、可用材料、
+路线、资源授权，以及每一项必交图、表、章节与稿件。未定 venue 时先用 draft 进行材料读取
+和候选调查，通过 `venue-compare` 返回的摘要记录真实选刊，完成校准，再 `set-contract`
+形成完整具体 Brief；不要先批准含占位目标的合同。`init` 返回精确内容及 digest；宿主转达该版本
 实际已有的人类批准后运行 `approve`。此接口不代替真实批准，也不伪造旧控制器签名。
 
 `context` 按 intake→venue→plan→literature→experiment→figures→write→review→delivery
@@ -47,19 +49,37 @@ TeX，R6 与最终审阅使用已接受的同一份 PDF。图表只在注释中�
 资产或绑定会使旧审阅失效。最终导出含 PDF、可编辑 TeX、证据、产生它们的软件、
 manifest 和 ZIP，并从导出目录实际重编译检查 PDF 文本一致。
 
+## 可脚本化的校准和轮次
+
+`tool` 提供 venue-compare、venue-design-template、venue-calibrate、plan-snapshot、
+plan-audit 和 citation-check；完整参数和数据字段见 [packets.md](../foundation/references/packets.md)。
+默认取 8–15 篇可比的已录用/见刊样本，会议最近两届，期刊明确截至日的近两年窗口；
+不足或超窗要解释。PDF 脚本测量正文/总页数、caption、面板并输出警告；宿主必须读真实
+PDF，逐图、逐表、逐面板记录问题、主张、证据、布局借鉴及局限。中位数/p25/p75 和
+设计覆盖形成图表计划；官方硬页数、含 references/appendix 的口径另行保存。
+
+每轮先 `begin-round`，工作后 `prepare-round` → 宿主真实判断 → `apply-round`。
+默认 15 轮/30 分钟、最多五次实验轮、五个大文件；综述实验 N/A 不计实验轮。
+原计划与当前计划差异需要真实 R6 记录。停滞、发现修订、待处理效果和最新 checkpoint
+均在同一个控制器中；`recover` 保留导出后的新记录，不能用旧导出倒退状态。
+`draft-preview` 产生带 DRAFT 水印和缺项/阻塞诊断的预览，不触发最终交付。
+完整原则和 E01–E14 写作案例随包分发，write/review 上下文渐进加载。
+
 ## 可复现的软件验证
 
 ```sh
 python3 -m unittest discover -s foundation/tests -p 'test_*.py' -v
 python3 foundation/vendor/deli-local/run-tests.py
-python3 foundation/tests/run_fixture.py --run /absolute/new-software-fixture
+python3 foundation/tests/run_fixture.py --run /absolute/new-software-fixture --undecided
+python3 foundation/tests/run_fixture.py --run /absolute/new-survey-fixture --undecided --survey
 python3 scripts/verify-baseline.py
 ```
 
 fixture 的 venue、样本、文献和研究问题明确标为合成。它真实运行固定本地 CPU 程序，
 保留 16 次计划运行中的测量失败/提前停止与负结果，生成统计图和表，实际编译论文，
 再经过逐项绑定、脚本化 reviewer packet、R6 和导出/重新编译。模型调用和远程作业均为零。
-它不是真实研究，也没有执行真实独立模型审阅。安装测试另在临时配置安装，再删除源
+另一个完整综述 fixture 用已批准的实验不适用、核验来源主张和证据图表走到导出，不制造
+实测结果。两者都不是真实研究，也没有执行真实独立模型审阅。安装测试另在临时配置安装，再删除源
 checkout，运行安装副本的同一 fixture，检查自包含分发。
 
 核心反例包括材料未读/错误 span、假录用依据、模板错用、事后改计划、漏实验和分母、

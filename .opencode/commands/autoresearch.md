@@ -1,130 +1,102 @@
 ---
 name: autoresearch
-description: "Autonomous iteration loop: modify, verify, keep/discard against any metric"
-argument-hint: "[Goal: <text>] [Scope: <glob>] [Metric: <text>] [Verify: <cmd>] [Guard: <cmd>] [Iterations: N] [--evals]"
-disable-model-invocation: true
+description: Research brief to evidence-bound experiments, figures and an internally reviewed paper
 ---
 
-EXECUTE IMMEDIATELY — do not deliberate before reading this protocol.
+# Research to paper
 
-## Parse Arguments
+This is the main research workflow. It uses the complete
+Autoresearch base; its classic and orchestrator protocols, helpers, hooks,
+keep/discard and fresh-context exploration remain available.
 
-Extract from $ARGUMENTS:
-- `Goal:` — what to improve
-- `Scope:` or `--scope` — file globs
-- `Metric:` — what to measure
-- `Direction:` — higher_is_better (default) or lower_is_better
-- `Verify:` — shell command that outputs a number
-- `Guard:` — optional safety command (must always pass)
-- `Iterations:` or `--iterations` — integer N for bounded mode (default: 25). "unlimited" for unbounded.
-- `--evals` — enable mid-loop checkpoints
-- `--evals-interval N` — checkpoint frequency override
-- `--chain <targets>` — comma-separated downstream commands
-- `--no-fork` — disable fork-and-flush rounds
-- `Forks: K` — branches per fork-and-flush round (default 4)
-- `Guided: R` — fraction of each round's branches that get an Advisor-assigned experiment (default 0.5); the rest are random
+Resolve `paper/` relative to the installed autoresearch skill. Run commands with
+Python 3.10+ through `paper/scripts/research.py`; the repository shortcut is
+`scripts/research.py`. Read `paper/references/runtime-contract.md` once. Do not
+launch the historical autoresearch-paper Harness or a second research scheduler.
 
-## Setup (if required context missing)
+## Start and work
 
-If Goal, Scope, Metric, or Verify missing → use question (single batched call):
-  Q1 (Goal): "What do you want to improve?"
-  Q2 (Scope): "Which files?" — suggest globs from project
-  Q3 (Metric+Verify): "How to measure? Provide a shell command that outputs a number"
-  Q4 (Guard): "Safety command that must always pass?" — options: test cmd, build cmd, skip
-If ALL provided inline → skip setup, proceed directly.
+1. Read the current question, complete materials and resource authorization.
+   Build the Brief JSON described by `paper/references/packets.md`, including
+   every required figure, table and section in `deliverable_plan`. Venue choice
+   belongs to the user's research scope; compare candidates using official
+   instructions and representative accepted papers before choosing. A generic
+   citation or page quota does not replace the venue calibration.
+2. Choose the preparation branch before approval. A concrete research Brief with an already chosen venue and complete obligations can use `init`, display that exact Brief and relay its actual approval. If venue/obligations are undecided, use `contract_status: draft`, `venue: undecided`, and an empty `deliverable_plan`; do not ask for final approval yet.
+3. For a draft, commit read-only intake, prepare sourced venue candidates, relay the actual selected candidate with `confirm-venue`, calibrate the chosen target, and commit venue. Use `set-contract` to produce the concrete post-calibration Brief, show it, and relay its actual final approval. No experimental dispatch can use a draft or a merely completed selection audit.
+4. Run `context`. It returns the current stage knowledge, upstream protocol,
+   frozen input hashes, itemized obligations and typed action contracts.
+   Actually read this returned context. Perform that stage's task with the
+   authorized host tools and return its versioned packet and artifacts.
+5. Submit `commit --packet /absolute/packet.json --operation-id ID`. Technical
+   validation records the stage; it does not judge research novelty. Fix a
+   refused packet using the actual diagnostics. `context` then reveals only the
+   next stage's specialized knowledge. Stages are intake, venue, plan,
+   literature, experiment, figures, write and independent review.
+6. The frozen plan covers every requirement with a WorkOrder and typed actions.
+   `execute --work-id ID --operation-id ID` performs registered local rendering,
+   compilation or validation. The host performs actual research/experiments;
+   its raw outcomes still go through the same experiment and figure checks.
+   No generated program or arbitrary shell action is executed by this command.
+7. After writing, submit one `bind --packet ... --operation-id ...` per required
+   item. A binding names the WorkOrder, exact assets, evidence, manuscript and
+   insertion location. An independent reviewer then reads `context`, the
+   artifact bundle, R6's original plan, current plan and compiled PDF. It returns
+   G1–G5, R6 and a `requirement_checks` entry for every binding. A high overall
+   score cannot waive a missing item. Preserve negative and inconclusive results.
+8. Commit review, close its round checkpoint, then `finalize --operation-id ID`. The deterministic finalizer
+   rechecks evidence and produces a manifest, actual PDF and editable TeX with
+   all declared assets and receipts. `verify-export --manifest ...` verifies the
+   exported bytes. Internal review does not assert external academic acceptance
+   and does not authorize submission.
 
-## Conditional Performance Reference
+Before each work round, call `begin-round` to capture the actual original plan
+and document baseline. After work, `prepare-round --evidence ...` issues the
+current state/rules/evidence-bound judgment request. Return the real host
+judgment using `apply-round`; unchanged reads are not research progress.
+Write decision JSON outside the run or in `control/round-decisions/`. A plan
+change needs an actual R6 report bound to the round and both plan versions.
+Use the Brief's approved limits; defaults are 15 rounds / 30 minutes per host
+session, at most five empirical experiment rounds, and at most five changed
+large documents per round. Explain justified workload deviations. A limit
+ends continuation; it does not grant completion.
 
-If Goal or Metric targets performance, latency, throughput, runtime, CPU,
-memory, allocations, binary size, power, energy, bandwidth, or compute cost, read
-`references/behavior-preserving-optimization.md` in the autoresearch skill directory
-before establishing the baseline. Apply its exploration/confirmation split: a
-metric-improving `keep` is an exploratory incumbent, not proof that behavior is
-preserved.
+Use `tool --name venue-compare`, `venue-design-template`, `venue-calibrate`,
+`plan-snapshot`, `plan-audit` and `citation-check` for mechanical work. Exact
+fields and invocations are in `paper/references/packets.md`. Compare 8–15
+matched accepted samples by default, normally the recent two editions (or the
+declared journal window); read every measured visual and panel. Machine counts
+and templates do not constitute visual understanding. For approved
+non-empirical reviews/surveys, retain a reasoned experiment/G2 inapplicability
+and use verified source claims and evidence diagrams without invented data.
+To share a preliminary PDF, use `draft-preview`; it marks DRAFT and reports
+the current incomplete requirements and blockers, without completing the run.
 
-## Precondition Checks
+## Iterate, recover and escape a plateau
 
-1. Verify git repo exists (`git rev-parse --git-dir`)
-2. Check clean working tree (`git status --porcelain`) — warn if dirty
-3. Check for stale lock files, detached HEAD
-4. If Guard set → run Guard to establish guard baseline
-5. Fail fast on any critical issue. Warn on non-critical.
+During method work use the upstream classic loop with the frozen metric,
+verification command and allowed code scope. Keep the run's `.paper/` state and
+frozen evaluator outside Git rollback. Never optimize held-out test data or
+turn a working-metric keep into scientific acceptance. For open-ended planning,
+use the upstream orchestrator or reason/probe protocols; subjective judgments
+are not fabricated mechanical metrics. The paper controller remains the sole
+paper-state owner.
 
-## Verify Safety Screen
+Fork-and-flush follows `references/fork-and-flush.md`: scheduled rounds at 33%
+and 66% (one at 50% below 12 iterations), every 20 unbounded iterations, plus
+five iterations without a keep replacing the next scheduled round. The
+orchestrator instead allows two plateau rounds without progress. Each branch
+starts at the best commit with empty conversation and only task/files/results;
+the stateless Advisor gives distinct experiments to the guided fraction.
+`paper/lib/exploration.py` supplies deterministic trigger/request, real isolated
+Git worktrees, evidence-bound selection and fast-forward promotion. It never
+merges paper-state files. The host launches/resumes the actual agents and
+retains every failed branch result. It must report if the host lacks fresh
+context or resumable leadership. No agent round was demonstrated by a fixture.
 
-Before first dry-run, screen Verify command for: rm -rf, fork bombs, curl|sh, embedded credentials, outbound writes. Block dangerous commands.
-
-## Establish Baseline (Iteration 0)
-
-1. Run Verify command → extract numeric metric
-2. Record as iteration 0 in TSV: `0\t{timestamp}\t{commit}\t{metric}\t0.0\t{guard}\t-\tbaseline\tinitial state`
-3. Create output directory: `autoresearch/loop-{YYMMDD}-{HHMM}/`
-4. Write TSV header: `# metric_direction: {direction}\niteration\ttimestamp\tcommit\tmetric\tdelta\tguard\tguard-metric\tstatus\tdescription`
-
-## Iteration Loop
-
-For each iteration (1 to max_iterations, or unbounded):
-
-### Phase 1: Review (read git history as memory)
-- Read last 10-20 lines of results TSV
-- Run `git log --oneline -20` — see what worked/failed
-- If last iteration was "keep" → run `git diff HEAD~1` to see what improved metric
-- Identify: what worked, what failed, what's untried
-
-### Phase 2: Modify
-- Based on review, make ONE focused change to improve the metric
-- Change must be atomic — one logical unit of work
-
-### Phase 3: Commit
-- Stage and commit with `experiment: {description}` prefix
-- Record commit SHA
-
-### Phase 4: Verify
-- Run Verify command → extract new metric value
-- Calculate delta from previous iteration
-- Metric improved (correct direction) → candidate for keep
-
-### Phase 5: Guard (if configured)
-- Run Guard command. If fails → revert regardless of metric improvement
-
-### Phase 6: Decide
-- **keep** — metric improved, guard passed → commit stays
-- **discard** — metric worsened → `git revert HEAD --no-edit`
-- **crash** — verify/guard command failed → `git revert HEAD --no-edit`
-- **no-op** — no change made this iteration
-- **hook-blocked** — git hook blocked the commit
-- **metric-error** — verify output not a valid number → `git revert HEAD --no-edit`
-
-### Phase 7: Log
-Append row to TSV: iteration, timestamp, commit/-, metric, delta, guard status, guard-metric, status, description
-
-### Fork-and-Flush Round
-Unless `--no-fork`: when the iteration count reaches a scheduled round (33% and 66% of N; 50% when N < 12;
-every 20 when unbounded), or the last 5 iterations since the last `keep` or fork-and-flush round produced no `keep`, run one fork-and-flush round from the
-incumbent before the next iteration. Follow `references/fork-and-flush.md`. An early round replaces the next
-scheduled one. Of the K branches, `floor(K × R)` are guided (a stateless Advisor assigns each one experiment)
-and the rest are random (fresh context, no assignment).
-
-### Eval Checkpoint
-If --evals: check if current_iteration % interval == 0 → run checkpoint analysis.
-
-### Bounded Check
-If bounded: current_iteration >= max_iterations → exit loop, print summary.
-
-## Summary (after loop ends)
-
-Print: total iterations, kept/discarded counts, starting metric → best metric reached in any lineage, improvement %, top 3 most effective changes, fork rounds run and which ones moved the incumbent, and fork wins by kind (random vs guided).
-
-## Eval Checkpoint (--evals flag)
-
-If --evals present:
-- Compute interval: floor(max_iterations / 3), min 1. Fixed 10 if unbounded. Override: --evals-interval N.
-- Every {interval} iterations, pause and analyze current results TSV.
-- Print: `--- Eval Checkpoint (iterations {X}-{Y}) ---\nMetric: {start} → {end} ({delta}) | Kept: {n}/{total} | Trend: {up/flat/down}\n{one-line recommendation}\n---`
-- If plateau 3+ checkpoints → recommend early stop when `--no-fork` is set, or when at least min(2, rounds scheduled for this N) fork-and-flush rounds have run since the last `keep`. Otherwise the next fork round is the response to the plateau.
-- At loop end → full evals summary to evals-summary.md in output directory.
-
-## Chain Handoff
-
-After completion, write handoff.json to output directory: version "2.1.0", source "loop", timestamp, status (COMPLETE|USER_INTERRUPT|BOUNDED|ERROR), results_tsv path, findings[], config{goal, scope, metric, direction, verify}.
-Invoke next target in --chain order via the `autoresearch` skill's Subcommand routing. Propagate --evals flag.
+A missing terminal effect receipt is uncertain. Use `reconcile` with evidence
+before replay; completed audit is not GO. Known failed work and scientific
+negative results have different semantics. `rewind --stage ... --reason ...`
+retains old receipts and invalidates later bindings and review. Reuse operation
+IDs only with identical arguments. Changed approved obligations require a newly
+approved Brief, never a quietly edited plan.

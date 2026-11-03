@@ -1,4 +1,4 @@
-# Paper packet and command reference
+# Research workflow packet and command reference
 
 Paths are relative to a private run root. Python 3.10+, Poppler and TeX are
 required for the complete paper path; PDF statistics also require Matplotlib.
@@ -11,7 +11,7 @@ Its schema is an example, not a research design or a default scientific budget.
 
 ## Brief and approval
 
-`init --brief brief.json` accepts an object with `question`, `venue`, `direction`,
+`init --brief brief.json` accepts an object with `question`, `scope`, `angle`, `audience`, `venue`, `direction`,
 `paper_type`, `resources`, `reviewers` and nonempty `deliverable_plan`. Each
 item has a stable letter-first `id`, `kind` (`figure`, `table`, `section` or
 `manuscript`), `title`, `purpose`, `claim`, `acceptance_criteria` and
@@ -65,25 +65,45 @@ required artifacts.
 
 ## Venue, template and plan
 
-The venue packet has `venue`, `direction`, `paper_type`,
-`official_rules:{path,url,sha256,basis:'official_requirement'}`, and
-`template:{path,url,sha256,status:'available'}`. Record unavailable templates
-explicitly with the official-rule evidence and a reason. Samples list
-`{id,pdf,venue_label,year,acceptance_evidence:{path,url,sha256},direction_match,
-design:{figures:[{type,placement}],tables:[{type,placement}]}}`.
-At least one sample is needed; fewer than three requires `sampling_limitations`.
-Official requirements, accepted samples and observed conventions are distinct.
+The full comparison, default **8–15** matched accepted samples, recent-two-edition
+or journal-year policy, exact per-figure/table/panel records and official page
+budget schema are in [venue-packets.md](venue-packets.md). They are validated,
+not satisfied by mentioning a local source file. A small software fixture has an
+explicit sampling exception; real studies disclose any count/window deviation.
 
-`calibrate(packet, root)` in `paper/lib/planning.py` measures actual PDFs and
-returns `measurements`, `venue_profile`, `venue_plan_check`. Save these JSON
-outputs to the packet's respective paths; validation recomputes them.
-`figure_table_plan` contains `{items:[...]}` with stable IDs, kind/type,
-question, claim, data, section and priority. Its types follow the migrated
-venue helper. Out-of-band designs need an explicit `deviation_reason`.
+Use the main controller's deterministic tools, without importing helpers or
+hand-reimplementing their arithmetic:
 
-The plan packet contains `figure_table_plan`, `plan_snapshot`,
-`experiment_design_sha256` and `work_orders`. Create the design and evaluator
-before plan acceptance. `planning.plan_snapshot(path)` captures original plan
+```sh
+python3 scripts/research.py --run RUN tool --name venue-compare --packet venue.json
+python3 scripts/research.py --run RUN tool --name venue-design-template --packet venue.json --out venue/design-template.json
+python3 scripts/research.py --run RUN tool --name venue-calibrate --packet venue.json --publish
+python3 scripts/research.py --run RUN tool --name plan-snapshot --packet plan.json --out plan/snapshot.json
+python3 scripts/research.py --run RUN tool --name plan-audit --packet review.json --out review/plan-audit.json
+python3 scripts/research.py --run RUN tool --name citation-check --packet literature.json
+```
+
+Design templates prefill only observed numbers, captions, pages and panels.
+The host actually reads the rendered samples and fills question/claim/evidence,
+design takeaway and limitations. Blank semantic fields never count as an analysis.
+Calibration publishes measurements, venue comparison/profile and plan-check JSON
+to the packet's declared output fields, refusing a conflicting existing version.
+
+A target already exactly approved is reused. For undecided venues, prepare a
+`contract_status: draft` Brief with `venue: undecided`, `deliverable_plan: []`.
+Intake and venue preparation need no fictitious final approval. Compare actual
+sourced candidates, then relay the real selection with
+`confirm-venue --packet venue.json --actor HUMAN --comparison-sha256 HASH
+--operation-id ID`. The hash comes from `venue-compare`.
+After accepting calibration, `set-contract --brief concrete.json --operation-id ID`
+returns the final visible Brief and digest. It preserves scope/resources and
+history. Relay the actual exact approval using `approve` before plan/experiments.
+
+The plan packet contains `figure_table_plan`, `plan_snapshot` and `work_orders`.
+For empirical scope it also contains `experiment_design_sha256`; create the
+design and evaluator before plan acceptance. Approved non-empirical synthesis
+omits that empirical adapter and retains its explicit experiment N/A reason.
+`planning.plan_snapshot(path)` captures original plan
 bytes and items. The frozen promise set cannot be retroactively replaced by a
 plan matching the finished draft.
 
@@ -156,7 +176,24 @@ This is internal artifact verification, not an external acceptance or submission
 
 ## Rounds and recovery
 
-`prepare-round --evidence PATH ...` returns a state/rules/evidence-bound request.
+Call `begin-round` **before** work, including source changes. It captures the
+original plan and supported text engineering assets. It is required for post-plan
+artifact commits and typed actions. Rewind captures a before-revision baseline.
+An explicit `--session-id` names an actual host session, not a permission to fake
+new sessions to evade limits. The controller cannot prove the host session identity.
+Defaults from the local Deli engineering policy are 15 rounds/30 minutes per
+session, five experiment rounds, five large changed text files and 300 lines for
+generated TeX; explicit approved limits take priority. Here large-text workload
+means at least 300 lines in TeX/Markdown/BibTeX/JSONL/Python/JSON/YAML/CSV/shell.
+Existing oversized manuscripts retain a bound baseline and specific deviation.
+Two stagnant rounds require a structural pivot; four surface attention required.
+Refinement stops at its declared target, two gains at most 0.3, or over 12 rounds;
+these are auxiliary refinement signals, not scientific acceptance or real billing.
+`last_seen_at` and `last_progress_at` remain distinct. A revised finding has a new
+ID and `revises` link; it does not inflate the count of distinct findings.
+
+
+`prepare-round --evidence PATH ... [--current-plan PATH]` returns the before-round snapshot, actual plan diff, workload and a state/rules/evidence-bound request. Zero evidence is allowed only for a genuine no-progress judgment.
 `apply-round --request JSON --decision JSON --operation-id ID` accepts a host
 judgment with `request_sha256`, `progress` (`verified_progress`, `no_progress`,
 `regression`), `reason`, `status` (`active`, `needs_input`, `stopped`), optional
@@ -193,3 +230,37 @@ branch observation bindings and chooses the working-metric winner. Supplying
 still equals the incumbent, every diff path is in Scope and no controller-owned
 state is touched. Protected incumbent tags are per commit so later rounds work.
 These operations do not grant scientific acceptance or external publication.
+
+
+Final completion requires actual source, PDF, bibliography, citation plan,
+citation verification, independent review, revision identity and a version
+snapshot covering the actual files, as specified in science-packets.md.
+`draft-preview --pdf manuscript/main.pdf --out previews/v1.pdf` produces a
+watermarked non-delivered copy for sharing incomplete work. It never changes the
+accepted source/PDF or turns a partial plan into fulfillment.
+If the ledger is lost, init refuses to reset historical/export records.
+`recover [--manifest delivery/ID/manifest.json]` restores only the latest durable controller checkpoint with pinned code and integrity checks. Optional exports are verified but never selected as an older recovery authority. Missing latest recovery evidence is a real blocker, not permission to reset counters.
+
+
+## Complete prose guidance and judgment files
+
+At `write` and `review`, `context` loads the complete user-local academic-prose
+principles and case index. `context --writing-case E07 --writing-case E06`
+returns the complete selected examples (at most two) with their source hashes;
+these are teaching examples, not facts for the current paper. They are copied
+with provenance, not reduced to an index pointing at an external installation.
+
+Store the final host round decision JSON under `control/round-decisions/` (or
+outside the run root). That reserved judgment-input channel is excluded from
+workload snapshots and cannot be accepted as a research artifact. Actual R6
+reports are created before `prepare-round`, included in its evidence list, and
+bind `round_id`, `original_plan_sha256`, `current_plan_sha256` and `verdict`.
+Public hashes alone do not authorize a request: apply compares the exact latest
+controller-issued preparation and recomputes current document hashes. A heartbeat
+updates last_seen without invalidating unchanged research evidence.
+
+The one controller writes a latest durable checkpoint before the live control
+projection. A mismatch blocks work. `recover` uses only that latest checkpoint,
+retaining post-export rounds, operations and pending effects; an older export
+can be verified but never used to rewind history. No separate research engine
+or independently maintained ledger is introduced. This recovery copy has one writer and the same business state as the live projection.

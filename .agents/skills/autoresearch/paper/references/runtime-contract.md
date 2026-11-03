@@ -1,11 +1,11 @@
-# Paper subcommand contract
+# Research workflow contract
 
-The paper subcommand extends the pinned full Autoresearch distribution. The host
+The main Skill is the research-to-paper workflow, built on the pinned full Autoresearch distribution. The host
 executes research and independent review. `scripts/paper.py` owns paper state and
 validates handoffs; upstream owns its bounded metric/orchestrator loops. A loop's
 keep/commit never grants scientific acceptance or changes the approved Brief.
 
-A run has one `control.json` under `.paper/`. It contains the approved Brief,
+A run has one controller-owned store under `.paper/`: a live `control.json` projection and a latest durable recovery checkpoint. Both have the same writer and state. It contains the approved Brief,
 ordered stage receipts, work orders, bindings, attempt effects, and operation IDs.
 The Deli checkpoint and deliverable scripts' standalone stores are not started.
 This is a new-run format; legacy Harness or PaperFlow directories are read-only
@@ -44,3 +44,19 @@ the host is responsible for truthful attribution and actually independent
 execution. Software fixtures never establish model independence or scientific
 readiness. The finalizer reruns all checks and exports a manifest, PDF, editable
 TeX and evidence. It does not submit, publish, or waive scientific requirements.
+
+
+Draft Briefs may leave `venue: undecided` and an empty `deliverable_plan` when
+`contract_status: draft`. Only read-only intake and candidate/venue preparation
+advance in that state. `set-contract` installs the concrete post-calibration
+obligations while retaining scope/history; actual final approval gates experiments.
+The public entry is `scripts/research.py`; there is no `autoresearch:paper` Skill.
+The original classic loop is the explicitly selected `iterate` auxiliary command.
+
+Before research work, `begin-round` stores the current plan and document hashes.
+Round counters advance only on an applied evidence-bound judgment, not a heartbeat.
+Limits and deviations are reported from the same store, including stale-four
+attention, experiment/refinement rules and file workload. Finalization requires a
+closed round and all eight current delivery roles. Draft sharing uses a separate
+watermarked `draft-preview` artifact. None of these fields proves host identity,
+scientific meaning or actual resource use outside this local execution boundary.

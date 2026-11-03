@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lib import planning
+from lib import planning, venue_tools
 
 
 def sha(path):
@@ -43,7 +43,7 @@ Figure 1 and Table 1 summarize the measured fixture outcomes.
 
 The comparison uses the full fixture ledger and is not scientific evidence.
 \end{document}
-'''.replace('Figure 1. Candidate', 'Figure 1' + separator + ' Candidate').replace('Table 1. Main', 'Table 1' + separator + ' Main'))
+'''.replace('Fixture study.', 'Fixture study ' + name + '.').replace('Figure 1. Candidate', 'Figure 1' + separator + ' Candidate').replace('Table 1. Main', 'Table 1' + separator + ' Main'))
     out = subprocess.run(['pdflatex', '-interaction=nonstopmode', '-halt-on-error', source.name],
                          cwd=root, capture_output=True, timeout=60)
     if out.returncode:
@@ -105,6 +105,71 @@ class IntakeTests(unittest.TestCase):
         self.assertIn('actually read evidence', ';'.join(planning.validate('intake', self.packet, self.root)))
 
 
+class VenueSamplingPolicyTests(unittest.TestCase):
+    def packet(self, kind='journal'):
+        return {'sampling_policy': {'kind': kind, 'as_of': '2026-11-04'}}
+
+    def records(self, count=8, year=2026):
+        return [{'sample_id': 'S' + str(index), 'year': year, 'warnings': []} for index in range(count)]
+
+    def test_eight_to_fifteen_is_the_actual_default(self):
+        packet = self.packet()
+        self.assertTrue(venue_tools.sampling_report(packet, self.records())['count_in_default_range'])
+        for count in (7, 16):
+            with self.subTest(count=count), self.assertRaisesRegex(planning.PlanningError, '8–15'):
+                venue_tools.sampling_report(packet, self.records(count))
+        packet['sampling_policy']['sample_count_deviation_reason'] = 'Only seven eligible same-direction accepted open papers were accessible in the recorded search scope.'
+        result = venue_tools.sampling_report(packet, self.records(7))
+        self.assertTrue(result['budget_is_reference_only'])
+        packet['sampling_policy']['sample_count_deviation_reason'] = 'x'
+        with self.assertRaisesRegex(planning.PlanningError, 'concrete reason'):
+            venue_tools.sampling_report(packet, self.records(7))
+
+    def test_old_journal_samples_need_a_recorded_reason(self):
+        packet = self.packet()
+        with self.assertRaisesRegex(planning.PlanningError, 'time-window'):
+            venue_tools.sampling_report(packet, self.records(year=2022))
+        packet['sampling_policy']['time_window_deviation_reason'] = 'The older papers are retained as explicitly labelled format comparisons because the exact subtopic has few recent accepted articles.'
+        self.assertEqual(8, len(venue_tools.sampling_report(packet, self.records(year=2022))['outside_window_samples']))
+
+    def test_exact_journal_dates_resolve_the_two_year_boundary(self):
+        packet = self.packet(); records = self.records(year=2024)
+        for record in records:
+            record['publication_date'] = '2024-12-01'
+        result = venue_tools.sampling_report(packet, records)
+        self.assertEqual([], result['outside_window_samples'])
+        self.assertEqual('2024-11-04', result['time_window']['start'])
+        records[0]['publication_date'] = '2024-01-01'
+        with self.assertRaisesRegex(planning.PlanningError, 'time-window'):
+            venue_tools.sampling_report(packet, records)
+
+    def test_conference_sampling_names_the_recent_editions(self):
+        packet = self.packet('conference')
+        with self.assertRaisesRegex(planning.PlanningError, 'recent completed editions'):
+            venue_tools.sampling_report(packet, self.records())
+        packet['sampling_policy']['recent_editions'] = [2026, 2024]
+        self.assertEqual([], venue_tools.sampling_report(packet, self.records(year=2024))['outside_window_samples'])
+        with self.assertRaisesRegex(planning.PlanningError, 'time-window'):
+            venue_tools.sampling_report(packet, self.records(year=2025))
+
+    def test_fixture_exception_is_explicit_and_has_no_real_survey_claim(self):
+        packet = self.packet(); packet['software_fixture'] = True
+        with self.assertRaisesRegex(planning.PlanningError, 'fixture needs'):
+            venue_tools.sampling_report(packet, self.records(1))
+        packet['sampling_policy']['fixture_exception_reason'] = 'Single synthetic PDF tests plumbing; it is not real venue sampling.'
+        result = venue_tools.sampling_report(packet, self.records(1))
+        self.assertTrue(result['software_fixture'])
+        self.assertTrue(result['budget_is_reference_only'])
+
+    def test_measurement_warnings_cannot_disappear(self):
+        packet = self.packet(); records = self.records()
+        records[0]['warnings'] = ['No References heading; total-page fallback.']
+        with self.assertRaisesRegex(planning.PlanningError, 'warnings require'):
+            venue_tools.sampling_report(packet, records)
+        packet['sampling_policy']['measurement_warning_review'] = 'This sample has no References section, so its page count is not pooled with references-heading body pages.'
+        self.assertEqual('S0', venue_tools.sampling_report(packet, records)['measurement_warnings'][0]['sample_id'])
+
+
 class TemplateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
@@ -160,7 +225,7 @@ class PlanningPdfTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         make_pdf(self.root)
-        for name, text in [('rules.md', 'Fixture author rules with a template. This is synthetic.'),
+        for name, text in [('rules.md', 'Fixture author rules: eight pages excluding references and appendix. This is synthetic.'),
                            ('template.tex', '\\documentclass{article}'),
                            ('accepted.md', 'Synthetic acceptance evidence, software fixture only.')]:
             (self.root / name).write_text(text)
@@ -179,6 +244,35 @@ class PlanningPdfTests(unittest.TestCase):
             'sampling_limitations': 'One synthetic PDF exercises measurement, not a real venue preference.',
             'figure_table_plan': 'visual-plan.json', 'measurements': 'measurements.json',
             'venue_profile': 'profile.json', 'venue_plan_check': 'plan-check.json'}
+        self.packet['venue_comparison'] = 'venue-comparison.json'
+        self.packet['artifacts'].append('venue-comparison.json')
+        self.packet['_brief'] = {key: self.packet[key] for key in ('venue', 'direction', 'paper_type')}
+        source = self.evidence('rules.md', quote='eight pages excluding references and appendix')
+        self.packet['venue_selection'] = {'mode': 'existing_target', 'selected_id': 'V1',
+            'criteria': ['scope', 'article type', 'format and access'], 'rationale': 'The fixture target was already chosen.',
+            'candidates': [{'id': 'V1', 'venue': 'Fixture venue', 'kind': 'journal',
+                'scope_fit': 'Synthetic comparison of the same software verification question.',
+                'article_type_fit': 'A synthetic original article.', 'constraints': 'No real submission or external research.',
+                'cost': {'status': 'unknown', 'basis': 'No real publication fee was investigated.'},
+                'timing': {'status': 'unknown', 'basis': 'No real editorial schedule was investigated.'},
+                'advantages': ['Exercises the chosen-target path.'], 'limitations': ['Not a real journal.'],
+                'evidence': [source]}]}
+        self.packet['sampling_policy'] = {'kind': 'journal', 'as_of': '2026-11-04',
+            'fixture_exception_reason': 'One synthetic PDF exercises measurement only; not a venue estimate.',
+            'measurement_warning_review': 'The fixture lacks References; total-page fallback is retained explicitly.'}
+        self.packet['page_budget'] = {'target': 8, 'basis': 'official_requirement', 'limit_type': 'hard_limit',
+            'includes_references': False, 'includes_appendix': False, 'source': source,
+            'reason': 'Synthetic source text supplies this format rule; not a real author policy.'}
+        design = venue_tools.design_template(self.packet, self.root)['papers']['S1']
+        self.packet['samples'][0]['visual_read'] = {'pages': [1], 'method': 'rendered_pdf',
+            'notes': 'The real compiled fixture PDF page is inspected for these test declarations.'}
+        for plural, visual_type in (('figures', 'quantitative_results'), ('tables', 'main_results')):
+            for row in design[plural]:
+                row.update(type=visual_type, placement='body', question='Which outcomes does the fixture show?',
+                    claim='The full fixture outcomes are reported.', evidence='Synthetic trial descriptions in the PDF.',
+                    design_takeaway='Name the comparison conditions in the caption.',
+                    limitations='This is a software fixture and carries no real scientific result.')
+        self.packet['samples'][0]['design'] = {key: design[key] for key in ('figures', 'tables')}
         self.recompute()
         self.plan_packet = {'stage': 'plan', 'figure_table_plan': 'visual-plan.json',
             'plan_snapshot': 'snapshot.json', 'artifacts': ['visual-plan.json', 'snapshot.json'],
@@ -194,7 +288,7 @@ class PlanningPdfTests(unittest.TestCase):
 
     def recompute(self):
         computed = planning.calibrate(self.packet, self.root)
-        for key in ('measurements', 'venue_profile', 'venue_plan_check'):
+        for key in ('measurements', 'venue_profile', 'venue_plan_check', 'venue_comparison'):
             dump(self.root / self.packet[key], computed[key])
 
     def review_packet(self):
@@ -233,6 +327,117 @@ class PlanningPdfTests(unittest.TestCase):
         self.packet['samples'][0]['acceptance_evidence'] = self.evidence('accepted.md')
         self.packet['samples'][0]['direction_match'] = ''
         self.assertIn('direction-match', ';'.join(planning.validate('venue', self.packet, self.root)))
+
+    def test_undecided_journal_comparison_needs_actual_current_confirmation(self):
+        selection = self.packet['venue_selection']
+        selection['mode'] = 'candidate_comparison'
+        selection['candidates'].append({**deepcopy(selection['candidates'][0]), 'id': 'V2', 'venue': 'Alternative synthetic venue',
+                                         'advantages': ['Alternative source-based format comparison.']})
+        self.packet['_brief']['venue'] = 'undecided'
+        self.recompute()
+        self.assertIn('actual controller-recorded', ';'.join(planning.validate('venue', self.packet, self.root)))
+        report = venue_tools.comparison_report(self.packet, self.root)
+        self.packet['_venue_confirmation'] = {'candidate_id': 'V1', 'venue': self.packet['venue'],
+            'comparison_sha256': venue_tools.comparison_digest(report)}
+        self.assertEqual([], planning.validate('venue', self.packet, self.root))
+        self.packet['venue_selection']['rationale'] += ' Changed rationale.'
+        self.recompute()
+        self.assertIn('confirmation is stale', ';'.join(planning.validate('venue', self.packet, self.root)))
+
+    def test_existing_target_does_not_allow_a_silent_venue_change(self):
+        self.packet['_brief']['venue'] = 'Different target already approved'
+        self.assertIn('exact previously chosen', ';'.join(planning.validate('venue', self.packet, self.root)))
+
+    def test_design_template_is_measured_but_semantically_incomplete(self):
+        template = venue_tools.design_template(self.packet, self.root)
+        row = template['papers']['S1']['figures'][0]
+        self.assertEqual(1, row['number'])
+        self.assertIn('Figure 1.', row['caption'])
+        self.assertEqual('', row['claim'])
+        self.packet['samples'][0]['design']['figures'][0]['claim'] = ''
+        with self.assertRaisesRegex(planning.PlanningError, 'missing claim'):
+            planning.calibrate(self.packet, self.root)
+
+    def test_per_visual_correspondence_cannot_be_replaced_by_equal_counts(self):
+        row = self.packet['samples'][0]['design']['figures'][0]
+        row['number'] = 2
+        with self.assertRaisesRegex(planning.PlanningError, 'number differs'):
+            planning.calibrate(self.packet, self.root)
+        row['number'] = 1; row['caption'] = 'A different caption.'
+        with self.assertRaisesRegex(planning.PlanningError, 'caption differs'):
+            planning.calibrate(self.packet, self.root)
+
+    def test_real_pdf_panel_measurement_prefills_every_panel(self):
+        source = (self.root / 'sample.tex').read_text()
+        source = source.replace(r'\noindent Figure 1.', r'\noindent(a) First case.\par' + '\n' + r'\noindent(b) Second case.\par' + '\n' + r'\noindent Figure 1.')
+        (self.root / 'panels.tex').write_text(source)
+        result = subprocess.run(['pdflatex', '-interaction=nonstopmode', '-halt-on-error', 'panels.tex'],
+                                cwd=self.root, capture_output=True, timeout=60)
+        self.assertEqual(0, result.returncode)
+        self.packet['samples'][0]['pdf'] = 'panels.pdf'; self.packet['artifacts'].append('panels.pdf')
+        template = venue_tools.design_template(self.packet, self.root)
+        row = template['papers']['S1']['figures'][0]
+        self.assertEqual(['a', 'b'], [panel['label'] for panel in row['panels']])
+        self.assertTrue(row['caption'].startswith('Figure 1.'))
+        self.assertEqual('', row['panels'][0]['claim'])
+
+    def test_eight_distinct_actual_pdf_fixtures_use_the_default_count_policy(self):
+        prototype = deepcopy(self.packet['samples'][0])
+        self.packet['samples'] = []
+        for index in range(1, 9):
+            name = 'acceptedfixture' + str(index)
+            make_pdf(self.root, name=name)
+            sample = deepcopy(prototype); sample.update(id='S' + str(index), pdf=name + '.pdf')
+            self.packet['samples'].append(sample); self.packet['artifacts'].append(sample['pdf'])
+        template = venue_tools.design_template(self.packet, self.root)
+        for sample in self.packet['samples']:
+            design = template['papers'][sample['id']]
+            sample['design'] = {key: design[key] for key in ('figures', 'tables')}
+            for plural, visual_type in (('figures', 'quantitative_results'), ('tables', 'main_results')):
+                for row in sample['design'][plural]:
+                    row.update(type=visual_type, placement='body', question='Which fixture condition is reported?',
+                        claim='The synthetic condition is explicitly labelled.', evidence='The compiled fixture body and captions.',
+                        design_takeaway='Keep condition and measurement labels together.', limitations='Software test data only.')
+        computed = planning.calibrate(self.packet, self.root)
+        self.assertEqual(8, len(computed['measurements']))
+        self.assertEqual(8, len({record['sha256'] for record in computed['measurements']}))
+        self.assertTrue(computed['venue_profile']['sampling_policy']['count_in_default_range'])
+        self.assertFalse(computed['venue_profile']['sampling_policy']['budget_is_reference_only'])
+        self.assertIsNone(computed['venue_profile']['sampling_policy']['count_deviation_reason'])
+
+    def test_panel_semantics_and_measurement_corrections_are_explicit(self):
+        sample = self.packet['samples'][0]
+        measured = planning.venue_profile.measure_pdf(self.root / 'sample.pdf')
+        measured['figures'][0]['panels'] = ['a', 'b']
+        with self.assertRaisesRegex(planning.PlanningError, 'cover detected panel'):
+            venue_tools.validate_design(sample, measured)
+        row = sample['design']['figures'][0]
+        row['panels'] = [{'label': label, 'question': 'Which paired case differs?', 'claim': 'This case shows the measured distinction.',
+            'evidence': 'The case-specific record.', 'design_takeaway': 'Use the same axis for paired cases.',
+            'limitations': 'The case is illustrative only.'} for label in ('a', 'b')]
+        self.assertEqual(row, venue_tools.validate_design(sample, measured)['figures'][0])
+        row['panels'][0]['evidence'] = ''
+        with self.assertRaisesRegex(planning.PlanningError, 'Per-panel design missing evidence'):
+            venue_tools.validate_design(sample, measured)
+
+    def test_page_budget_preserves_official_reference_appendix_rule(self):
+        computed = planning.calibrate(self.packet, self.root)
+        accounting = computed['venue_profile']['page_accounting']
+        self.assertFalse(accounting['selected_rule']['includes_references'])
+        self.assertFalse(accounting['selected_rule']['includes_appendix'])
+        self.assertEqual('total_pages_fallback', accounting['sample_statistics'][0]['pages_basis'])
+        self.packet['page_budget']['source']['quote'] = 'An invented eight-page rule'
+        with self.assertRaisesRegex(planning.PlanningError, 'quote is absent'):
+            planning.calibrate(self.packet, self.root)
+
+    def test_sample_habits_cannot_become_official_hard_limits(self):
+        self.packet['page_budget'] = {'target': 1, 'basis': 'sample_inference', 'limit_type': 'hard_limit',
+            'includes_references': True, 'includes_appendix': True, 'sample_ids': ['S1'],
+            'reason': 'An observed sample length, not an official limit.'}
+        with self.assertRaisesRegex(planning.PlanningError, 'official hard limit'):
+            planning.calibrate(self.packet, self.root)
+        self.packet['page_budget']['limit_type'] = 'target'
+        self.assertEqual('sample_inference', planning.calibrate(self.packet, self.root)['venue_profile']['page_accounting']['selected_rule']['basis'])
 
     def test_snapshot_cannot_freeze_a_different_promise_set(self):
         snapshot = json.loads((self.root / 'snapshot.json').read_text())

@@ -1,8 +1,8 @@
 # 本地科研知识迁移矩阵
 
 本分支以 `uditgoenka/autoresearch@7bddd056dfd0b0ded8360588d8101b1ecb5c0baa`
-的完整仓库为根目录基础。`foundation/` 是其新增 `paper` 子命令，经过现有
-transform/install 路径分发到各宿主 Skill 的 `paper/`。旧 autoresearch-paper
+的完整仓库为根目录基础。`foundation/` 实现默认的完整科研流程，经过现有
+transform/install 路径分发到各宿主 Skill 的内部 `paper/` 包；它不是 paper 子 Skill。旧 autoresearch-paper
 代码保留在原分支与 Git 历史，本分支不以旧运行时加 third_party 快照充当重建。
 
 ## 盘点口径与来源身份
@@ -23,7 +23,7 @@ effects、typed actions、venue/template、review、finalizer 和关联回归案
 - LLM-Wiki 页面是本地总结及推断。迁移其可检验的问题与证据边界，不宣称运行了
   RIDAR、SciΠvot、ScholarCatalyst 或复现其作者结果。
 
-精确的 51 项来源路径、版本、hash、身份和使用方式见
+精确的 52 项来源路径、版本、hash、身份和使用方式见
 [`foundation/provenance.json`](../foundation/provenance.json)。各行 D/P/W 路径分别相对
 Deli Skill、较新 PaperFlow 根目录、LLM-Wiki 根目录；文件 hash 以该 JSON 为准。
 
@@ -53,13 +53,13 @@ Deli Skill、较新 PaperFlow 根目录、LLM-Wiki 根目录；文件 hash 以�
 | K15 G1–G5 与 weakness routing | D `paper-writing.md` / `review.md` 方法及本地适配，P review/finalizer | `review.md` → `Controller.check_reviews`，按缺陷回 literature/experiment/figures/write | 最终要求各适用门及 R6 证据；fixture 按阶段与逐项合同检查后再 finalizer | 已接线；历史模拟分数不是外部接受，未知/未检查不能 pass |
 | K16 旧知识的适用性修正 | D `codex-runtime.md` / `figures.md` / `structure.md` / academic examples | `venue.md`、`figures.md`、`write.md`；venue 预算替固定数量、真实统计单位替统一 mean±std、保真替自动 hedge | venue/science/prose 负例与 knowledge 加载 | 已加载；不照搬 50 页综述配额、必须凑 unresolved 或主观分数标尺 |
 | K17 资源、成本与隐私 | P Skill/protocol/feasibility，D 本地 runtime 适配 | `intake.md`、`experiment.md`、`delivery.md`；实际授权/设备/unknown usage、私有材料范围和发布边界 | fixture 标 model_calls=0、remote_jobs=0；intake resources 结构检查；授权仍由真实宿主提供 | 已加载；无全局模型配置/凭证迁移，无云服务或后台研究启用 |
-| U01 上游小入口与子命令 | 完整 MIT 上游 revision，所有 342 文件为基础 | 根目录 `.claude` 为 canonical，`paper.md` 新子命令，`scripts/transform.sh` / `sync-paper.py` 分发 | upstream 与 extension install/transform tests；各副本从 canonical 生成 | 已适配；并非旧工程的外挂快照 |
+| U01 上游小入口与子命令 | 完整 MIT 上游 revision，所有 342 文件为基础 | 根目录 `.claude` 为 canonical，`autoresearch.md` 默认研究、`iterate.md` 经典循环，`scripts/transform.sh` / `sync-paper.py` 分发 | upstream 与 extension install/transform tests；各副本从 canonical 生成 | 已适配；并非旧工程的外挂快照 |
 | U02 hooks/rollback/两类循环 | 上游 hooks、metric core、`orchestrate.sh` | 原子命令继续使用原协议；paper context 同时提供 plan/core/reason；论文 ledger 保留独立权限边界 | upstream test-hooks/test-orchestrator；论文工作不以 keep 授予 acceptance | 已保留；非 Claude 宿主的 hooks 能力按实际上游宿主适配披露 |
 | U03 fork-and-flush | 上游 `fork-and-flush.md` 与 plateau verdict | `exploration.trigger/request/create_worktrees/select/promote`，从最佳 commit fresh contexts 分叉、择优 | `test_exploration` 固定/early schedule、真实隔离 worktrees 与最佳 commit promotion | 已接线机械 seam；宿主创建/继续 fresh-context agent，离线测试不证明真实模型表现 |
 
 ## 验证材料与科学边界
 
-最终整合运行 `foundation/tests` 的 67 项测试，全部通过，含真实安装后删除临时
+最初基线 `613e4e7` 整合运行 `foundation/tests` 的 67 项测试，全部通过，含真实安装后删除临时
 source checkout 再执行完整 fixture、同 Brief 的版本化返工、逐动作效果对账、
 两份稿件错配、Unicode Git 路径、引用解析和来源包重建等回归。原始输出保存在
 `runs/verification/foundation-tests.log`。原样本地 helper 的独立回归为 105 项通过，
@@ -70,7 +70,8 @@ source checkout 再执行完整 fixture、同 Brief 的版本化返工、逐动�
 16 次计划运行与失败/提前停止/负结果、零模型调用、零远程任务、PDF/TeX/ZIP 和导出
 manifest。其 `independent_model_review` 明确为 `not performed`；不能把脚本化 reviewer
 packet 当作真实独立科学评审。早期样例因单次 TeX 编译未解析引用而被此版本替代，
-现已完整构建并回归拒绝未解析引用。最终验证范围及剩余边界见 [VALIDATION.md](VALIDATION.md)。
+现已完整构建并回归拒绝未解析引用。这些是最初基线证据。本轮逐项 Deli 复核与缺口关闭见 [DELI_PARITY_AUDIT.md](DELI_PARITY_AUDIT.md)，
+当前同版本验收与剩余边界见 [VALIDATION.md](VALIDATION.md)。
 
 ## 不迁移的具体项目
 

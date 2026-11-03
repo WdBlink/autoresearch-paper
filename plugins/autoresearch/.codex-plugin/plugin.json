@@ -1,7 +1,7 @@
 {
   "name": "autoresearch",
   "version": "2.3.0-codex.0",
-  "description": "Autonomous improvement engine for Codex. 15 commands: iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, evals, improve, regression, paper.",
+  "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
   "author": {
     "name": "Udit Goenka",
     "url": "https://github.com/uditgoenka"
@@ -20,9 +20,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Autoresearch",
-    "shortDescription": "Autonomous improvement workflows for Codex.",
-    "longDescription": "15 self-contained commands: core iterate loop, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, evals, improve, regression, paper. Thin routing SKILL.md + per-command instruction files.",
+    "displayName": "Autoresearch \u00b7 Research to Paper",
+    "shortDescription": "A complete research-to-paper workflow.",
+    "longDescription": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
     "developerName": "Udit Goenka",
     "category": "Productivity",
     "capabilities": [
@@ -33,9 +33,7 @@
     "privacyPolicyURL": "https://github.com/uditgoenka/autoresearch/blob/main/LICENSE",
     "termsOfServiceURL": "https://github.com/uditgoenka/autoresearch/blob/main/LICENSE",
     "defaultPrompt": [
-      "$autoresearch plan Improve test coverage to 90%",
-      "$autoresearch security --diff --fail-on critical",
-      "$autoresearch learn --mode update --scope docs/**/*.md"
+      "$autoresearch Start from my research question and materials"
     ],
     "brandColor": "#0F766E"
   }

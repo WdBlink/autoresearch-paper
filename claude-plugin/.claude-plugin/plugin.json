@@ -1,6 +1,6 @@
 {
   "name": "autoresearch",
-  "description": "Autonomous improvement engine. 15 commands: iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression, paper.",
+  "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
   "version": "2.3.0",
   "author": {
     "name": "Udit Goenka",

@@ -1,5 +1,5 @@
 ---
-name: autoresearch
+name: autoresearch:iterate
 description: "Autonomous iteration loop: modify, verify, keep/discard against any metric"
 argument-hint: "[Goal: <text>] [Scope: <glob>] [Metric: <text>] [Verify: <cmd>] [Guard: <cmd>] [Iterations: N] [--evals]"
 disable-model-invocation: true

@@ -16,5 +16,6 @@ for target in sys.argv[1:]:
     upstream.mkdir()
     for name in ('plan.md', 'reason.md'):
         shutil.copyfile(root / '.claude/commands/autoresearch' / name, upstream / name)
-    shutil.copyfile(root / '.claude/commands/autoresearch.md', upstream / 'autoresearch.md')
+    shutil.copyfile(root / '.claude/commands/autoresearch/iterate.md', upstream / 'iterate.md')
+    shutil.copyfile(root / '.claude/commands/autoresearch/iterate.md', upstream / 'autoresearch.md')
     shutil.copyfile(root / '.claude/skills/autoresearch/references/fork-and-flush.md', upstream / 'fork-and-flush.md')

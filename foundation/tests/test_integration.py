@@ -96,6 +96,8 @@ class IntegrationTests(unittest.TestCase):
         self.ctl.rewind('write', 'Revise the wording under the same Brief', 'rewind-for-revision')
         original = read_json(self.root / 'write/packet.json')
         source = self.root / original['manuscript_tex']
+        baseline_path = put(self.root, 'manuscript/baseline.tex', source.read_text())
+        original['artifacts'].append(baseline_path)
         source.write_text(source.read_text().replace(r'\end{document}', r'Revised software-fixture prose.\end{document}'))
         new_order = {'id': 'W-writing-v2', 'producer': 'fixture-author', 'requirement_ids': ['S1', 'M1'], 'supersedes': 'W-writing',
                      'actions': [{'type': 'compile_tex', 'source': original['manuscript_tex'], 'pdf': 'manuscript/revised.pdf'}]}
@@ -116,7 +118,15 @@ class IntegrationTests(unittest.TestCase):
         review['manuscript_pdf'] = 'manuscript/revised.pdf'
         review['requirement_checks'] = [{'requirement_id': key, 'binding_sha256': value['binding_sha256'], 'evidence_hashes': value['hashes'],
                                          'verdict': 'fulfilled', 'rationale': 'Scripted rework fixture correspondence'} for key, value in self.ctl.load()['bindings'].items()]
+        review['completion']['pdf'] = ['manuscript/revised.pdf']
+        revision_path = review['completion']['revision'][0]
+        put(self.root, revision_path, {'status': 'revised', 'changes': [{'baseline': {'path': baseline_path, 'sha256': file_hash(self.root / baseline_path)}, 'after': original['manuscript_tex'], 'reason': 'Versioned software-fixture prose revision'}]})
+        snap_path = review['completion']['snapshot'][0]
+        files = {p for r in self.ctl.load()['receipts'] for p in r['hashes']} | {review['completion']['review'][0], revision_path}
+        put(self.root, snap_path, {'files': {p: file_hash(self.root / p) for p in files}})
         self.ctl.commit(review, 'revised-review')
+        request = self.ctl.prepare_round(review['artifacts'])
+        self.ctl.apply_round(request, {'request_sha256':request['request_sha256'],'progress':'verified_progress','reason':'Verified software revision only','status':'active'}, 'record-revision-round')
         result = self.ctl.finalize('revised-export')
         self.assertEqual('software_fixture_complete', result['status'])
         self.assertEqual(old_state['brief_sha256'], self.ctl.load()['brief_sha256'])
@@ -161,6 +171,7 @@ class IntegrationTests(unittest.TestCase):
         root = Path(self.temp.name) / 'multi-action'
         with self.assertRaises(FixturePaused): run(root, stop_after='plan')
         ctl = Controller(root)
+        ctl.begin_round()
         orders = [{'id': 'W-copy', 'producer': 'fixture-author', 'requirement_ids': ['F1'],
                    'actions': [{'type': 'copy_artifact', 'source': 'materials/project.md', 'target': 'work/first.md'},
                                {'type': 'copy_artifact', 'source': 'venue/rules.md', 'target': 'work/second.md'}]}]
@@ -196,6 +207,7 @@ class IntegrationTests(unittest.TestCase):
         root = Path(self.temp.name) / 'paused'
         with self.assertRaises(FixturePaused): run(root, stop_after='plan')
         ctl = Controller(root)
+        ctl.begin_round()
         # A missing source is a known failure before any side effect.
         failed = ctl.execute('W-writing', 'known-failure')
         self.assertEqual('failed', failed['status'])

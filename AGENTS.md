@@ -1,3 +1,12 @@
+# This branch: research to paper
+
+The main Skill entry is the whole research workflow, defined in
+`.claude/skills/autoresearch/SKILL.md` and `.claude/commands/autoresearch.md`.
+Writing is a late stage, not a separate `autoresearch:paper` Skill. The original
+classic loop is `.claude/commands/autoresearch/iterate.md`. Follow current
+`context` contracts, preserve source attribution and validate generated mirrors.
+The upstream engineering guidance below applies to auxiliary iteration tasks.
+
 # AGENTS.md — Autoresearch
 
 > Drop this file into your project root. Any AI agent (Claude Code, Codex, OpenCode, Muse, Gemini CLI, etc.) can then use Autoresearch immediately.

@@ -36,7 +36,11 @@ def digest(value):
 
 
 def file_hash(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    result = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            result.update(block)
+    return result.hexdigest()
 
 
 def read_json(path):
@@ -47,6 +51,8 @@ def read_json(path):
                 raise Refusal('Duplicate JSON key: ' + key)
             result[key] = value
         return result
+    if Path(path).stat().st_size > 16 * 1024 * 1024:
+        raise Refusal('JSON exceeds the 16 MiB input limit')
     return json.loads(Path(path).read_text(), object_pairs_hook=pairs,
                       parse_constant=lambda x: (_ for _ in ()).throw(Refusal('Non-finite JSON: ' + x)))
 
@@ -54,7 +60,7 @@ def read_json(path):
 def safe(root, value, *, output=False, internal=False):
     if not isinstance(value, str) or not value or Path(value).is_absolute() or '..' in Path(value).parts:
         raise Refusal('Expected a run-relative path: ' + str(value))
-    if not internal and Path(value).parts[0] in {'.paper', 'delivery', '.git'}:
+    if not internal and (Path(value).parts[0] in {'.paper', 'delivery', '.git'} or Path(value).parts[:2] == ('control','round-decisions')):
         raise Refusal('Artifact cannot write controller-owned paths: ' + value)
     path = root / value
     current = root
@@ -66,6 +72,8 @@ def safe(root, value, *, output=False, internal=False):
         raise Refusal('Path escapes run')
     if not output and not path.is_file():
         raise Refusal('Missing artifact: ' + value)
+    if path.is_file() and path.stat().st_nlink != 1:
+        raise Refusal('Hard-linked artifacts are not accepted: ' + value)
     return path
 
 
@@ -95,15 +103,19 @@ def identifier(value):
     return value
 
 
-def check_brief(brief):
+def check_brief(brief, *, draft=False):
     if not isinstance(brief, dict):
         raise Refusal('Brief must be an object')
-    for field in ('question', 'venue', 'direction', 'paper_type', 'resources'):
+    from .rounds import policy
+    policy(brief)
+    for field in ('question', 'venue', 'direction', 'paper_type', 'resources', 'scope', 'angle', 'audience'):
         if not brief.get(field):
             raise Refusal('Brief missing ' + field)
     if 'software_fixture' in brief and type(brief['software_fixture']) is not bool:
         raise Refusal('software_fixture must be a boolean fixed in the Brief')
     items = brief.get('deliverable_plan')
+    if draft and items == []:
+        return set()
     if not isinstance(items, list) or not items:
         raise Refusal('Brief requires an itemized deliverable_plan')
     ids = set()
@@ -194,6 +206,12 @@ class Controller:
             raise Refusal('Unknown run format; read-only migration required')
         if digest(value['brief']) != value['brief_sha256']:
             raise Refusal('Approved Brief changed')
+        checkpoint = self.home / 'checkpoint.json'
+        if checkpoint.exists():
+            if checkpoint.is_symlink() or checkpoint.stat().st_nlink != 1: raise Refusal('Recovery checkpoint cannot be linked')
+            latest = read_json(checkpoint)
+            if latest.get('sha256') != digest(latest.get('state')) or digest(value) != latest['sha256']:
+                raise Refusal('Controller and latest durable checkpoint differ; recover before proceeding')
         if value.get('implementation_sha256') != self.implementation():
             raise Refusal('Execution code or stage knowledge changed; pin the old implementation or migrate explicitly')
         return value
@@ -203,23 +221,31 @@ class Controller:
         return digest({str(p.relative_to(self.package)): file_hash(p) for p in paths})
 
     def save(self, state):
+        # The same controller writes a latest-state recovery copy before its live projection.
+        # An interrupted pair is detected on load; recovery never selects an older export.
+        atomic(self.home / 'checkpoint.json', {'state': state, 'sha256': digest(state)})
         atomic(self.path, state)
 
     def init(self, brief):
-        check_brief(brief)
+        check_brief(brief, draft=brief.get('contract_status') == 'draft')
         with self.lock():
             if self.path.exists():
                 raise Refusal('Run already exists; do not reset its history')
+            if any(p.name != 'lock' for p in self.home.iterdir()) or (self.root / 'delivery').exists():
+                raise Refusal('Historical controller/export records exist; recover the ledger instead of reinitializing')
             state = {'schema_version': 1, 'created_at': now(), 'brief': brief,
                      'brief_sha256': digest(brief), 'implementation_sha256': self.implementation(), 'approval': None, 'receipts': [],
                      'history': [], 'operations': {}, 'attempts': {}, 'bindings': {},
-                     'frozen_plan': None, 'delivery': None, 'rounds': [], 'stale_count': 0, 'material_reads': [], 'additional_orders': []}
+                     'frozen_plan': None, 'delivery': None, 'rounds': [], 'stale_count': 0, 'material_reads': [], 'additional_orders': [], 'venue_confirmation': None, 'active_round': None, 'last_seen_at': now(), 'last_progress_at': None, 'session': {'started_at': now(), 'rounds': 0, 'experiment_rounds': 0}, 'last_round_status': None, 'pending_round': None}
             self.save(state)
-            return {'status': 'needs_brief_approval', 'brief_sha256': state['brief_sha256'], 'brief': brief}
+            return {'status': 'preparation' if brief.get('contract_status') == 'draft' else 'needs_brief_approval', 'brief_sha256': state['brief_sha256'], 'brief': brief}
 
     def approve(self, brief_sha256, actor):
         with self.lock():
             state = self.load()
+            check_brief(state['brief'])
+            if state['brief'].get('contract_status') == 'draft':
+                raise Refusal('Calibrate the venue and set the concrete contract before final Brief approval')
             if brief_sha256 != state['brief_sha256'] or not actor.strip():
                 raise Refusal('Approval must name the exact displayed Brief and human actor')
             if state['approval'] and state['approval']['actor'] != actor:
@@ -230,8 +256,8 @@ class Controller:
                 self.save(state)
             return {'status': 'approved', 'approval': state['approval']}
 
-    def ready(self, state):
-        if not state['approval']:
+    def ready(self, state, *, preparation=False):
+        if not preparation and (not state['approval'] or state['brief'].get('contract_status') == 'draft'):
             raise Refusal('Exact Brief approval is required before research stages')
         issues = self.stale(state)
         if issues:
@@ -253,28 +279,143 @@ class Controller:
                     issues.append('Stale ' + receipt['stage'] + ' artifact: ' + name + '; rewind this stage and resubmit')
         return issues
 
-    def context(self):
+    def set_contract(self, brief, op):
+        with self.lock():
+            state = self.load()
+            request = {'command': 'set-contract', 'brief': brief}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            if [r['stage'] for r in state['receipts']] != ['intake', 'venue']:
+                raise Refusal('Set the concrete contract after venue calibration and before plan acceptance')
+            check_brief(brief)
+            for field in ('question', 'direction', 'paper_type', 'resources'):
+                if brief.get(field) != state['brief'].get(field):
+                    raise Refusal('Contract cannot silently change the research scope or resources: ' + field)
+            venue = state['receipts'][-1]['packet']['venue']
+            if brief.get('venue') != venue or brief.get('contract_status') == 'draft':
+                raise Refusal('Final contract must use the calibrated venue')
+            state['history'].append({'event': 'brief_superseded', 'brief': state['brief'], 'approval': state['approval'], 'at': now()})
+            state['brief'], state['brief_sha256'], state['approval'] = brief, digest(brief), None
+            return self.record(state, op, request, {'status': 'needs_brief_approval', 'brief': brief, 'brief_sha256': digest(brief)})
+
+    def confirm_venue(self, packet, actor, comparison_sha256, op):
+        from .venue_tools import comparison_digest, comparison_report
+        with self.lock():
+            state = self.load()
+            request = {'command': 'confirm-venue', 'packet': packet, 'actor': actor, 'comparison_sha256': comparison_sha256}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            if not actor.strip() or comparison_digest(comparison_report(packet, self.root)) != comparison_sha256:
+                raise Refusal('Venue confirmation must bind the exact sourced comparison and actual user selection')
+            if len(state['receipts']) != 1 or state['receipts'][0]['stage'] != 'intake':
+                raise Refusal('Confirm venue after intake and before calibration acceptance')
+            state['venue_confirmation'] = {'candidate_id': packet['venue_selection']['selected_id'], 'venue': packet['venue'],
+                                           'comparison_sha256': comparison_sha256, 'actor': actor, 'at': now()}
+            return self.record(state, op, request, {'status': 'venue_confirmed', **state['venue_confirmation']})
+
+    def context(self, writing_cases=()):
         with self.lock():
             state = self.load()
             stage = STAGES[len(state['receipts'])] if len(state['receipts']) < len(STAGES) else 'delivery'
             knowledge = self.package / 'references/knowledge' / (stage + '.md')
             if not knowledge.is_file():
                 raise Refusal('Missing stage knowledge: ' + str(knowledge))
-            name = 'autoresearch.md' if stage == 'experiment' else 'plan.md' if stage in {'intake', 'venue', 'plan'} else 'reason.md'
+            name = 'iterate.md' if stage == 'experiment' else 'plan.md' if stage in {'intake', 'venue', 'plan'} else 'reason.md'
             protocol = self.package / 'upstream' / name
             if not protocol.is_file():
                 protocol = self.package.parent / '.claude/commands' / ('autoresearch.md' if name == 'autoresearch.md' else 'autoresearch/' + name)
             if not protocol.is_file():
                 raise Refusal('Upstream stage protocol missing from installation')
-            return {'stage': stage, 'brief': state['brief'], 'approval': state['approval'],
+            from .writing import guidance
+            prose = guidance(self.package, writing_cases) if stage in {'write','review'} else None
+            return {'writing_guidance': prose, 'stage': stage, 'brief': state['brief'], 'approval': state['approval'],
                     'inputs': [{k: r[k] for k in ('stage', 'packet', 'hashes')} for r in state['receipts']],
                     'stale': self.stale(state), 'attempts': state['attempts'],
                     'knowledge': knowledge.read_text(), 'knowledge_sha256': file_hash(knowledge),
                     'upstream_protocol': protocol.read_text(),
                     'action_contracts': ACTIONS,
                     'requirements': state['brief']['deliverable_plan'],
+                    'round_status': __import__('lib.rounds', fromlist=['stop_reasons']).stop_reasons(state), 'active_round': state['active_round'],
                     'bindings': state['bindings'],
                     'work_orders': [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']], 'contract': (self.package / 'references/runtime-contract.md').read_text()}
+
+    def tool(self, name, packet, out=None, *, publish=False):
+        from . import planning, science, venue_tools
+        with self.lock():
+            state = self.load()
+            p = copy.deepcopy(packet)
+            p['_brief'] = state['brief']
+            p['_history'] = {r['stage']: r['packet'] for r in state['receipts']}
+            p['_plan'] = p['_history'].get('plan', {})
+            p['_venue_confirmation'] = state.get('venue_confirmation')
+            if name == 'venue-compare':
+                value = venue_tools.comparison_report(p, self.root)
+                value = {'comparison': value, 'comparison_sha256': venue_tools.comparison_digest(value)}
+            elif name == 'venue-design-template': value = venue_tools.design_template(p, self.root)
+            elif name == 'venue-calibrate': value = planning.calibrate(p, self.root)
+            elif name == 'plan-snapshot': value = planning.plan_snapshot(safe(self.root, p['figure_table_plan']))
+            elif name == 'plan-audit': value = planning.review_plan(p, self.root)
+            elif name == 'citation-check':
+                issues = science.validate('literature', p, self.root)
+                value = {'status': 'fail' if issues else 'pass', 'issues': issues, 'validation': 'record_integrity_not_external_truth'}
+            else: raise Refusal('Unknown deterministic research tool')
+            writes = {out: value} if out else {}
+            if publish:
+                if name != 'venue-calibrate': raise Refusal('publish is only defined for venue-calibrate output fields')
+                writes = {p[key]: item for key, item in value.items() if key in {'measurements', 'venue_profile', 'venue_plan_check', 'venue_comparison'}}
+            for target_name, item in writes.items():
+                target = safe(self.root, target_name, output=True)
+                if target.exists():
+                    if planning._without_clock({k:v for k,v in read_json(target).items() if k != 'captured_at'} if name == 'plan-snapshot' else read_json(target)) != planning._without_clock({k:v for k,v in item.items() if k != 'captured_at'} if name == 'plan-snapshot' else item):
+                        raise Refusal('Tool output exists with different content; use a new versioned path')
+                else: atomic(target, item)
+            return {'tool': name, 'value': value, 'written': {name: file_hash(safe(self.root, name)) for name in writes}}
+
+    def draft_preview(self, source, out):
+        with self.lock():
+            state = self.load()
+            pdf = safe(self.root, source)
+            if not pdf.read_bytes().startswith(b'%PDF-'): raise Refusal('Draft preview requires an actual PDF')
+            target = safe(self.root, out, output=True)
+            if target.exists() or not out.endswith('.pdf'): raise Refusal('Use a new .pdf path for each draft preview')
+            total, bound = len(state['brief']['deliverable_plan']), len(state['bindings'])
+            missing = sorted({i['id'] for i in state['brief']['deliverable_plan']} - set(state['bindings']))
+            blockers = ['missing_binding:' + key for key in missing]
+            if not any(r['stage'] == 'review' for r in state['receipts']): blockers.append('independent_review_pending')
+            blockers += ['unresolved_effect:' + key for key,value in state['attempts'].items() if value['status'] in {'running','uncertain'}]
+            blockers += self.stale(state)
+            if state['active_round'] is not None: blockers.append('round_checkpoint_pending')
+            banner = 'DRAFT COPY - ' + str(bound) + '/' + str(total) + ' items bound; blockers=' + str(len(blockers))
+            with tempfile.TemporaryDirectory(prefix='research-draft-') as temp:
+                folder = Path(temp); shutil.copyfile(pdf, folder / 'input.pdf')
+                tex = folder / 'draft.tex'
+                tex.write_text(r'\documentclass{article}\usepackage{pdfpages,xcolor}\begin{document}'
+                    + r'\includepdf[pages=-,pagecommand={\thispagestyle{empty}\begin{picture}(0,0)\put(0,0){\color{red}\sffamily\bfseries '
+                    + banner + r'}\end{picture}}]{input.pdf}\end{document}')
+                built = build_tex(tex, folder)
+                target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(built, target)
+            return {'status': 'review_draft', 'path': out, 'sha256': file_hash(target), 'items_bound': bound,
+                    'items_total': total, 'missing_requirement_ids': missing, 'blockers': blockers, 'not_delivered': True}
+
+    def recover(self, manifest=None):
+        with self.lock():
+            checkpoint = self.home / 'checkpoint.json'
+            if not checkpoint.is_file() or checkpoint.is_symlink() or checkpoint.stat().st_nlink != 1:
+                raise Refusal('No provably latest durable checkpoint exists; an older export cannot establish full history')
+            latest = read_json(checkpoint)
+            state = latest.get('state')
+            if latest.get('sha256') != digest(state): raise Refusal('Latest checkpoint failed integrity verification')
+            if state.get('implementation_sha256') != self.implementation():
+                raise Refusal('Recovery requires the pinned implementation that created the checkpoint')
+            if self.path.exists() and digest(read_json(self.path)) == latest['sha256']:
+                raise Refusal('The current ledger is intact; it must not be overwritten by recovery')
+            if manifest: self.verify_export(manifest)
+            state['history'].append({'event': 'ledger_recovered', 'source': 'latest_durable_checkpoint', 'at': now()})
+            self.save(state)
+            return {'status': 'recovered', 'source': 'latest_durable_checkpoint', 'history_preserved': True,
+                    'stale': self.stale(state), 'unresolved_effects': [k for k,v in state['attempts'].items() if v['status'] in {'running','uncertain'}]}
 
     def read_material(self, name, start=0, end=None):
         with self.lock():
@@ -311,6 +452,10 @@ class Controller:
         packet['_brief'] = copy.deepcopy(state['brief'])
         packet['_history'] = {r['stage']: copy.deepcopy(r['packet']) for r in state['receipts']}
         packet['_plan'] = packet['_history'].get('plan', {})
+        packet['_venue_confirmation'] = copy.deepcopy(state.get('venue_confirmation'))
+        if packet['stage'] == 'venue' and packet.get('venue_selection', {}).get('mode') == 'existing_target' and state['approval']:
+            from .venue_tools import comparison_digest, comparison_report
+            packet['_venue_confirmation'] = {'candidate_id': packet['venue_selection']['selected_id'], 'venue': state['brief']['venue'], 'comparison_sha256': comparison_digest(comparison_report(packet, self.root)), 'actor': state['approval']['actor'], 'basis': 'existing exact Brief approval'}
         if packet['stage'] == 'write':
             if packet.get('manuscript') != packet.get('manuscript_tex'):
                 raise Refusal('Writing checks and final compilation must use the same manuscript source')
@@ -395,12 +540,19 @@ class Controller:
             previous = self.operation(state, op, request)
             if previous is not None:
                 return previous
-            self.ready(state)
+            self.ready(state, preparation=packet.get('stage') in {'intake', 'venue'})
+            if packet.get('stage') in {'literature','experiment','figures','write','review'} and state['active_round'] is None:
+                raise Refusal('begin-round must record the pre-work snapshot before research artifacts are committed')
             if len(state['receipts']) == len(STAGES) or packet.get('stage') != STAGES[len(state['receipts'])]:
                 raise Refusal('Out-of-order stage')
+            if packet.get('stage') == 'experiment':
+                from .rounds import stop_reasons
+                if 'experiment_rounds' in stop_reasons(state)['reasons']:
+                    raise Refusal('Experiment round budget reached; another experiment receipt is blocked')
             hashes = self.validate(state, packet)
             if packet['stage'] == 'plan':
                 state['frozen_plan'] = digest(packet)
+            if state['active_round'] is not None: state['active_round']['stages_completed'].append(packet['stage'])
             state['receipts'].append({'stage': packet['stage'], 'packet': packet,
                                       'hashes': hashes, 'at': now(), 'operation': op})
             return self.record(state, op, request, {'status': 'recorded', 'stage': packet['stage'], 'hashes': hashes})
@@ -414,6 +566,12 @@ class Controller:
                 return previous
             if stage not in STAGES or not reason.strip():
                 raise Refusal('Rewind requires a known stage and reason')
+            if state['active_round'] is None:
+                from .rounds import documents, stop_reasons
+                if stop_reasons(state)['reasons']: raise Refusal('Round budget reached; rewind cannot open another work round')
+                plan_path = next((r['packet']['figure_table_plan'] for r in state['receipts'] if r['stage'] == 'plan'), None)
+                state['active_round'] = {'id': 'round-' + str(len(state['rounds'])+1), 'started_at': now(), 'stage': stage, 'stages_completed': [], 'documents': documents(self.root),
+                    'plan_path': plan_path, 'plan': read_json(safe(self.root,plan_path)) if plan_path else None, 'plan_sha256': file_hash(safe(self.root,plan_path)) if plan_path else None}
             cut = STAGES.index(stage)
             removed = state['receipts'][cut:]
             if not removed:
@@ -425,15 +583,58 @@ class Controller:
                                      'at': now()})
             return self.record(state, op, request, {'status': 'rewound', 'stage': stage})
 
-    def prepare_round(self, evidence):
+    def begin_round(self, *, session_id=None):
+        from .rounds import documents, stop_reasons
         with self.lock():
             state = self.load()
-            self.ready(state)
-            hashes = self._hashes({'artifacts': evidence})
-            request = {'state_sha256': digest(state), 'brief_sha256': state['brief_sha256'],
+            self.ready(state, preparation=True)
+            if session_id:
+                identifier(session_id)
+                if state['session'].get('id') != session_id:
+                    if state['active_round'] is not None:
+                        raise Refusal('Finish the current checkpoint before changing host session identity')
+                    if any(h.get('event') == 'session_started' and h.get('id') == session_id for h in state['history']):
+                        raise Refusal('Session identifier was already used')
+                    state['session'] = {'id': session_id, 'started_at': now(), 'rounds': 0, 'experiment_rounds': 0}
+                    state['history'].append({'event': 'session_started', 'id': session_id, 'at': now()})
+            if stop_reasons(state)['reasons']:
+                raise Refusal('Round budget reached; stop and report the actual state')
+            state['last_seen_at'] = now()
+            if state['active_round'] is None:
+                plan = next((r['packet']['figure_table_plan'] for r in state['receipts'] if r['stage'] == 'plan'), None)
+                state['active_round'] = {'id': 'round-' + str(len(state['rounds']) + 1), 'started_at': now(), 'stage': STAGES[min(len(state['receipts']),7)], 'stages_completed': [],
+                                         'documents': documents(self.root), 'plan_path': plan,
+                                         'plan': read_json(safe(self.root, plan)) if plan else None,
+                                         'plan_sha256': file_hash(safe(self.root, plan)) if plan else None}
+            self.save(state)
+            return {'status': 'round_started', 'round': state['active_round'], 'budget': stop_reasons(state)}
+
+    def prepare_round(self, evidence, current_plan=None):
+        from .rounds import workload, policy, documents
+        with self.lock():
+            state = self.load()
+            self.ready(state, preparation=True)
+            if state['active_round'] is None and any(r['stage'] == 'plan' for r in state['receipts']):
+                raise Refusal('begin-round must capture the original plan before work starts')
+            hashes = self._hashes({'artifacts': evidence}) if evidence else {}
+            active = state['active_round']
+            plan_path = current_plan or (active and active['plan_path'])
+            plan = read_json(safe(self.root, plan_path)) if plan_path else None
+            old = {i['id']: i for i in active['plan'].get('items', [])} if active and active['plan'] else {}
+            new = {i['id']: i for i in plan.get('items', [])} if plan else {}
+            state['pending_round'] = None
+            request = {'state_sha256': digest({**state, 'last_seen_at': None}), 'brief_sha256': state['brief_sha256'],
                        'evidence': hashes, 'stale_count': state['stale_count'],
-                       'rules_sha256': self.rules_hash()}
-            return {**request, 'request_sha256': digest(request)}
+                       'round': copy.deepcopy(active), 'current_plan': plan_path,
+                       'current_plan_sha256': file_hash(safe(self.root, plan_path)) if plan_path else None,
+                       'plan_diff': {'removed': sorted(set(old)-set(new)), 'added': sorted(set(new)-set(old)),
+                                     'changed': sorted(k for k in set(old)&set(new) if old[k] != new[k])},
+                       'workload': workload(self.root, active['documents'], policy(state['brief'])) if active else None,
+                       'documents_sha256': digest(documents(self.root)), 'rules_sha256': self.rules_hash()}
+            issued = {**request, 'request_sha256': digest(request)}
+            state['pending_round'] = issued
+            self.save(state)
+            return issued
 
     def rules_hash(self):
         paths = [Path(__file__), *sorted((self.package / 'references/knowledge').glob('*.md'))]
@@ -446,14 +647,21 @@ class Controller:
             previous = self.operation(state, op, arguments)
             if previous is not None:
                 return previous
-            self.ready(state)
+            preparation_wait = state['brief'].get('contract_status') == 'draft' and decision.get('progress') == 'no_progress' and decision.get('status') in {'needs_input','stopped'}
+            self.ready(state, preparation=preparation_wait)
             core = {k: v for k, v in request.items() if k != 'request_sha256'}
             if request.get('request_sha256') != digest(core) or decision.get('request_sha256') != digest(core):
                 raise Refusal('Round request digest mismatch')
-            if request.get('state_sha256') != digest(state) or request.get('rules_sha256') != self.rules_hash():
+            if state.get('pending_round') != request:
+                raise Refusal('Round request was not issued by the current controller preparation')
+            base_state = {**state, 'pending_round': None, 'last_seen_at': None}
+            if request.get('state_sha256') != digest(base_state) or request.get('rules_sha256') != self.rules_hash():
                 raise Refusal('Round state or knowledge changed; prepare and judge again')
-            if not request.get('evidence') or any(file_hash(safe(self.root, name)) != sha for name, sha in request['evidence'].items()):
+            if any(file_hash(safe(self.root, name)) != sha for name, sha in request.get('evidence', {}).items()):
                 raise Refusal('Round evidence changed; prepare and judge again')
+            from .rounds import documents
+            if request.get('documents_sha256') != digest(documents(self.root)):
+                raise Refusal('Round documents changed after preparation; recompute workload and judge again')
             kind = decision.get('progress')
             if kind not in {'verified_progress', 'no_progress', 'regression'} or not decision.get('reason'):
                 raise Refusal('Round needs a supported progress kind and reason')
@@ -463,6 +671,35 @@ class Controller:
                 raise Refusal('A waiting or stopped round must name its blockers or stop reason')
             if state['rounds'] and kind == 'verified_progress' and request['evidence'] == state['rounds'][-1]['request']['evidence']:
                 raise Refusal('Unchanged evidence is not new progress')
+            from .rounds import stop_reasons, experimental_scope, policy
+            active = state['active_round'] or {}
+            experiment_steps = active.get('stages_completed', []).count('experiment')
+            experimental_round = experimental_scope(state['brief']) and (decision.get('phase') == 'experiment' or active.get('stage') == 'experiment' or experiment_steps > 0)
+            limit_decision = {**decision, 'phase': 'experiment' if experimental_round else decision.get('phase')}
+            if stop_reasons(state, limit_decision)['reasons'] and decision['status'] == 'active':
+                raise Refusal('Budget or refinement stopping condition reached; active continuation is refused')
+            if experimental_round and state['session']['experiment_rounds'] + max(1, experiment_steps) > policy(state['brief'])['experiment_rounds'] and decision['status'] == 'active':
+                raise Refusal('Recorded experiment steps exceed the approved experiment round budget')
+            if kind != 'no_progress' and not request.get('evidence'):
+                raise Refusal('Progress or regression needs real evidence')
+            if request.get('current_plan') and file_hash(safe(self.root, request['current_plan'])) != request['current_plan_sha256']:
+                raise Refusal('Current plan changed after round preparation')
+            if request.get('workload') and request['workload']['exceeded'] and not decision.get('workload_deviation_reason'):
+                raise Refusal('Round changed more than the allowed large documents; record the specific deviation')
+            if (request.get('workload') or {}).get('oversized_new_tex') and decision['status'] == 'active':
+                raise Refusal('New generated TeX sources exceed 300 lines; revise the source before continuing')
+            if (request.get('workload') or {}).get('oversized_existing_tex') and not decision.get('workload_deviation_reason'):
+                raise Refusal('Existing large sources need a recorded preservation deviation')
+            changed_plan = any(request.get('plan_diff', {}).values())
+            if changed_plan:
+                r6 = decision.get('r6', {})
+                refs = r6.get('evidence')
+                if r6.get('verdict') not in {'disclosed_deviation','scientifically_adjusted'} or not isinstance(refs,list) or not refs or not set(refs) <= set(request['evidence']):
+                    raise Refusal('Changed round commitments require explicit evidence-bound R6 disclosure')
+                reports = [read_json(safe(self.root,name)) for name in refs if name.endswith('.json')]
+                if not any(report.get('round_id') == active.get('id') and report.get('original_plan_sha256') == active.get('plan_sha256')
+                           and report.get('current_plan_sha256') == request.get('current_plan_sha256') and report.get('verdict') == r6['verdict'] for report in reports):
+                    raise Refusal('R6 report must bind this round original plan and actual current plan')
             direction = decision.get('direction')
             if state['stale_count'] >= 2 and decision['status'] == 'active' and not direction:
                 raise Refusal('After two stale rounds, active continuation needs a structural pivot')
@@ -473,18 +710,29 @@ class Controller:
                     raise Refusal('Direction already tried')
             finding = decision.get('finding')
             if finding:
-                if kind == 'no_progress' or not finding.get('claim') or not finding.get('limitations') or not finding.get('validation'):
+                if kind == 'no_progress' or not finding.get('claim') or 'limitations' not in finding or not isinstance(finding['limitations'], str) or not finding.get('validation'):
                     raise Refusal('Finding requires evidence interpretation and limitations')
+                identifier(finding.get('id'))
+                existing = {r['decision']['finding']['id']: r['decision']['finding'] for r in state['rounds'] if r['decision'].get('finding')}
+                if finding['id'] in existing or (finding.get('revises') is not None and finding['revises'] not in existing):
+                    raise Refusal('Finding identity or revision lineage is invalid')
                 normalized = ' '.join(finding['claim'].casefold().split())
                 for row in state['rounds']:
                     old = row['decision'].get('finding')
-                    if old and ' '.join(old['claim'].casefold().split()) == normalized:
+                    if old and ' '.join(old['claim'].casefold().split()) == normalized and finding.get('revises') is None:
                         raise Refusal('Duplicate finding cannot inflate progress')
             state['stale_count'] = 0 if kind == 'verified_progress' else state['stale_count'] + 1
+            state['session']['rounds'] += 1
+            if experimental_round: state['session']['experiment_rounds'] += max(1, experiment_steps)
+            state['last_seen_at'] = now()
+            if kind == 'verified_progress': state['last_progress_at'] = now()
+            state['last_round_status'] = decision['status']
+            state['active_round'] = None
+            state['pending_round'] = None
             state['rounds'].append({'request': request, 'decision': decision, 'at': now(),
                                     'validation': 'structure_and_binding_only'})
             return self.record(state, op, arguments, {'status': 'round_recorded', 'round': len(state['rounds']),
-                                                      'stale_count': state['stale_count']})
+                                                      'stale_count': state['stale_count'], 'budget': stop_reasons(state), 'attention_required': state['stale_count'] >= 4, 'total_findings': sum(1 for r in state['rounds'] if r['decision'].get('finding') and not r['decision']['finding'].get('revises'))})
 
     def revise_orders(self, orders, reason, op):
         with self.lock():
@@ -568,6 +816,10 @@ class Controller:
             if op in state['attempts']:
                 raise Refusal('Attempt has no terminal receipt; reconcile before replay')
             self.ready(state)
+            from .rounds import stop_reasons
+            if stop_reasons(state)['reasons']: raise Refusal('Round budget reached; typed execution is blocked')
+            if state['active_round'] is None:
+                raise Refusal('begin-round must capture pre-work evidence before typed actions execute')
             if any(a['work_id'] == work_id and a['status'] == 'completed' for a in state['attempts'].values()):
                 raise Refusal('WorkOrder already completed; create a new versioned order for new effects')
             attempt = {'work_id': work_id, 'order_sha256': digest(order), 'status': 'running',
@@ -738,6 +990,8 @@ class Controller:
                 if file_hash(safe(self.root, name)) != sha:
                     raise Refusal('Requirement artifact changed: ' + name)
         gates = packet.get('gates', {})
+        if any(not g.get('reason') for g in gates.values()):
+            raise Refusal('Every quality gate requires a substantive reason and bound evidence')
         if any(not isinstance(g.get('evidence'), list) or not set(g['evidence']) <= set(packet['artifacts']) for g in gates.values()):
             raise Refusal('Review gate evidence must be declared and hash-bound')
         allowed_na = state['brief'].get('not_applicable', {}).get('experiment')
@@ -768,6 +1022,8 @@ class Controller:
                 self.verify_export(previous['manifest'])
                 return previous
             self.ready(state)
+            if state['active_round'] is not None:
+                raise Refusal('Record the actual final round checkpoint before delivery')
             if len(state['receipts']) != len(STAGES):
                 raise Refusal('All stages, including independent itemized review, must be recorded')
             completed = {a['work_id'] for a in state['attempts'].values() if a['status'] == 'completed'}
@@ -777,6 +1033,11 @@ class Controller:
             for receipt in state['receipts']:
                 self.validate(state, receipt['packet'])
             write = next(r['packet'] for r in state['receipts'] if r['stage'] == 'write')
+            from .science import validate_delivery
+            review = next(r['packet'] for r in state['receipts'] if r['stage'] == 'review')
+            delivery_packet = {'artifacts': list({p for r in state['receipts'] for p in r['hashes']}), 'completion': review.get('completion'), '_brief': state['brief'], '_history': {r['stage']: r['packet'] for r in state['receipts']}}
+            issues = validate_delivery(delivery_packet, self.root)
+            if issues: raise Refusal('; '.join(issues))
             pdf = safe(self.root, write['manuscript_pdf'])
             if not pdf.read_bytes().startswith(b'%PDF-'):
                 raise Refusal('Final manuscript is not a PDF')
