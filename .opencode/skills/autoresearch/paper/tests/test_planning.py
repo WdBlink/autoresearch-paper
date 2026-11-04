@@ -453,6 +453,26 @@ class PlanningPdfTests(unittest.TestCase):
         with self.assertRaisesRegex(planning.PlanningError, 'cover every measured'):
             planning.calibrate(self.packet, self.root)
 
+    def test_manual_measurements_survive_copy_to_another_run_root(self):
+        self.add_rendered_visual_fixture()
+        computed = planning.calibrate(self.packet, self.root)
+        measured = computed['measurements'][0]
+        self.assertEqual('sample.pdf', measured['source'])
+        self.assertEqual('sample.pdf', measured['raw_extraction']['source'])
+        direct = venue_tools.measure_sample(self.packet['samples'][0], self.root, self.packet)
+        expected = deepcopy(direct['raw_extraction']); expected['source'] = 'sample.pdf'
+        self.assertEqual(expected, measured['raw_extraction'])
+        for key, value in computed.items():
+            dump(self.root / self.packet[key], value)
+        with tempfile.TemporaryDirectory() as folder:
+            relocated = Path(folder) / 'different-root'
+            shutil.copytree(self.root, relocated)
+            self.assertEqual([], planning.validate('venue', self.packet, relocated))
+            tampered = deepcopy(computed['measurements'])
+            tampered[0]['raw_extraction']['figures'][0]['caption'] = 'Wrong scientific content'
+            dump(relocated / self.packet['measurements'], tampered)
+            self.assertIn('Stored measurements differs', ';'.join(planning.validate('venue', self.packet, relocated)))
+
     def test_rendered_omissions_require_bound_images_pdf_and_read_pages(self):
         sample = self.add_rendered_visual_fixture()
         base = deepcopy(sample)
