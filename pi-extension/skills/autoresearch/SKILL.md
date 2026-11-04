@@ -35,6 +35,12 @@ experiment/evidence synthesis → figures → write → independent review → d
 Use the same state owner for rounds, snapshots, effects, bindings and recovery.
 A code keep, a completed tool or an overall score cannot satisfy a missing claim.
 
+Use the stage's `production_steps` and `paper/references/production.md` for
+provided acquisition, recording, render/export, source variants and review
+assembly. The main CLI owns path resolution, round-request persistence and
+export verification. Keep dataset/method choices in the research adapter;
+do not copy a previous study's counts, filenames or reviewer roles into a run.
+
 ## Auxiliary protocols
 
 These are tools for a bounded research subtask, not competing product entries.

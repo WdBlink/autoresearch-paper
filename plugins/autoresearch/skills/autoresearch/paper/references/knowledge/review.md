@@ -1,5 +1,7 @@
 # Review：逐项交付、科学质量与计划合规
 
+Use `bind-all`, `prepare-review` and `assemble-review` from [production.md](../production.md). The program derives the current obligations, exact hash maps, source closure, R6 checks and eight-role snapshot. An actual independent reviewer supplies identity, request-bound semantic judgments and findings. No reviewer count, paper count, named report file or revision label is universal.
+
 本阶段结合 Deli 的专业门及用户新增 R6/逐项合同/保真、PaperFlow 的独立 requirement_checks 和 Wiki 的完整性审计。以下是当前分支的审阅方法，不承诺复现外部论文的检测率或真实录用概率。
 
 ## 输入与独立性

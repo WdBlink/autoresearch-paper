@@ -1,5 +1,7 @@
 # Venue：官方规则、已录用样本与模板
 
+Use [production.md](../production.md): `source-fetch` retains real source identities. Declare `reading_index` and include it in artifacts; `venue-calibrate --publish` generates and acceptance recomputes the index from actual per-visual records. Never prefill a reading verdict. Resolve apparent numeric/emphasis conflicts using rendered pages and actual font spans; preserve extraction and reader corrections separately.
+
 本阶段采用用户 Deli 本地新增的投稿校准方法和 PaperFlow 的官方资源/模板绑定方法。本文件为综合改写；不复制第三方 Deli 原文，不将作者经验阈值当成 venue 规则。详细归属及源文件哈希见 `provenance.json`。
 
 ## 输入

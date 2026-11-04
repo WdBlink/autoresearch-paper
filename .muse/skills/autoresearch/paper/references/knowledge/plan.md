@@ -1,5 +1,7 @@
 # Plan：冻结承诺并分解为可检查工作
 
+Use [production.md](../production.md): probe the actual interpreter/dependencies and generate the `experiment-template` recording envelope before freezing a scientific evaluator. WorkOrders use registered `export_image` and `prepare_tex` policies when needed. Dataset identities, seeds, method choices and their scientific justification remain task parameters.
+
 本阶段结合 Deli 本地逐项交付合同和 R6 计划快照、PaperFlow 的 WorkOrder/typed action，以及上游 Autoresearch 的 plan 子命令。下述字段含义按本分支 runtime contract，不代表复刻 PaperFlow 的 LangGraph 或 Deli 记账器。
 
 ## 输入及冻结

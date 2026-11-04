@@ -277,6 +277,10 @@ def venue(packet, root):
     for field in ('measurements', 'venue_profile', 'venue_plan_check', 'venue_comparison'):
         actual = _json(_artifact(root, packet, field))
         _need(_without_clock(actual) == _without_clock(computed[field]), 'Stored ' + field + ' differs from recomputed PDF evidence')
+    if packet.get('reading_index'):
+        from .production import reading_index
+        _artifact(root, packet, 'reading_index')
+        reading_index(packet, Path(root), check=True)
     _need(computed['venue_plan_check']['status'] != 'fail', '; '.join(computed['venue_plan_check']['errors']))
 
 

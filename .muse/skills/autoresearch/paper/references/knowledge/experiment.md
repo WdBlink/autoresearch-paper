@@ -1,5 +1,7 @@
 # Experiment：假说、真实记录与结果身份
 
+Use the main `lib.experiments.ExperimentRecorder` from [production.md](../production.md). It derives the planned grid, records attempted operational failures and unstarted slots, and propagates errors. Only an explicitly predeclared `MeasurementFailure` is a scientific measurement failure. Inspect what an API receives versus actually uses; passing labels through a generic fit interface alone neither proves nor rules out target leakage.
+
 本阶段综合 Deli 实验方法、用户本地图表/证据适配和 PaperFlow 的 typed execution/效果账本，加入 Wiki 的科研诚信与测量纠偏审计问题。这是本分支方法说明，不是已集成 RIDAR 检测器、SciΠvot 评测器或远程集群。
 
 ## 输入和实验前检查

@@ -38,6 +38,12 @@ and cannot expand it to paid resources, private data or publication.
 
 ## Shared packet fields and boundaries
 
+For current runs, use the mechanical routes in [production.md](production.md).
+The public CLI resolves unambiguous JSON input paths against the run from any
+cwd and records transport output outside research documents. Per-stage
+`production_steps` supplies the default route; the raw fields below remain the
+wire contract for integration and recovery.
+
 Every stage packet has `stage`, `producer`, and a nonempty unique `artifacts`
 array. All referenced paths are current run-relative files and must be declared
 in that array (domain science checks may also use earlier accepted artifacts).
@@ -124,6 +130,12 @@ be covered. Registered actions have exact fields:
 - `{type:'render_statistics',input:RESULTS,table:PATH,figure:PATH}`.
 - `{type:'compile_tex',source:TEX,pdf:PATH}`.
 - `{type:'copy_artifact',source:PATH,target:PATH}`.
+- `{type:'export_image',source:PATH,target:PATH,options:OBJECT}`.
+- `{type:'prepare_tex',source:PATH,target:PATH,options:OBJECT}`.
+
+Production options and capabilities are specified in `production.md`. They
+come from the current venue/task, with no fixed dimensions, font, paper count
+or revision filename. Included TeX dependencies enter effect input hashes.
 
 `execute --work-id ID --operation-id ID` performs these bounded local calls.
 Existing outputs cannot be overwritten. No generated JS, Python or shell is
@@ -155,6 +167,15 @@ Independent reviewers still check official attribution and semantic fidelity.
 
 ## Binding, independent review and finalization
 
+The default entry uses `bind-all` with the actual binding array, then
+`prepare-review --out PATH`. Its request includes current gate guidance,
+allowed verdicts and an unjudged response template containing the approved IDs
+and subjects. The independent host fills judgments rather than copying hash
+maps. `assemble-review --packet PATH` derives the eight completion roles from
+accepted stages, recomputes R6 and records the full snapshot. Actual report and
+revision paths remain explicit inputs; no initial-draft or pass is invented.
+`commit` still performs final review-stage acceptance.
+
 After write acceptance, submit `bind` packets with `requirement_id`, `work_id`,
 `assets`, `evidence`, `manuscript`, and `location`. Location is a literal marker
 in the accepted source. Figures and tables must be literally inserted via
@@ -183,6 +204,10 @@ reviews, rebuilds TeX from the exported asset copy, checks reproduced PDF text,
 and writes a manifest, editable source, PDF, producing software/evidence and ZIP.
 `verify-export --manifest delivery/ID/manifest.json` detects changed bytes.
 This is internal artifact verification, not an external acceptance or submission.
+After a real final checkpoint judgment, `deliver --decision PATH --operation-id
+ID` performs checkpoint application and finalization together. Export verification
+also checks ZIP file membership, CRC and byte hashes; the producing runtime
+contains its required upstream protocols.
 
 ## Rounds and recovery
 

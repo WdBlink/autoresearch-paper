@@ -166,9 +166,9 @@ def run(root, *, stop_after=None, undecided=False, survey=False):
         venue['venue_selection']['candidates'].append(other)
         comparison = ctl.tool('venue-compare', venue)['value']
         ctl.confirm_venue(venue, 'offline fixture selection', comparison['comparison_sha256'], 'select-fixture-venue')
-    calibration = planning.calibrate(venue, root)
-    for field, key in [('measurements', 'measurements'), ('venue_profile', 'venue_profile'), ('venue_plan_check', 'venue_plan_check'), ('venue_comparison', 'venue_comparison')]:
-        put(root, venue[field], calibration[key])
+    venue['reading_index'] = 'venue/reading-index.md'
+    venue['artifacts'].append(venue['reading_index'])
+    ctl.tool('venue-calibrate', venue, publish=True)
     commit(venue)
     if undecided:
         concrete = ctl.set_contract(brief, 'set-fixture-contract')
@@ -292,12 +292,14 @@ Figure 1 and Table 1 report the same full-denominator observations.
 
 def finish(root, ctl, commit, contexts, plan_items, tex, evidence, bibliography, citation_plan, citation_verification, *, survey=False):
     plan_name, snapshot = 'plan/figure_table_plan.json', 'plan/snapshot.json'
+    binding_inputs = []
     for key, work, asset, location in [('F1', 'W-figures', 'figures/results.pdf', r'\label{fig:F1}'),
                                        ('T1', 'W-figures', 'figures/summary.tex', r'\label{tab:T1}'),
                                        ('S1', 'W-writing', tex, r'\section{Results}'),
                                        ('M1', 'W-writing', 'manuscript/main.pdf', r'\title{Offline workflow fixture}')]:
-        ctl.bind({'requirement_id': key, 'work_id': work, 'assets': [asset], 'evidence': evidence,
-                  'manuscript': tex, 'location': location}, 'bind-' + key)
+        binding_inputs.append({'requirement_id': key, 'work_id': work, 'assets': [asset], 'evidence': evidence,
+                               'manuscript': tex, 'location': location})
+    ctl.bind_all(binding_inputs, 'bind-fixture-items')
     bindings = ctl.load()['bindings']
     review_report = put(root, 'review/report.md', 'SOFTWARE FIXTURE reviewer packet. These are scripted checks, not an independent model review. All planned items and in-scope source or numerical evidence are preserved.')
     review = packet('review', [review_report, plan_name, snapshot, tex, 'manuscript/main.pdf'], reviewer='fixture-reviewer',
@@ -309,18 +311,21 @@ def finish(root, ctl, commit, contexts, plan_items, tex, evidence, bibliography,
     if survey:
         review['gates']['G2'].update(verdict='not_applicable', reason=ctl.load()['brief']['not_applicable']['experiment'])
     revision = put(root, 'review/revision.json', {'status': 'initial_draft', 'changes': []})
-    all_files = {p for r in ctl.load()['receipts'] for p in r['hashes']} | {review_report, revision}
-    version_snapshot = put(root, 'review/version-snapshot.json', {'files': {p: file_hash(root / p) for p in sorted(all_files)}})
-    review['artifacts'] += [revision, version_snapshot]
-    review['completion'] = {'source': [tex], 'pdf': ['manuscript/main.pdf'], 'bibliography': [bibliography], 'citation_plan': [citation_plan], 'citation_verification': [citation_verification],
-                            'review': [review_report], 'revision': [revision], 'snapshot': [version_snapshot]}
+    prepared = ctl.prepare_review('review/request.json')
+    judgment = {key: review[key] for key in ['reviewer', 'gates', 'r6_reviews', 'requirement_checks']}
+    judgment.update(request_sha256=prepared['request_sha256'], reports=[review_report], findings=[],
+                    reviewer_identity={'kind': 'software_fixture', 'independent_model_review': 'not performed'})
+    put(root, 'review/judgment.json', judgment)
+    ctl.assemble_review({'request': 'review/request.json', 'judgment': 'review/judgment.json', 'target': 'review/assembled.json',
+                         'completion': {'revision': [revision], 'snapshot': 'review/version-snapshot.json', 'r6_report': 'review/r6-mechanical.json'}})
+    review = json.loads((root/'review/assembled.json').read_text())
+    version_snapshot = review['completion']['snapshot'][0]
     commit(review)
     delivery_context = ctl.context()
     assert delivery_context['stage'] == 'delivery' and delivery_context['knowledge']
     contexts.append({'stage': 'delivery', 'knowledge_sha256': delivery_context['knowledge_sha256']})
     request = ctl.prepare_round([review_report, version_snapshot])
-    ctl.apply_round(request, {'request_sha256': request['request_sha256'], 'progress': 'verified_progress', 'reason': 'Complete offline software evidence was validated; not a scientific result.', 'status': 'active', 'phase': 'integration'}, 'record-fixture-round')
-    exported = ctl.finalize('export-fixture')
+    exported = ctl.deliver({'request_sha256': request['request_sha256'], 'progress': 'verified_progress', 'reason': 'Complete offline software evidence was validated; not a scientific result.', 'status': 'active', 'phase': 'integration'}, 'export-fixture')
     ctl.verify_export(exported['manifest'])
     put(root, 'fixture-report.json', {'status': exported['status'], 'contexts': contexts,
                                      'kind': 'source_synthesis' if survey else 'empirical',

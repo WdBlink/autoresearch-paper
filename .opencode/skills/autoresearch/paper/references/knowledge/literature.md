@@ -1,5 +1,7 @@
 # Literature：相关性、证据和科研启发分开核对
 
+Use the `bibliography` operation in [production.md](../production.md) for metadata assembly. Preserve publisher given/family components instead of guessing compound surnames; keep canonical author identities aligned in the plan and verification. Year-only publication metadata can stay year-only. Keep temporal/checking notes in metadata, outside printed references; include volume/pages only when actually sourced.
+
 本阶段综合 Deli 公开检索工作流的方法及其用户本地适配，加入 LLM-Wiki 对 ScholarCatalyst 回顾偏差的本地迁移推断。未复制 Deli 第三方原文；数值配额只是历史来源经验，不自动成为当前论文的验收阈值。
 
 ## 输入与检索

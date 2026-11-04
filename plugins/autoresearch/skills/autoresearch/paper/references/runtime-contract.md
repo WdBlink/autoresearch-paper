@@ -1,7 +1,7 @@
 # Research workflow contract
 
 The main Skill is the research-to-paper workflow, built on the pinned full Autoresearch distribution. The host
-executes research and independent review. `scripts/paper.py` owns paper state and
+executes research and independent review. `scripts/research.py` owns workflow state and
 validates handoffs; upstream owns its bounded metric/orchestrator loops. A loop's
 keep/commit never grants scientific acceptance or changes the approved Brief.
 
@@ -25,7 +25,8 @@ Brief; no silent weakening of a requirement is supported.
 `plan` includes `work_orders` with stable `id`, `producer`, `requirement_ids` and
 registered typed `actions`. Every approved requirement must be covered before
 execution. Registered actions are `compile_tex`, `render_statistics`,
-`copy_artifact` and `validate_packet`. There is no arbitrary generated program or
+`copy_artifact`, `validate_packet`, `export_image` and `prepare_tex`. Image and
+TeX policies use validated data options from the current task. There is no arbitrary generated program or
 shell executor. The host can execute user-authorized experiments using its own
 tools; their raw records must still satisfy the experiment packet. Production
 executors and paid services are not started by this package.
@@ -60,3 +61,12 @@ attention, experiment/refinement rules and file workload. Finalization requires 
 closed round and all eight current delivery roles. Draft sharing uses a separate
 watermarked `draft-preview` artifact. None of these fields proves host identity,
 scientific meaning or actual resource use outside this local execution boundary.
+
+The default mechanical route is [production.md](production.md): provided source
+and environment tools, complete attempt recording, venue-selected output actions,
+programmatic review-request/packet assembly, and checkpoint-to-export delivery.
+`prepare-round` stores its own issued request; CLI transport logs stay outside
+the run. The host supplies the actual judgment; `deliver` applies it and verifies
+both the folder and complete ZIP, including upstream runtime protocols.
+State-free `artifact` tools can replay historical material without changing an
+old controller's implementation pin. They never grant stage acceptance.

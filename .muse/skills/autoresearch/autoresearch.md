@@ -32,6 +32,11 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    frozen input hashes, itemized obligations and typed action contracts.
    Actually read this returned context. Perform that stage's task with the
    authorized host tools and return its versioned packet and artifacts.
+   Follow `production_steps` and `paper/references/production.md` for the
+   mechanical work. Use the provided source acquisition, environment, reading
+   index, recording, image, TeX and review tools. Do not recreate their algorithms
+   in a task-local helper. Scientific methods, data adapters and interpretations
+   still come from the current research contract.
 5. Submit `commit --packet /absolute/packet.json --operation-id ID`. Technical
    validation records the stage; it does not judge research novelty. Fix a
    refused packet using the actual diagnostics. `context` then reveals only the
@@ -42,26 +47,35 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    compilation or validation. The host performs actual research/experiments;
    its raw outcomes still go through the same experiment and figure checks.
    No generated program or arbitrary shell action is executed by this command.
-7. After writing, submit one `bind --packet ... --operation-id ...` per required
-   item. A binding names the WorkOrder, exact assets, evidence, manuscript and
-   insertion location. An independent reviewer then reads `context`, the
-   artifact bundle, R6's original plan, current plan and compiled PDF. It returns
-   G1–G5, R6 and a `requirement_checks` entry for every binding. A high overall
-   score cannot waive a missing item. Preserve negative and inconclusive results.
-8. Commit review, close its round checkpoint, then `finalize --operation-id ID`. The deterministic finalizer
-   rechecks evidence and produces a manifest, actual PDF and editable TeX with
-   all declared assets and receipts. `verify-export --manifest ...` verifies the
-   exported bytes. Internal review does not assert external academic acceptance
-   and does not authorize submission.
+   Use `export_image` and `prepare_tex` actions for venue-selected output
+   policies. Before freezing an empirical evaluator, probe its actual environment
+   and use the supplied `ExperimentRecorder` envelope to retain failed/unstarted
+   slots. Do not infer an experiment count or method from an example.
+7. After writing, submit the task's binding array with `bind-all`. Each binding
+   names its WorkOrder, assets, evidence, manuscript and literal location.
+   Run `prepare-review --out review/request.json`. The actual independent
+   reviewer reads the request, current PDF and source evidence, then returns
+   semantic judgments, its identity and the exact request/binding subjects.
+   `assemble-review --packet assembly.json` copies authoritative hashes, derives
+   the current eight-role source closure, computes R6 and saves the snapshot.
+   Review paths, versions, requirement IDs and reviewer counts are task inputs.
+   Missing items, open findings or unresolved gates block assembly and acceptance.
+8. Commit review, run `prepare-round`, read its actual request and write the
+   host judgment in `control/round-decisions/`. `deliver --decision PATH
+   --operation-id ID` closes that issued checkpoint, revalidates evidence,
+   rebuilds the exported source and verifies the folder and ZIP. Raw `bind`,
+   `apply-round`, `finalize` and `verify-export` remain available for recovery.
+   Internal delivery does not authorize submission or claim external acceptance.
 
 Before each work round, call `begin-round` to capture the actual original plan
 and document baseline. After work, `prepare-round --evidence ...` issues the
 current state/rules/evidence-bound judgment request. Return the real host
 judgment using `apply-round`; unchanged reads are not research progress.
-Store both the returned request JSON and decision JSON outside the run or in
-`control/round-decisions/`. Keep CLI transport/response logs outside the run as
-well; writing them into ordinary research documents after preparation changes
-the captured digest and invalidates `apply-round`. A plan
+The CLI saves the request in `control/round-decisions/` and transport logs in
+the run's sibling `<run>-cli/` directory. Write the actual decision in the
+reserved round directory; `apply-round --decision ...` uses the issued request
+without copying it by hand. Writing ordinary research documents after
+preparation invalidates the digest. A plan
 change needs an actual R6 report bound to the round and both plan versions.
 Use the Brief's approved limits; defaults are 15 rounds / 30 minutes per host
 session, at most five empirical experiment rounds, and at most five changed

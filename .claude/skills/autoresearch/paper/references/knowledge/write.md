@@ -1,5 +1,7 @@
 # Write：论证、读者顺序和保真
 
+Use registered `prepare_tex` then `compile_tex`, followed by `pdf-inspect`, as described in [production.md](../production.md). Create official-rule-backed variants with explicit graphics/input/link policies. Source transforms preserve originals and include dependency hashes. Check the actually rendered captions, float positions and annotation borders; successful compilation is not visual acceptance.
+
 本阶段采用用户维护的 Deli 本地 `academic-prose` / examples 与 PaperFlow 的证据绑定稿件方法，综合改写为当前阶段任务。它不包含 Deli 第三方原文，也不以 AI 检测器分数或强制句型判断论文质量。
 
 ## 输入与写作顺序

@@ -12,7 +12,7 @@ import io
 import json
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, stdev
 
@@ -54,6 +54,16 @@ def _timestamp(value, label):
         raise ValueError(f"{label} must be an ISO timestamp") from error
     _require(result.tzinfo is not None, f"{label} needs a timezone")
     return result
+
+
+def publication_bounds(value):
+    """Year-only source metadata is an interval, never an invented calendar day."""
+    if isinstance(value, str) and re.fullmatch(r'[0-9]{4}', value):
+        year = int(value)
+        _require(1 <= year <= 9999, 'invalid publication year')
+        return datetime(year, 1, 1, tzinfo=timezone.utc), datetime(year, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
+    timestamp = _timestamp(value, 'source publication time')
+    return timestamp, timestamp
 
 
 def _path(root, value):
@@ -165,6 +175,8 @@ def _experiment(root, design_path, results_path, frozen_hash=None):
     if frozen_hash is not None:
         _require(design_hash == frozen_hash, "experiment design differs from the frozen plan")
     results = _mapping(strict_json(root, results_path), "experiment results")
+    _require(results.get('execution_status', 'completed') == 'completed',
+             'operation failures cannot become scientific measurements, including errors after the last score')
     _require(results.get("design") == design_path, "result design path mismatch")
     _require(results.get("design_sha256") == design_hash, "result design hash mismatch")
     _require(_timestamp(results.get("started_at"), "started_at") >=
@@ -270,12 +282,16 @@ def _statistics(root, design_path, results_path, frozen_hash=None):
 
 def _caption(stats):
     label = {"sd": "SD", "se": "SE", "ci95_normal": "exploratory normal 95% CI", "none": "no interval"}
-    return (f"{stats['metric']['name']} ({stats['metric']['unit']}; {stats['metric']['direction']} is better). "
+    caption = (f"{stats['metric']['name']} ({stats['metric']['unit']}; {stats['metric']['direction']} is better). "
             f"Points show case means; summary intervals show {label[stats['interval_type']]}. "
-            f"n={stats['n_cases']} paired independent cases, {stats['seeds_per_case']} seeds averaged within each case. "
+            f"n={stats['n_cases']} paired cases, {stats['seeds_per_case']} seeds averaged within each case. "
             f"Denominator={stats['planned_runs']} planned runs; {stats['failed_runs']} failed and "
-            f"{stats['stopped_runs']} stopped runs retain the frozen penalty {stats['failure_value']}. "
-            "Delta is candidate minus baseline. These are descriptive case results.")
+            f"{stats['stopped_runs']} stopped runs. ")
+    if stats['failed_runs'] or stats['stopped_runs']:
+        caption += f"Measurement failures/stops retain the frozen penalty {stats['failure_value']} in this denominator. "
+    if stats['interval_type'] == 'sd':
+        caption += "Bounds are mean plus/minus sample SD (ddof=1), not confidence limits or feasible-value ranges. "
+    return caption + "Delta is candidate minus baseline. These are descriptive case results."
 
 
 def _tex(value):
@@ -365,10 +381,11 @@ def _pdf(stats):
         axis.set_ylabel(f"{stats['metric']['name']} ({stats['metric']['unit']})")
         axis.set_title(f"Paired case means; {stats['metric']['direction']} is better")
         axis.grid(axis="y", alpha=0.2)
+        failure_note = ' (measurement penalty retained)' if stats['failed_runs'] or stats['stopped_runs'] else ''
         figure.supxlabel(f"n={stats['n_cases']} cases; {stats['interval_type']}; "
-                         f"failed={stats['failed_runs']}, stopped={stats['stopped_runs']} (penalty retained)", fontsize=9)
+                         f"failed={stats['failed_runs']}, stopped={stats['stopped_runs']}" + failure_note, fontsize=9)
         output = io.BytesIO()
-        figure.savefig(output, format="pdf", metadata={"Creator": "autoresearch-paper evidence renderer v1",
+        figure.savefig(output, format="pdf", metadata={"Creator": "autoresearch evidence renderer v2",
                        "CreationDate": None, "ModDate": None,
                        "Subject": "statistics sha256:" + _sha(_canonical(stats))})
         return output.getvalue()
@@ -418,6 +435,36 @@ COMPLETION_ROLES = {"source", "pdf", "bibliography", "citation_plan", "citation_
 
 def _normalized(value):
     return re.sub(r"[\W_]+", "", str(value).casefold(), flags=re.UNICODE)
+
+
+def _author_identity(author):
+    text = author.strip()
+    if text.startswith('{') and text.endswith('}'):
+        return _normalized(text)
+    parts = [part.strip() for part in text.split(',')]
+    if len(parts) == 2:
+        text = parts[1] + ' ' + parts[0]
+    elif len(parts) == 3:
+        text = parts[2] + ' ' + parts[0] + ' ' + parts[1]
+    return _normalized(text)
+
+
+def _bib_authors(text):
+    # BibTeX's explicit commas/braces define structure; never guess a surname.
+    parts, start, depth, index = [], 0, 0, 0
+    while index < len(text):
+        char = text[index]
+        if char == '\\':
+            index += 2
+            continue
+        if char == '{': depth += 1
+        if char == '}': depth -= 1
+        if depth == 0 and text[index:index+5].casefold() == ' and ':
+            parts.append(text[start:index]); start = index + 5; index += 5
+        else:
+            index += 1
+    parts.append(text[start:])
+    return [_author_identity(author) for author in parts]
 
 
 def _bib_entries(text):
@@ -550,7 +597,7 @@ def _citation_state(packet, root, final=False):
         _require(record["candidate_id"] not in used_candidates, "one source candidate cannot inflate multiple citation keys")
         used_candidates.add(record["candidate_id"])
         _require(_normalized(identity["title"]) == _normalized(candidate["title"]), "citation title differs from candidate identity")
-        _require(identity["year"] == _timestamp(candidate.get("published_at"), "citation publication").year,
+        _require(identity["year"] == publication_bounds(candidate.get("published_at"))[0].year,
                  "citation year differs from candidate identity")
         _require(record.get("url") == candidate.get("url"), "citation URL differs from catalog")
         _text(record.get("taxonomy_cell"), "citation taxonomy cell")
@@ -562,7 +609,7 @@ def _citation_state(packet, root, final=False):
             _require(key in bib, "citation plan key has no BibTeX entry: " + key)
             _require(_normalized(bib[key].get("title", "")) == _normalized(identity["title"]), "BibTeX title identity mismatch")
             _require(str(identity["year"]) == bib[key].get("year"), "BibTeX year identity mismatch")
-            _require(_normalized(bib[key].get("author", "")) == _normalized(" and ".join(identity["authors"])),
+            _require(_bib_authors(bib[key].get("author", "")) == [_author_identity(author) for author in identity['authors']],
                      "BibTeX author identity mismatch")
             venue = bib[key].get("journal", bib[key].get("booktitle", bib[key].get("howpublished")))
             if venue is not None:
@@ -855,10 +902,10 @@ def _validate_literature(packet, root):
         identities.add(identity)
         for key in ("title", "url", "purpose"):
             _text(candidate.get(key), f"candidate {key}")
-        publication = _timestamp(candidate.get("published_at"), "source publication time")
+        _, publication_upper_bound = publication_bounds(candidate.get("published_at"))
         _require(candidate.get("exposure") in {"prospective", "retrospective"}, "declare literature exposure")
-        _require(candidate["exposure"] == "retrospective" or publication <= question_time,
-                 "post-question source cannot be represented as prospective inspiration")
+        _require(candidate["exposure"] == "retrospective" or publication_upper_bound <= question_time,
+                 "post-question source or a publication-year interval overlapping the question cannot be represented as prospective inspiration")
         _require(candidate.get("decision") in {"include", "exclude"}, "declare candidate inclusion decision")
         _require(candidate.get("read_status") in {"read", "registered"}, "declare source read status")
         decisions[identity] = candidate["decision"]

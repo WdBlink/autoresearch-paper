@@ -19,6 +19,8 @@ ACTIONS = {
     'render_statistics': ('input', 'table', 'figure'),
     'copy_artifact': ('source', 'target'),
     'validate_packet': ('packet',),
+    'export_image': ('source', 'target', 'options'),
+    'prepare_tex': ('source', 'target', 'options'),
 }
 IDENTIFIER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$')
 
@@ -350,6 +352,18 @@ class Controller:
                 raise Refusal('Upstream stage protocol missing from installation')
             from .writing import guidance
             prose = guidance(self.package, writing_cases) if stage in {'write','review'} else None
+            production_steps = {
+                'intake': ['source-fetch for declared public inputs', 'environment', 'read-material'],
+                'venue': ['source-fetch', 'venue-design-template', 'venue-calibrate --publish (includes reading index)'],
+                'plan': ['environment', 'experiment-template for the frozen task-specific measure function'],
+                'experiment': ['Use lib.experiments.ExperimentRecorder; preserve all planned attempt slots'],
+                'literature': ['bibliography from explicit primary metadata', 'citation-check'],
+                'figures': ['render_statistics', 'export_image with source-bound venue policy', 'pdf-inspect'],
+                'write': ['prepare_tex with explicit variant policy', 'compile_tex', 'pdf-inspect with visible annotations'],
+                'review': ['bind-all', 'prepare-review', 'actual independent judgment', 'assemble-review', 'commit'],
+                'delivery': ['prepare-round', 'actual host decision', 'deliver --decision (apply, rebuild, finalize, verify ZIP)'],
+            }
+            pending = state.get('pending_round')
             return {'writing_guidance': prose, 'stage': stage, 'brief': state['brief'], 'approval': state['approval'],
                     'inputs': [{k: r[k] for k in ('stage', 'packet', 'hashes')} for r in state['receipts']],
                     'stale': self.stale(state), 'attempts': state['attempts'],
@@ -359,7 +373,30 @@ class Controller:
                     'requirements': state['brief']['deliverable_plan'],
                     'round_status': __import__('lib.rounds', fromlist=['stop_reasons']).stop_reasons(state), 'active_round': state['active_round'],
                     'bindings': state['bindings'],
-                    'work_orders': [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']], 'contract': (self.package / 'references/runtime-contract.md').read_text()}
+                    'work_orders': [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']],
+                    'production_steps': production_steps.get(stage, []),
+                    'production_contract': 'references/production.md',
+                    'round_request_path': ('control/round-decisions/' + pending['request_sha256'] + '-request.json') if pending else None,
+                    'contract': (self.package / 'references/runtime-contract.md').read_text()}
+
+    def prepare_review(self, out):
+        from .production import json_bytes, write_once
+        from .reviewing import request
+        context = self.context()
+        value = request(self.root, context)
+        write_once(self.root, out, json_bytes(value))
+        return {'status': 'needs_independent_judgment', 'request': out,
+                'request_sha256': value['request_sha256'], 'response_contract': value['response_contract']}
+
+    def assemble_review(self, packet):
+        from .reviewing import assemble
+        current = self.context()
+        if current['stage'] != 'review':
+            raise Refusal('Assemble review only for the current review stage')
+        frozen = read_json(safe(self.root, packet['request']))
+        if frozen.get('brief_sha256') != digest(current['brief']) or frozen.get('bindings') != current['bindings']:
+            raise Refusal('Review request differs from the current approved contract or bindings')
+        return assemble(packet, self.root)
 
     def tool(self, name, packet, out=None, *, publish=False):
         from . import planning, science, venue_tools
@@ -380,18 +417,28 @@ class Controller:
             elif name == 'citation-check':
                 issues = science.validate('literature', p, self.root)
                 value = {'status': 'fail' if issues else 'pass', 'issues': issues, 'validation': 'record_integrity_not_external_truth'}
+            elif name == 'experiment-template':
+                from .experiments import template
+                value = template(p, self.root, self.package)
+            elif name in {'environment', 'source-fetch', 'reading-index', 'image-export', 'tex-prepare', 'pdf-inspect', 'bibliography', 'revision-record'}:
+                from .production import run
+                value = run(name, p, self.root)
             else: raise Refusal('Unknown deterministic research tool')
             writes = {out: value} if out else {}
+            extra_written = {}
             if publish:
                 if name != 'venue-calibrate': raise Refusal('publish is only defined for venue-calibrate output fields')
                 writes = {p[key]: item for key, item in value.items() if key in {'measurements', 'venue_profile', 'venue_plan_check', 'venue_comparison'}}
+                if p.get('reading_index'):
+                    from .production import reading_index
+                    extra_written = reading_index(p, self.root)['hashes']
             for target_name, item in writes.items():
                 target = safe(self.root, target_name, output=True)
                 if target.exists():
                     if planning._without_clock({k:v for k,v in read_json(target).items() if k != 'captured_at'} if name == 'plan-snapshot' else read_json(target)) != planning._without_clock({k:v for k,v in item.items() if k != 'captured_at'} if name == 'plan-snapshot' else item):
                         raise Refusal('Tool output exists with different content; use a new versioned path')
                 else: atomic(target, item)
-            return {'tool': name, 'value': value, 'written': {name: file_hash(safe(self.root, name)) for name in writes}}
+            return {'tool': name, 'value': value, 'written': {**{name: file_hash(safe(self.root, name)) for name in writes}, **extra_written}}
 
     def draft_preview(self, source, out):
         with self.lock():
@@ -534,7 +581,11 @@ class Controller:
                 if kind not in ACTIONS or set(action) != {'type', *ACTIONS[kind]}:
                     raise Refusal('Unknown action or fields: ' + str(kind))
                 for name in ACTIONS[kind]:
-                    safe(self.root, action[name], output=True)
+                    if name == 'options':
+                        from .production import validate_options
+                        validate_options(kind, action[name])
+                    else:
+                        safe(self.root, action[name], output=True)
         if wanted - covered:
             raise Refusal('Plan omits requirements: ' + ', '.join(sorted(wanted - covered)))
 
@@ -577,10 +628,10 @@ class Controller:
                                       'hashes': hashes, 'at': now(), 'operation': op})
             return self.record(state, op, request, {'status': 'recorded', 'stage': packet['stage'], 'hashes': hashes})
 
-    def rewind(self, stage, reason, op):
+    def rewind(self, stage, reason, op, preserve=()):
         with self.lock():
             state = self.load()
-            request = {'command': 'rewind', 'stage': stage, 'reason': reason}
+            request = {'command': 'rewind', 'stage': stage, 'reason': reason, 'preserve': list(preserve)}
             previous = self.operation(state, op, request)
             if previous is not None:
                 return previous
@@ -596,12 +647,22 @@ class Controller:
             removed = state['receipts'][cut:]
             if not removed:
                 raise Refusal('Stage has no recorded receipt')
+            available = {name: value for receipt in removed for name, value in receipt['hashes'].items()}
+            baselines = []
+            from .production import write_once
+            for name in preserve:
+                origin = safe(self.root, name)
+                if available.get(name) != file_hash(origin):
+                    raise Refusal('Preserve an accepted baseline before modifying it: ' + name)
+                target = 'revisions/' + identifier(op) + '/' + name
+                write_once(self.root, target, origin.read_bytes())
+                baselines.append({'original_path': name, 'path': target, 'sha256': file_hash(origin)})
             state['receipts'] = state['receipts'][:cut]
             state['bindings'] = {}
             state['delivery'] = None
             state['history'].append({'event': 'invalidated', 'reason': reason, 'receipts': removed,
-                                     'at': now()})
-            return self.record(state, op, request, {'status': 'rewound', 'stage': stage})
+                                     'baselines': baselines, 'at': now()})
+            return self.record(state, op, request, {'status': 'rewound', 'stage': stage, 'baselines': baselines})
 
     def begin_round(self, *, session_id=None):
         from .rounds import documents, stop_reasons
@@ -654,6 +715,12 @@ class Controller:
             issued = {**request, 'request_sha256': digest(request)}
             state['pending_round'] = issued
             self.save(state)
+            # This reserved directory is excluded from research workload digests.
+            target = self.root / 'control/round-decisions' / (issued['request_sha256'] + '-request.json')
+            safe(self.root, str(target.relative_to(self.root)), output=True, internal=True)
+            if target.exists() and read_json(target) != issued:
+                raise Refusal('Stored round request differs from its digest')
+            atomic(target, issued)
             return issued
 
     def rules_hash(self):
@@ -663,6 +730,10 @@ class Controller:
     def apply_round(self, request, decision, op):
         with self.lock():
             state = self.load()
+            if request is None:
+                request = state.get('pending_round')
+            if not isinstance(request, dict):
+                raise Refusal('Prepare the actual round request before applying its judgment')
             arguments = {'command': 'round', 'request': request, 'decision': decision}
             previous = self.operation(state, op, arguments)
             if previous is not None:
@@ -790,6 +861,13 @@ class Controller:
 
     def _action(self, state, action):
         kind = action['type']
+        if kind in {'export_image', 'prepare_tex'}:
+            from .production import export_image, prepare_tex
+            if safe(self.root, action['target'], output=True).exists():
+                raise Refusal('Typed production output exists; use a new versioned path')
+            packet = {key: value for key, value in action.items() if key != 'type'}
+            value = (export_image if kind == 'export_image' else prepare_tex)(packet, self.root)
+            return {'status': 'completed', **value}
         if kind == 'validate_packet':
             packet = read_json(safe(self.root, action['packet']))
             self.validate(state, packet)
@@ -848,10 +926,16 @@ class Controller:
             self.save(state)
             for action in order['actions']:
                 attempt['pending_action'] = action
-                inputs = {'compile_tex': ('source',), 'copy_artifact': ('source',), 'render_statistics': ('input',), 'validate_packet': ('packet',)}[action['type']]
-                attempt['pending_input_hashes'] = {action[k]: file_hash(safe(self.root, action[k])) for k in inputs if safe(self.root, action[k], output=True).is_file()}
-                self.save(state)
+                attempt['pending_input_hashes'] = {}
                 try:
+                    inputs = {'compile_tex': ('source',), 'copy_artifact': ('source',), 'render_statistics': ('input',),
+                              'validate_packet': ('packet',), 'export_image': ('source',), 'prepare_tex': ('source',)}[action['type']]
+                    attempt['pending_input_hashes'] = {action[k]: file_hash(safe(self.root, action[k])) for k in inputs if safe(self.root, action[k], output=True).is_file()}
+                    if action['type'] == 'prepare_tex':
+                        from .production import tex_bytes
+                        _, included = tex_bytes(self.root, action['source'], action['options'])
+                        attempt['pending_input_hashes'].update(included)
+                    self.save(state)
                     effect = self._action(state, action)
                     if fixture_fault and state['brief'].get('software_fixture'):
                         raise KeyboardInterrupt('software fixture: terminal receipt lost')
@@ -922,6 +1006,14 @@ class Controller:
                     raise Refusal('Completed compilation requires its actual PDF')
                 if pending and pending['type'] == 'copy_artifact' and hashes[pending['target']] != attempt['pending_input_hashes'].get(pending['source']):
                     raise Refusal('Copy output does not match its captured source')
+                if pending and pending['type'] in {'prepare_tex', 'export_image'}:
+                    from .production import tex_bytes, image_bytes
+                    if pending['type'] == 'prepare_tex':
+                        expected, _ = tex_bytes(self.root, pending['source'], pending['options'])
+                    else:
+                        expected, _ = image_bytes(self.root, pending['source'], pending['target'], pending['options'])
+                    if safe(self.root, pending['target']).read_bytes() != expected:
+                        raise Refusal('Reconciled production output differs from its captured policy and source')
             if outcome == 'not_started' and (attempt['actions'] or any(safe(self.root, name, output=True).exists() for name in expected_outputs)):
                 raise Refusal('Effects exist; this attempt cannot be classified not_started')
             attempt['status'] = outcome
@@ -985,7 +1077,24 @@ class Controller:
             state['bindings'][key] = stored
             return self.record(state, op, request, {'status': 'bound', 'requirement_id': key, 'binding_sha256': stored['binding_sha256']})
 
+    def bind_all(self, bindings, op):
+        identifier(op)
+        if not isinstance(bindings, list) or not bindings:
+            raise Refusal('bind-all expects a nonempty array of task-specific bindings')
+        ids = [item.get('requirement_id') for item in bindings if isinstance(item, dict)]
+        if len(ids) != len(bindings) or len(set(ids)) != len(ids):
+            raise Refusal('bind-all needs unique requirement IDs')
+        results = []
+        for binding in bindings:
+            # Each completed suboperation is durable and can be reused on retry.
+            suffix = digest(binding['requirement_id'])[:12]
+            results.append(self.bind(binding, 'batch-' + digest(op)[:24] + '-' + suffix))
+        return {'status': 'bound', 'items': results}
+
     def check_reviews(self, state, packet):
+        if 'findings' in packet and (not isinstance(packet['findings'], list) or
+                any(not isinstance(item, dict) or item.get('status') != 'closed' for item in packet['findings'])):
+            raise Refusal('Unresolved independent findings prevent final acceptance')
         wanted = check_brief(state['brief'])
         if set(state['bindings']) != wanted:
             raise Refusal('Missing requirement bindings: ' + ', '.join(sorted(wanted - set(state['bindings']))))
@@ -1086,6 +1195,21 @@ class Controller:
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(origin, target)
                             software[name] = file_hash(target)
+                    # The installed runtime and repository checkout resolve these
+                    # protocols differently. Ship the actual closure in either case.
+                    for name in ('plan.md', 'reason.md', 'iterate.md', 'autoresearch.md', 'fork-and-flush.md'):
+                        origin = self.package / 'upstream' / name
+                        if not origin.is_file():
+                            if name == 'fork-and-flush.md':
+                                origin = self.package.parent / '.claude/skills/autoresearch/references' / name
+                            else:
+                                origin = self.package.parent / '.claude/commands/autoresearch' / ('iterate.md' if name == 'autoresearch.md' else name)
+                        if not origin.is_file():
+                            raise Refusal('Export runtime lacks its upstream protocol: ' + name)
+                        target = temp / 'software/upstream' / name
+                        target.parent.mkdir(exist_ok=True)
+                        shutil.copyfile(origin, target)
+                        software['upstream/' + name] = file_hash(target)
                     for name in ('NOTICE.md', 'provenance.json', 'upstream-license.txt'):
                         origin = self.package / name
                         if not origin.exists() and name == 'upstream-license.txt':
@@ -1118,6 +1242,7 @@ class Controller:
                     if pending_zip.exists():
                         pending_zip.unlink()
             state['delivery'] = manifest
+            self.verify_export(manifest)
             return self.record(state, op, request, {'status': 'software_fixture_complete' if state['brief'].get('software_fixture') else 'internally_reviewed',
                                                   'manifest': manifest, 'pdf': str(dest / 'artifacts' / write['manuscript_pdf']),
                                                   'tex': str(dest / 'artifacts' / write['manuscript_tex']), 'archive': str(archive)})
@@ -1136,9 +1261,37 @@ class Controller:
                 raise Refusal('Export runtime changed: ' + name)
         if file_hash(path.parent / 'control.json') != payload['state_sha256']:
             raise Refusal('Export control record changed')
-        return {'status': 'verified', 'manifest': manifest}
+        archive = path.parent.parent / (path.parent.name + '.zip')
+        result = {'status': 'verified', 'manifest': manifest}
+        if archive.exists():
+            safe(self.root, str(archive.relative_to(self.root)), internal=True)
+            with zipfile.ZipFile(archive) as zipped:
+                names = zipped.namelist()
+                files = {str(item.relative_to(path.parent)) for item in path.parent.rglob('*') if item.is_file()}
+                if len(names) != len(set(names)) or set(names) != files:
+                    raise Refusal('Export ZIP has missing, duplicate or unexpected files')
+                for name in names:
+                    value = hashlib.sha256()
+                    with zipped.open(name) as stream:
+                        for block in iter(lambda: stream.read(1024 * 1024), b''): value.update(block)
+                    if value.hexdigest() != file_hash(path.parent / name):
+                        raise Refusal('Export ZIP bytes differ: ' + name)
+            result['archive'] = {'path': str(archive.relative_to(self.root)), 'files': len(names), 'crc_and_hashes': 'verified'}
+        return result
+
+    def deliver(self, decision, op):
+        identifier(op)
+        state = self.load()
+        request = state.get('pending_round') or next((item['request'] for item in state['rounds']
+                   if item['request']['request_sha256'] == decision.get('request_sha256')), None)
+        if request is None:
+            raise Refusal('Prepare and actually judge the final round before delivery')
+        self.apply_round(request, decision, 'close-' + digest(op)[:24])
+        result = self.finalize(op)
+        return {**result, 'verification': self.verify_export(result['manifest'])}
 
 
 def action_outputs(action):
-    keys = {'compile_tex': ('pdf',), 'render_statistics': ('table', 'figure'), 'copy_artifact': ('target',), 'validate_packet': ()}
+    keys = {'compile_tex': ('pdf',), 'render_statistics': ('table', 'figure'), 'copy_artifact': ('target',),
+            'validate_packet': (), 'export_image': ('target',), 'prepare_tex': ('target',)}
     return [action[k] for k in keys[action['type']]]

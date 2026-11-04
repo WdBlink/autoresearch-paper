@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -233,6 +234,83 @@ class IntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, 'already completed'):
             ctl.execute('W-writing', 'still-no-replay')
         self.assertEqual(old_pdf, file_hash(root / 'manuscript/main.pdf'))
+
+
+    def test_export_zip_and_upstream_runtime_closure_are_verified(self):
+        manifest=self.result['manifest']
+        verified=self.ctl.verify_export(manifest)
+        self.assertEqual('verified',verified['archive']['crc_and_hashes'])
+        payload=read_json(self.root/manifest)
+        self.assertIn('upstream/reason.md',payload['software'])
+        exported=self.root/manifest
+        runtime=exported.parent/'software/scripts/research.py'
+        result=subprocess.run([sys.executable,str(runtime),'--run',str(self.root),'context'],capture_output=True,text=True)
+        self.assertEqual(0,result.returncode,result.stdout+result.stderr)
+        self.assertEqual('delivery',json.loads(result.stdout)['stage'])
+        archive=exported.parent.parent/(exported.parent.name+'.zip')
+        with zipfile.ZipFile(archive,'a') as zipped:
+            zipped.writestr('unexpected.txt','Not in the immutable package')
+        with self.assertRaisesRegex(Refusal,'ZIP'):
+            self.ctl.verify_export(manifest)
+
+    def test_generic_review_assembly_copies_four_bindings_and_rejects_stale_judgments(self):
+        from lib import reviewing
+        packet={'request':'review/request.json','judgment':'review/judgment.json','target':'review/reassembled.json',
+                'completion':{'revision':['review/revision.json'],'snapshot':'review/reassembled-snapshot.json','r6_report':'review/reassembled-r6.json'}}
+        result=reviewing.assemble(packet,self.root)
+        self.assertEqual(4,result['requirements']);self.assertEqual(2,result['original_visuals'])
+        document=read_json(self.root/packet['target'])
+        self.assertIn('figures/summary.tex',document['completion']['source'])
+        judgment=read_json(self.root/'review/judgment.json')
+        judgment['requirement_checks'][0]['binding_sha256']='stale'
+        (self.root/'review/bad-judgment.json').write_text(json.dumps(judgment))
+        packet['judgment']='review/bad-judgment.json';packet['target']='review/should-not-exist.json'
+        with self.assertRaisesRegex(Refusal,'stale independent'):
+            reviewing.assemble(packet,self.root)
+        self.assertFalse((self.root/packet['target']).exists())
+
+    def test_generic_review_cannot_hide_an_unresolved_finding(self):
+        from lib import reviewing
+        judgment=read_json(self.root/'review/judgment.json')
+        judgment['findings']=[{'id':'method-error','severity':'major','status':'open'}]
+        (self.root/'review/open-judgment.json').write_text(json.dumps(judgment))
+        with self.assertRaisesRegex(Refusal,'Unresolved'):
+            reviewing.assemble({'request':'review/request.json','judgment':'review/open-judgment.json'},self.root)
+
+    def test_typed_tex_preparation_records_and_reconciles_transitive_inputs(self):
+        self.ctl.rewind('write','Exercise generic formatting under the same contract','format-rewind')
+        (self.root/'manuscript/additional.tex').write_text('A preserved source section.\n')
+        source=(self.root/'manuscript/main.tex').read_text().replace('\\end{document}','\\input{additional.tex}\n\\end{document}')
+        (self.root/'manuscript/format-source.tex').write_text(source)
+        order={'id':'W-format','producer':'fixture-author','requirement_ids':['M1'],
+               'actions':[{'type':'prepare_tex','source':'manuscript/format-source.tex','target':'manuscript/prepared.tex',
+                           'options':{'inline_inputs':True,'link_borders':'hidden'}}]}
+        self.ctl.revise_orders([order],'Use a registered generic formatter','format-orders')
+        with self.assertRaises(KeyboardInterrupt):
+            self.ctl.execute('W-format','format-attempt',fixture_fault=True)
+        attempt=self.ctl.load()['attempts']['format-attempt']
+        self.assertIn('manuscript/additional.tex',attempt['pending_input_hashes'])
+        evidence={'attempt':'format-attempt','outcome':'completed','reason':'Actual generated file inspected',
+                  'order_sha256':attempt['order_sha256'],'pending_action':attempt['pending_action'],
+                  'artifact_hashes':{'manuscript/prepared.tex':file_hash(self.root/'manuscript/prepared.tex')}}
+        (self.root/'review/format-reconcile.json').write_text(json.dumps(evidence))
+        (self.root/'manuscript/additional.tex').write_text('Changed after the interrupted effect.\n')
+        with self.assertRaisesRegex(Refusal,'inputs changed'):
+            self.ctl.reconcile('format-attempt','completed','review/format-reconcile.json','format-reconcile')
+
+
+    def test_rewind_preserves_accepted_baselines_for_generic_revision_records(self):
+        from lib.production import revision_record
+        original = (self.root/'manuscript/main.tex').read_bytes()
+        result = self.ctl.rewind('write','Preserve the accepted source before editing','preserve-source', ['manuscript/main.tex'])
+        baseline = result['baselines'][0]
+        self.assertEqual(original,(self.root/baseline['path']).read_bytes())
+        (self.root/'manuscript/main-new.tex').write_bytes(original+b'\n% a versioned source change\n')
+        revision_record({'target':'review/new-revision.json','changes':[{'before':baseline['path'],
+                         'after':'manuscript/main-new.tex','reason':'A bounded source revision'}]},self.root)
+        document=read_json(self.root/'review/new-revision.json')
+        self.assertEqual(baseline['sha256'],document['changes'][0]['baseline']['sha256'])
+        self.assertEqual('revised',document['status'])
 
 
 if __name__ == '__main__': unittest.main()

@@ -114,7 +114,9 @@ class ScienceChecks(unittest.TestCase):
         self.assertIn("5.000000", (self.root / packet["table"]).read_text())
         self.assertIn("SD", rendered["caption"])
         self.assertIn("Denominator=12", rendered["caption"])
-        self.assertIn("paired independent cases", rendered["caption"])
+        self.assertIn("paired cases", rendered["caption"])
+        self.assertNotIn("independent", rendered["caption"])
+        self.assertIn("sample SD (ddof=1)", rendered["caption"])
         self.assertIn("statistics sha256", (self.root / packet["figure"]).read_text())
         self.assertEqual(rendered, science.render_statistics(self.root, "experiment/results.json",
                                                             "figures/results.tex", "figures/results.svg"))
@@ -633,6 +635,34 @@ class ScienceChecks(unittest.TestCase):
         packet = self.final_packet()
         self.put("revision/history.json", {"status": "revised", "changes": []})
         self.assertIn("revision history contradicts", science.validate_delivery(packet, self.root)[0])
+
+
+    def test_year_only_sources_keep_precision_and_cannot_claim_prospective_overlap(self):
+        packet, _ = self.catalog_packet()
+        catalog = json.loads((self.root / 'literature/catalog.json').read_text())
+        catalog['candidates'][0]['published_at'] = '2026'
+        self.put('literature/catalog.json', catalog)
+        self.assertIn('overlapping', science.validate('literature', packet, self.root)[0])
+        catalog['candidates'][0]['exposure'] = 'retrospective'
+        self.put('literature/catalog.json', catalog)
+        self.assertEqual([], science.validate('literature', packet, self.root))
+        self.assertEqual('2026', json.loads((self.root / 'literature/catalog.json').read_text())['candidates'][0]['published_at'])
+
+    def test_explicit_bibtex_surname_order_matches_source_author_identity(self):
+        packet, _ = self.catalog_packet()
+        metadata = (self.root/'literature/metadata.txt').read_text().replace('Offline Fixture', 'Ada Van Example')
+        self.put('literature/metadata.txt', metadata)
+        plan = json.loads((self.root/'literature/citation_plan.jsonl').read_text())
+        plan['authors'] = ['Ada Van Example']
+        self.put('literature/citation_plan.jsonl', json.dumps(plan)+'\n')
+        verified = json.loads((self.root/'literature/citation_verification.json').read_text())
+        verified['records'][0]['identity']['authors'] = ['Ada Van Example']
+        self.put('literature/citation_verification.json', verified)
+        bib = (self.root/'literature/references.bib').read_text().replace('author={Offline Fixture}', 'author={Van Example, Ada}')
+        self.put('literature/references.bib', bib)
+        self.assertEqual([], science.validate('literature', packet, self.root))
+        self.put('literature/references.bib', bib.replace('Van Example, Ada', 'Different, Ada'))
+        self.assertIn('author identity mismatch', science.validate('literature', packet, self.root)[0])
 
 
 if __name__ == "__main__":

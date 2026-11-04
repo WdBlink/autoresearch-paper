@@ -754,15 +754,15 @@
     }
   ],
   "knowledge_files": {
-    "delivery.md": "383cc148c4bffbff7325b6da4d7de62dd920b99fbbcab1b6070779a00acd9299",
-    "experiment.md": "43169b825ea62f25a6164b1ee64dfe4a94696c37e4070b875753248b2d33f529",
-    "figures.md": "0d2d39b4775c1793966a27b78a434ee96143b8d92e312f8ba31e19f562eeb679",
+    "delivery.md": "6bd9840afbc487b40becc60b3f2350421e9c99b5d5c3744b9f48febc7cedb935",
+    "experiment.md": "a6dada9b7835212f1553ddce0730c663b7d2319fb4a2900254cbfbfedda3b869",
+    "figures.md": "404547e735802e924b8122178ceba9277b89d3b7b0cf84da84979814c0e50c7b",
     "intake.md": "a30b7f44abb8953a0368ec04d95651cb073ed1010697d8fe47b01a50bdfc798f",
-    "literature.md": "b0a755f336a110656a11c80a43cfa53994a76f6ea1d2cb973e91b65a513ce55b",
-    "plan.md": "f598fcc0fa1e93f7e25e9e38fe3b258c11176a3a45668abef2c6a20ad9247bbb",
-    "review.md": "cb7cc5e8db8fdeaf6abe7574026714c6ca89074e2d50dac5fa1eadc6db07bb9e",
-    "venue.md": "d28935458a2e127fa1652866a3d1720cf01382f493f1544a0b4de1066e3c9bf2",
-    "write.md": "005512ad378e0839774c29cc5ec1d624a07344bf7e878e1151f7485186918525"
+    "literature.md": "f29ce70faeecd169dce58cd355b21b25e2f3900beb25da452b9ed956611c4369",
+    "plan.md": "f4413c503caf0f6bac799280130529a9176fff6b5185e426fb52a00e6b2692ea",
+    "review.md": "8b0010aa0358a35e4047f0ea977f3fd66698c70e5dbed82cbfc48002f526e9a8",
+    "venue.md": "00ce411656eeaaeb10a9b442cd6de23a228b1583dfcf33b10794b6535bdfcc2d",
+    "write.md": "ac8c6037a7eeeb3610121ea2bcf26c6b42021977e5bebe80e2fc2214c08a41d9"
   },
   "exclusions": [
     {

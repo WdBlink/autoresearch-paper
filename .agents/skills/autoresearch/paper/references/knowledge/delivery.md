@@ -1,5 +1,7 @@
 # Delivery：验证当前版本并保留可恢复证据
 
+Use [production.md](../production.md): `prepare-round` persists the exact request in the reserved control directory. After the host actually judges it, `deliver --decision ...` closes that checkpoint, rebuilds exported assets and verifies the complete ZIP as well as the manifest. The runtime export includes its upstream protocols; historical implementations must remain pinned rather than silently upgrading old state.
+
 本阶段融合 Deli 本地证据绑定/交付合同、PaperFlow finalizer/效果恢复和上游 Autoresearch 的校验习惯。状态只由当前 controller 提交，不能另启 Deli checkpoint 账本，也不能将 Git metric keep 当成科研验收。
 
 ## 最终验证

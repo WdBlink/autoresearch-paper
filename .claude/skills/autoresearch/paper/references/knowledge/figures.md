@@ -1,5 +1,7 @@
 # Figures：从原始结果到图注与主张
 
+Use registered `export_image` actions and `pdf-inspect` from [production.md](../production.md), with the current venue policy. Pixel dimensions, DPI and color mode are parameters; no font is inferred from raster pixels. The default statistics caption describes cases and sample SD without implying independent repetitions or an unused failure penalty.
+
 采用用户 Deli 本地 `experimental-figures`、venue 校准和 PaperFlow 的 evidence-bound asset 方法。该文件为综合改写，图表领域判断由宿主实际执行，控制器负责证据版本和数值检查；没有运行过的视觉审阅不得写成通过。
 
 ## 先定义问题
