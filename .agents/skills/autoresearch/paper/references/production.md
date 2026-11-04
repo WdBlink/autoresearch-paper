@@ -48,7 +48,9 @@ dependencies before freezing an executable plan; the tool does not install them.
 `reading-index`: `{samples:[{id,pdf,design?,analysis?,visual_read?,title?}],target}`.
 Supply the actual per-visual records, either inline `design` or an `analysis`
 JSON path. Counts and links derive from those records, with no fixed paper or
-panel count. Links are relative so the index survives moving the run.
+panel count. Each panel renders its question, claim, evidence, design takeaway
+and limitations. Supplied locators, PDF page links and panel-measurement
+corrections remain visible; a panel count alone is not a reading record. Links are relative so the index survives moving the run.
 The normal venue packet declares `reading_index` in `artifacts`; calibration
 `--publish` writes it and venue acceptance recomputes it. The existing 8–15
 calibration policy still applies to actual venue selection.
@@ -91,6 +93,14 @@ the scientific denominator with its frozen penalty. Ordinary exceptions never
 receive that classification automatically.
 The SDK supports the same paired-case numerical adapter as `science-packets.md`;
 it does not make that statistical protocol universal.
+
+`statistics`: `{input:RESULTS,table:PATH,figure:PATH}` is available through
+both `tool` and state-free `artifact`; it uses the same validated paired-case
+renderer as the WorkOrder action. This produces evidence, not stage acceptance.
+The current numerical adapter supports exactly baseline/candidate paired cases.
+Preflight the actual full condition matrix before freezing a research plan;
+a three-arm or larger study needs a compatible validated adapter, not removal
+or relabeling of required arms to fit the recorder.
 
 ## Prepare figures, text and bibliography
 

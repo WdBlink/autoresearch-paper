@@ -156,6 +156,9 @@ def reading_index(packet, root, *, check=False):
         require(isinstance(design, dict), 'Sample needs its actual design or analysis path: ' + identity)
         figures, tables = design.get('figures'), design.get('tables')
         require(isinstance(figures, list) and isinstance(tables, list), 'Missing per-visual records: ' + identity)
+        for item in figures + tables:
+            require(isinstance(item, dict), 'Visual record must be an object: ' + identity)
+            require(isinstance(item.get('panels', []), list), 'Visual panels must be an array')
         facets = sum(len(item.get('panels', [])) for item in figures + tables)
         totals['figures'] += len(figures); totals['tables'] += len(tables); totals['facets_or_blocks'] += facets
         pdf = safe(root, sample['pdf'])
@@ -170,6 +173,32 @@ def reading_index(packet, root, *, check=False):
                 lines += [f'### {item["id"]} ({kind})', '', item['question'], '', item['claim'], '',
                           'Evidence: ' + item['evidence'], '', 'Design: ' + item['design_takeaway'], '',
                           'Limitations: ' + item['limitations'], '']
+                page = item.get('page')
+                if page is not None:
+                    require(type(page) is int and page > 0, 'Invalid visual page: ' + item['id'])
+                    relative_pdf = Path(os.path.relpath(pdf, index_directory)).as_posix()
+                    lines += [f'[PDF page {page}]({relative_pdf}#page={page})', '']
+                if 'locator' in item:
+                    require(isinstance(item['locator'], str), 'Visual locator must be text')
+                    lines += ['Locator: ' + item['locator'], '']
+                if 'panel_measurement_note' in item:
+                    require(isinstance(item['panel_measurement_note'], str), 'Panel correction must be text')
+                    lines += ['Panel measurement correction: ' + item['panel_measurement_note'], '']
+                panels = item.get('panels', [])
+                require(isinstance(panels, list), 'Visual panels must be an array')
+                labels = set()
+                for panel in panels:
+                    require(isinstance(panel, dict) and all(isinstance(panel.get(key), str) and panel[key].strip()
+                            for key in ['label', 'question', 'claim', 'evidence', 'design_takeaway', 'limitations']),
+                            'Incomplete per-panel reading: ' + item['id'])
+                    require(panel['label'] not in labels, 'Duplicate panel label: ' + item['id'])
+                    labels.add(panel['label'])
+                    lines += [f'#### {item["id"]} / {panel["label"]}', '', panel['question'], '', panel['claim'], '',
+                              'Evidence: ' + panel['evidence'], '', 'Design: ' + panel['design_takeaway'], '',
+                              'Limitations: ' + panel['limitations'], '']
+                    if 'locator' in panel:
+                        require(isinstance(panel['locator'], str), 'Panel locator must be text')
+                        lines += ['Locator: ' + panel['locator'], '']
         declaration = sample.get('visual_read', design.get('visual_read'))
         lines += ['Reading declaration: ' + json.dumps(declaration, ensure_ascii=False, sort_keys=True), '']
     lines[2:2] = [f"{totals['papers']} papers, {totals['figures']} figures, {totals['tables']} tables, "

@@ -420,7 +420,7 @@ class Controller:
             elif name == 'experiment-template':
                 from .experiments import template
                 value = template(p, self.root, self.package)
-            elif name in {'environment', 'source-fetch', 'reading-index', 'image-export', 'tex-prepare', 'pdf-inspect', 'bibliography', 'revision-record'}:
+            elif name in {'environment', 'source-fetch', 'reading-index', 'image-export', 'tex-prepare', 'pdf-inspect', 'bibliography', 'revision-record', 'statistics'}:
                 from .production import run
                 value = run(name, p, self.root)
             else: raise Refusal('Unknown deterministic research tool')

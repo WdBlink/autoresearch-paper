@@ -41,6 +41,13 @@ assembly. The main CLI owns path resolution, round-request persistence and
 export verification. Keep dataset/method choices in the research adapter;
 do not copy a previous study's counts, filenames or reviewer roles into a run.
 
+
+Before promising an empirical run, preflight the actual condition matrix against
+the recording/statistics adapter. The supplied numerical adapter currently admits
+paired baseline/candidate cases only; three-arm or larger obligations must remain
+explicit until a compatible adapter exists. A two-arm development diagnostic does
+not satisfy a larger planned comparison.
+
 ## Auxiliary protocols
 
 These are tools for a bounded research subtask, not competing product entries.
