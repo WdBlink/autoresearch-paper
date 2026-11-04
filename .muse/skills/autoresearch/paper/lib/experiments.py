@@ -31,6 +31,8 @@ class ExperimentRecorder:
         require(not safe(self.root, results, output=True).exists(), 'Preserve existing experiment results; use a new version')
         self.grid = [(case, seed, condition) for case in self.design['cases'] for seed in self.design['seeds'] for condition in self.design['conditions']]
         self.rows = {}
+        names = [f'{case}-{condition}-{seed}' for case, seed, condition in self.grid]
+        require(len(names) == len(set(names)), 'Case and condition names produce ambiguous raw identities')
         for case, _, condition in self.grid:
             identifier(case); identifier(condition)
         for case, seed, condition in self.grid:

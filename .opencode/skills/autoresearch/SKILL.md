@@ -57,10 +57,12 @@ do not copy a previous study's counts, filenames or reviewer roles into a run.
 
 
 Before promising an empirical run, preflight the actual condition matrix against
-the recording/statistics adapter. The supplied numerical adapter currently admits
-paired baseline/candidate cases only; three-arm or larger obligations must remain
-explicit until a compatible adapter exists. A two-arm development diagnostic does
-not satisfy a larger planned comparison.
+the recording/statistics adapter. The supplied numerical adapter admits named
+conditions with preregistered paired contrasts, averaging seeds within independent
+cases. Preserve the full case × seed × condition denominator, including failed
+and unstarted slots; operational failures block statistics. This descriptive
+protocol supplies no universal statistical inference or scientific completion.
+A two-arm development diagnostic does not satisfy a larger planned comparison.
 
 ## Auxiliary protocols
 
