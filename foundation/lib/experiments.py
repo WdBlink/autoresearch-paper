@@ -141,6 +141,39 @@ def template(packet, root, package):
     safe(root, results, output=True)
     safe(root, raw_directory + '/probe.json', output=True)
     require(design_id is None or design_id == _design(root, design)['experiment_id'], 'Template design identity mismatch')
+    if _design(root, design).get('protocol') == 'local_response_identification':
+        text = f'''# Generated local response envelope. Dispatch and admission require approved task resources.
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, os.environ.get('AUTORESEARCH_RUNTIME', {str(package)!r}))
+from lib.local_response import LocalResponseRecorder, canonical, safe
+
+def run(root, dispatch, admission, identity):
+    records = LocalResponseRecorder(root, {design!r}, {raw_directory!r}, admission)
+    for phase in ('development', 'prospective_centers', 'prospective_joints'):
+        for slot, item in records.index['slots'].items():
+            probe = records.index['probes'][item['probe_id']]
+            point = records.index['ops'][probe['operating_point_id']]
+            development = records.index['instances'][point['instance_id']]['phase'] == 'development'
+            selected = development if phase == 'development' else (not development and
+                       (probe['role'] == 'center' if phase == 'prospective_centers' else probe['role'] == 'joint'))
+            if selected:
+                request_id, session_id = identity(slot)
+                started = records.start(slot, request_id, session_id)
+                response, receipt = dispatch(started['data'])
+                records.finish(slot, response=response, receipt=receipt)
+        if phase == 'development': records.freeze_coefficients()
+        elif phase == 'prospective_centers': records.freeze_predictions()
+    target = safe(root, {results!r})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open('xb') as output:
+        output.write(canonical(records.results()))
+    return {results!r}
+'''
+        write_once(root, packet['target'], text)
+        return {'path': packet['target'], 'sha256': file_hash(safe(root, packet['target'])),
+                'scientific_operation': 'requires real dispatch, unique request/session identity, controller admission and byte-backed receipts; no retries'}
     text = f'''# Generated recording envelope. Fill the scientific operation before freezing.
 import os
 import sys

@@ -499,9 +499,24 @@ def experiment_design_check(packet, root):
             'design_count': len(packet.get('experiment_designs', [])) if 'experiment_designs' in packet else 1}
 
 
+def local_response_design_check(packet, root):
+    from . import local_response
+    design = local_response.read(local_response.safe(root, packet['design']))
+    index = local_response.validate_design(design, root, require_resolved=False)
+    return {'status': 'pass', 'scope': 'Draft local response schema and referenced source bytes only',
+            'instances': len(index['instances']), 'nested_operating_points': len(index['ops']),
+            'probes': len(index['probes']), 'planned_slots': len(index['slots']),
+            'model_binding': design['model_binding']['status'],
+            'source_verification': index['source_verification'],
+            'verified_source_dependencies': len(index['source_artifacts']),
+            'formal_collection_blocked': design.get('formal_collection_blocked', False), 'execution_authorized': False,
+            'scientific_readiness': 'not_certified'}
+
+
 TOOLS = {'environment': environment, 'source-fetch': fetch_sources, 'reading-index': reading_index,
          'image-export': export_image, 'tex-prepare': prepare_tex, 'pdf-inspect': inspect_pdf, 'bibliography': bibliography,
-         'revision-record': revision_record, 'experiment-design-check': experiment_design_check}
+         'revision-record': revision_record, 'experiment-design-check': experiment_design_check,
+         'local-response-design-check': local_response_design_check}
 
 
 def run(name, packet, root):

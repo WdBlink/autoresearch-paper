@@ -136,6 +136,10 @@ The argument refers to Fig~\ref{plot:flow}.
         packet['experiment_designs'][0]['protocol']='local_response_identification'
         report=production.run('experiment-design-check',packet,self.root)
         self.assertEqual('fail',report['status'])
+        self.assertIn('design protocol mismatch', report['issues'][0])
+        packet['experiment_designs'][0]['protocol']='unknown_protocol'
+        report=production.run('experiment-design-check',packet,self.root)
+        self.assertEqual('fail',report['status'])
         self.assertIn('unsupported', report['issues'][0])
 
     def test_missing_dependencies_are_not_available(self):

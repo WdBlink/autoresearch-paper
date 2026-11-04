@@ -192,3 +192,7 @@ directory. Use `deliver --decision PATH --operation-id ID`: it applies the
 issued checkpoint, finalizes, rebuilds from exported assets and verifies the
 ZIP's complete file set, CRC and bytes. Raw `apply-round` and `finalize` remain
 available. An exported runtime includes the upstream protocols it needs.
+
+## Bounded local vector responses
+
+`artifact --name local-response-design-check` checks an explicit draft `design` path, reports source dependency verification and preserves `execution_authorized:false`. The fixed-template local vector profile, recording envelope, dual-freeze order and scoped assertions are described in [local-response-protocol.md](local-response-protocol.md). It is a distinct protocol, not a scalar-case coercion. Both PDF and SVG audit-sheet rendering use installed Matplotlib/NumPy; no scientific provider is called by rendering.

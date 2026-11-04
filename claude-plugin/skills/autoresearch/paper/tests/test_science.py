@@ -1,15 +1,13 @@
 import copy
 import hashlib
-import importlib.util
+import sys
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-MODULE = Path(__file__).resolve().parents[1] / "lib" / "science.py"
-spec = importlib.util.spec_from_file_location("paper_science", MODULE)
-science = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(science)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib import science
 
 
 class ScienceChecks(unittest.TestCase):

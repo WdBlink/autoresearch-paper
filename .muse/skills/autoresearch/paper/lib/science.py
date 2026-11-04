@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, stdev
 
+from . import local_response, local_response_evidence
+
 MAX_JSON_BYTES = 16 * 1024 * 1024
 INTERVALS = {"none", "sd", "se", "ci95_normal"}
 RUN_STATUSES = {"completed", "failed", "stopped", "unknown"}
@@ -125,6 +127,9 @@ def _bound(packet, path):
 
 def _design(root, path):
     design = _mapping(strict_json(root, path), "experiment design")
+    if design.get("protocol") == local_response.PROTOCOL:
+        local_response.validate_design(design, root, require_resolved=True)
+        return design
     _require("protocol" not in design or design["protocol"] == "paired_case_mean",
              "unsupported scientific protocol")
     for field in ("experiment_id", "claim_id", "hypothesis", "independent_variable",
@@ -189,6 +194,9 @@ def _design(root, path):
 
 def _experiment(root, design_path, results_path, frozen_hash=None):
     design = _design(root, design_path)
+    if design.get("protocol") == local_response.PROTOCOL:
+        design, results, stats, _ = local_response_evidence.load(root, design_path, results_path, frozen_hash)
+        return design, results, stats["input_hashes"]["raw"]
     design_hash = _sha(_read(root, design_path))
     if frozen_hash is not None:
         _require(design_hash == frozen_hash, "experiment design differs from the frozen plan")
@@ -273,6 +281,8 @@ def _summary(values, interval):
 
 
 def _statistics(root, design_path, results_path, frozen_hash=None):
+    if strict_json(root, design_path).get("protocol") == local_response.PROTOCOL:
+        return local_response_evidence.load(root, design_path, results_path, frozen_hash)[2]
     design, results, raw_hashes = _experiment(root, design_path, results_path, frozen_hash)
     values = {(row["case_id"], row["seed"], row["condition"]):
               row["value"] if row["status"] == "completed" else design["failure_value"]
@@ -333,6 +343,8 @@ def _statistics(root, design_path, results_path, frozen_hash=None):
 
 
 def _caption(stats):
+    if stats.get("protocol") == local_response.PROTOCOL:
+        return local_response_evidence.caption(stats)
     label = {"sd": "SD", "se": "SE", "ci95_normal": "exploratory normal 95% CI", "none": "no interval"}
     caption = (f"{stats['metric']['name']} ({stats['metric']['unit']}; {stats['metric']['direction']} is better). "
             f"Points show case means; summary intervals show {label[stats['interval_type']]}. "
@@ -359,6 +371,8 @@ def _tex(value):
 
 
 def _table(stats):
+    if stats.get("protocol") == local_response.PROTOCOL:
+        return local_response_evidence.table(stats)
     label = {"none": "No interval", "sd": r"Mean $\pm$ SD bounds", "se": r"Mean $\pm$ SE bounds", "ci95_normal": r"Exploratory normal 95\% CI"}[stats["interval_type"]]
     lines = [r"\begin{minipage}{\linewidth}\centering", r"\begin{tabular}{lrr}", "Condition & Mean (" + _tex(stats["metric"]["unit"]) + ") & " + label + r" \\", r"\hline"]
     entries = [(name, stats["conditions"][name]) for name in stats.get("condition_order", ["baseline", "candidate"])]
@@ -453,6 +467,8 @@ def _pdf(stats):
 
 
 def _figure(stats, suffix):
+    if stats.get("protocol") == local_response.PROTOCOL:
+        return local_response_evidence.figure(stats, suffix)
     _require(suffix in {".svg", ".pdf"}, "statistics figure must be .svg or .pdf")
     return _svg(stats) if suffix == ".svg" else _pdf(stats)
 
@@ -467,7 +483,7 @@ def render_statistics(root, input_path, table_path, figure_path):
     trace_path = figure_path + ".trace.json"
     targets = [input_path, results["design"], table_path, figure_path, statistics_path, trace_path]
     _require(len(set(targets)) == len(targets), "render output paths overlap inputs or each other")
-    raw_inputs = {row["raw"] for row in results["runs"]}
+    raw_inputs = set(stats["input_hashes"]["raw"])
     _require(not ({table_path, figure_path, statistics_path, trace_path} & raw_inputs), "render would overwrite raw evidence")
     trace = {"schema_version": 1, "statistics_sha256": _sha(_canonical(stats)),
              "table": table_path, "table_sha256": _sha(table),
@@ -1025,7 +1041,7 @@ def _design_registry(plan, packet, root):
         _require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", identity), "invalid design ID")
         path = _bound(packet, entry.get("path"))
         _require(identity not in registry and _path(root, path).resolve() not in paths, "duplicate design ID or path")
-        _require(entry.get("protocol") == "paired_case_mean", "unsupported scientific protocol")
+        _require(entry.get("protocol") in {"paired_case_mean", local_response.PROTOCOL}, "unsupported scientific protocol")
         _require(entry.get("sha256") == _sha(_read(root, path)), "registered design hash mismatch")
         claims = _list(entry.get("claim_ids"), "design claim IDs")
         for claim in claims:
@@ -1087,16 +1103,24 @@ def _validate_experiment(packet, root):
         _require("experiments" not in packet, "multiple experiments need a frozen registry")
         return _validate_single_experiment(packet, root)
     registry = _design_registry(plan, packet, root)
-    owners = {}
+    owners, provider_owners = {}, {}
     for row in _collection(packet, "experiments", registry):
         entry = registry[row["design_id"]]
         results = _mapping(strict_json(root, row["results"]), "experiment results")
         _require(results.get("design_id") == entry["id"], "result design identity mismatch")
-        for path in [row["results"], row["summary"], *[run["raw"] for run in results.get("runs", [])]]:
+        raw_paths = ([item["path"] for item in results.get("events", [])]
+                     if entry["protocol"] == local_response.PROTOCOL else [run["raw"] for run in results.get("runs", [])])
+        for path in [row["results"], row["summary"], *raw_paths]:
             resolved = _path(root, path).resolve()
             _require(resolved not in owners, "cross-design evidence path reuse")
             owners[resolved] = entry["id"]
-        _validate_single_experiment(_single_packet(packet, entry, row), root)
+        verified_events = _validate_single_experiment(_single_packet(packet, entry, row), root)
+        for event in verified_events or []:
+            receipt = event.get("data", {}).get("receipt", {})
+            if event["kind"] == "terminal" and receipt.get("source") == "provider_receipt":
+                identity = tuple(receipt[key] for key in ("provider", "model", "version", "provider_request_id"))
+                _require(identity not in provider_owners, "cross-design provider request reuse")
+                provider_owners[identity] = entry["id"]
 
 
 def _validate_figures(packet, root):
@@ -1129,6 +1153,15 @@ def _validate_single_experiment(packet, root):
     design, results, _ = _experiment(root, design_path, results_path, frozen)
     summary = _read(root, _bound(packet, packet.get("summary"))).decode("utf-8")
     _require(bool(summary.strip()), "experiment summary is empty")
+    if design.get("protocol") == local_response.PROTOCOL:
+        _, _, stats, events = local_response_evidence.load(root, design_path, results_path, frozen)
+        _require(stats["assessment"] != "incomplete", "local acquisition is incomplete; retain failures and unstarted slots")
+        for path in stats["input_hashes"]["raw"]:
+            _bound(packet, path)
+        for event in events:
+            if event["kind"] == "terminal" and not event["data"]["valid"]:
+                _require(event["data"]["slot_id"] in summary, "local summary omits invalid/failed slot")
+        return events
     for row in results["runs"]:
         _bound(packet, row["raw"])
         if row["status"] != "completed":
@@ -1207,18 +1240,21 @@ def _validate_write(packet, root):
         _require(record.get("claim_id") == stats.get("claim_id"), "assertion claim identity mismatch")
         _require(record.get("kind") in {"numeric", "comparison"}, "causal interpretation needs an additional supported protocol")
         _require(record.get("strength") == "descriptive", "unsupported conclusion strength; sample summaries are descriptive")
-        _require(record.get("condition") == "all-planned-cases", "assertion changes the comparison condition")
-        _require(record.get("unit") == stats.get("metric", {}).get("unit"), "assertion metric unit mismatch")
-        _require(type(record.get("denominator")) is int and record["denominator"] == stats.get("n_cases"),
-                 "assertion denominator mismatch")
-        measure = record.get("measure")
-        measures = {"conditions." + name + ".mean": summary["mean"] for name, summary in stats["conditions"].items()}
-        measures.update({"contrasts." + name + ".mean": summary["mean"] for name, summary in stats.get("contrasts", {}).items()})
-        if "delta" in stats:
-            measures.update({name + ".mean": stats["conditions"][name]["mean"] for name in ("baseline", "candidate")})
-            measures["delta.mean"] = stats["delta"]["mean"]
-        _require(isinstance(measure, str) and measure in measures, "unsupported assertion measure")
-        expected = measures[measure]
+        if stats.get("protocol") == local_response.PROTOCOL:
+            expected = local_response_evidence.assertion_value(record, stats)
+        else:
+            _require(record.get("condition") == "all-planned-cases", "assertion changes the comparison condition")
+            _require(record.get("unit") == stats.get("metric", {}).get("unit"), "assertion metric unit mismatch")
+            _require(type(record.get("denominator")) is int and record["denominator"] == stats.get("n_cases"),
+                     "assertion denominator mismatch")
+            measure = record.get("measure")
+            measures = {"conditions." + name + ".mean": summary["mean"] for name, summary in stats["conditions"].items()}
+            measures.update({"contrasts." + name + ".mean": summary["mean"] for name, summary in stats.get("contrasts", {}).items()})
+            if "delta" in stats:
+                measures.update({name + ".mean": stats["conditions"][name]["mean"] for name in ("baseline", "candidate")})
+                measures["delta.mean"] = stats["delta"]["mean"]
+            _require(isinstance(measure, str) and measure in measures, "unsupported assertion measure")
+            expected = measures[measure]
         _number(record.get("value"), "assertion value")
         _require(math.isclose(record["value"], expected, rel_tol=1e-10, abs_tol=1e-10), "assertion number differs from recorded statistics")
         tokens = re.findall(r"(?<![\w.])[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?", text)
@@ -1235,11 +1271,11 @@ def _validate_write(packet, root):
         _require(_text(limitation.get("text"), "limitation text") in manuscript,
                  "limitation is absent from the manuscript")
     _require("scope" in kinds, "manuscript must state measured scope")
-    if any(stats["n_cases"] < 5 for stats in all_stats):
+    if any(stats.get("n_cases", 3) < 5 for stats in all_stats):
         _require("small_sample" in kinds, "small independent sample requires a manuscript limitation")
-    if any(stats["failed_runs"] or stats["stopped_runs"] for stats in all_stats):
+    if any(stats.get("failed_runs", 0) or stats.get("stopped_runs", 0) or stats.get("counts", {}).get("invalid", 0) or stats.get("counts", {}).get("failed", 0) for stats in all_stats):
         _require("failure" in kinds, "failed/stopped measurements need a manuscript limitation")
-    if any(stats["adverse_case_ids"] for stats in all_stats):
+    if any(stats.get("adverse_case_ids") or stats.get("assessment") == "local_prediction_failed" for stats in all_stats):
         _require("adverse" in kinds, "adverse paired cases must remain visible in the manuscript")
     for key in ("problem", "choice", "finding", "scope"):
         _text(_mapping(document.get("prose_review"), "reader-oriented prose review").get(key), "prose review " + key)

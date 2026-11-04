@@ -70,6 +70,10 @@ cases. Preserve the full case × seed × condition denominator, including failed
 and unstarted slots; operational failures block statistics. This descriptive
 protocol supplies no universal statistical inference or scientific completion.
 A two-arm development diagnostic does not satisfy a larger planned comparison.
+For the separately bounded fixed-template vector profile, use
+`paper/references/local-response-protocol.md`. Preserve its nested states,
+source/receipt closure and two prospective freezes; its engineering tolerances
+do not establish full-state identification or global stability.
 
 ## Auxiliary protocols
 

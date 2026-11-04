@@ -7,7 +7,12 @@ root and must be present in the current packet's `artifacts` list. Artifacts
 in previous accepted packets may be referenced by the controller's `_history`.
 Do not include private controller fields in submitted packets.
 
-## Experiment design frozen by plan
+For the separate fixed-template vector protocol, see
+[local response identification](local-response-protocol.md). It retains nested
+instance/state/probe/repeat identities and does not use the scalar definitions
+below. Both explicit protocols can share a frozen multi-design collection.
+
+## Paired-case experiment design frozen by plan
 
 The plan packet contains `experiment_design_sha256` equal to the SHA-256 of the
 experiment design bytes. Create the design before accepting the plan. Use:
@@ -100,7 +105,7 @@ Call `render_statistics(root, results_path, table_path, figure_path)`. The resul
 file points to the design. This function checks raw records and computes the
 statistics, writes a TeX table, a figure, a `<figure_path>.trace.json` companion,
 and `<table_path>.stats.json`. It returns those paths, `caption`, and the
-computed `statistics` object. SVG needs only Python's standard library; PDF
+computed `statistics` object. For the paired-case protocol, SVG needs only Python's standard library; PDF
 requires Matplotlib, and absence is an explicit capability error.
 
 A figures packet contains `design`, `results`, `statistics` (the generated
