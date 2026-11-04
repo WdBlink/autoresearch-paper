@@ -68,9 +68,11 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    and use the supplied `ExperimentRecorder` envelope to retain failed/unstarted
    slots. Do not infer an experiment count or method from an example.
    Preflight recording/statistics support for the full actual condition matrix.
-   The supplied numerical adapter admits paired baseline/candidate cases only.
-   Keep unsupported multi-arm obligations explicit; do not drop or relabel arms
-   to obtain technical acceptance. A development diagnostic is not a substitute
+   The supplied numerical adapter admits named conditions and preregistered
+   paired contrasts over independent cases, with seeds averaged within each case.
+   Preserve every planned arm and failed/unstarted slot; do not drop or relabel
+   arms to obtain technical acceptance. Descriptive multi-arm summaries do not
+   establish universal statistical inference or scientific completion. A development diagnostic is not a substitute
    for a frozen prospective experiment. Use the reading index to expose all
    per-panel judgments and supplied locations, not just their totals.
 7. After writing, submit the task's binding array with `bind-all`. Each binding

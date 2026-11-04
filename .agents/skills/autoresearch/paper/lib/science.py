@@ -142,15 +142,31 @@ def _design(root, path):
     seeds = _list(design.get("seeds"), "seeds")
     _require(all(type(seed) is int and 0 <= seed < 2**32 for seed in seeds), "invalid seeds")
     _require(len(seeds) == len(set(seeds)), "duplicate seeds")
-    _require(design.get("conditions") == ["baseline", "candidate"],
-             "conditions must be baseline and candidate in that order")
-    _require(len(cases) * len(seeds) * 2 <= 100000, "planned experiment exceeds record bound")
+    conditions = _list(design.get("conditions"), "conditions")
+    for condition in conditions:
+        _require(isinstance(condition, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", condition),
+                 "condition must be a stable named identifier")
+    _require(len(conditions) >= 2 and len(conditions) == len(set(conditions)), "need distinct named conditions")
+    _require(len(cases) * len(seeds) * len(conditions) <= 100000, "planned experiment exceeds record bound")
     _require(design.get("failure_policy") == "penalty", "only a frozen penalty failure policy is supported")
     _number(design.get("failure_value"), "failure penalty")
     stats = _mapping(design.get("statistics"), "statistics plan")
     _require(stats.get("estimator") == "mean", "unsupported estimator")
     _require(stats.get("interval") in INTERVALS, "unsupported interval")
     _require(stats.get("paired") is True, "paired case comparison is required")
+    if conditions != ["baseline", "candidate"] or "contrasts" in stats:
+        contrasts = _list(stats.get("contrasts"), "preregistered contrasts")
+        ids, pairs = set(), set()
+        for contrast in contrasts:
+            _mapping(contrast, "contrast")
+            name = contrast.get("id")
+            _require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", name),
+                     "contrast needs a stable named identifier")
+            left, right = contrast.get("minuend"), contrast.get("subtrahend")
+            _require(isinstance(left, str) and isinstance(right, str) and left in conditions and right in conditions and left != right,
+                     "contrast must name two distinct planned conditions")
+            _require(name not in ids and (left, right) not in pairs, "duplicate contrast")
+            ids.add(name); pairs.add((left, right))
     _require(stats["interval"] == "none" or len(cases) >= 2,
              "uncertainty estimates need at least two independent cases")
     for role in _list(design.get("data_roles"), "data_roles"):
@@ -194,6 +210,8 @@ def _experiment(root, design_path, results_path, frozen_hash=None):
     for row in rows:
         _mapping(row, "run")
         _require(type(row.get("seed")) is int, "run seed must be an integer")
+        _text(row.get("case_id"), "run case ID")
+        _text(row.get("condition"), "run condition")
         identity = (row.get("case_id"), row.get("seed"), row.get("condition"))
         _require(identity in expected and identity not in seen_keys, "duplicate or unplanned run identity")
         seen_keys.add(identity)
@@ -213,6 +231,14 @@ def _experiment(root, design_path, results_path, frozen_hash=None):
         _require(raw_path not in seen_raw, "each run needs its own raw record")
         seen_raw.add(raw_path)
         raw = _mapping(strict_json(root, raw_path), "raw record")
+        _require(type(raw.get("seed")) is int, "raw seed must be an integer")
+        if row["status"] == "completed":
+            _number(raw.get("value"), "raw measurement")
+        else:
+            _require(raw.get("value") is None, "raw failed value must be null")
+        for record in (row, raw):
+            _require(record.get("attempted", True) is True, "unstarted slots cannot become scientific measurements")
+            _require(record.get("failure_kind") != "operation", "operation failures cannot become scientific measurements")
         for key in ("case_id", "seed", "condition", "status", "value"):
             _require(key in raw and raw[key] == row.get(key), f"raw measurement differs in {key}: {row['id']}")
         if row["status"] != "completed":
@@ -248,18 +274,29 @@ def _statistics(root, design_path, results_path, frozen_hash=None):
                               for case in design["cases"]] for condition in design["conditions"]}
     interval = design["statistics"]["interval"]
     condition_stats = {condition: _summary(values, interval) for condition, values in case_values.items()}
-    differences = [candidate - baseline for baseline, candidate in
-                   zip(case_values["baseline"], case_values["candidate"])]
-    delta = _summary(differences, interval)
+    legacy = "contrasts" not in design["statistics"] and design["conditions"] == ["baseline", "candidate"]
+    contrast_plan = design["statistics"].get("contrasts", [
+        {"id": "delta", "minuend": "candidate", "subtrahend": "baseline"}])
     sign = -1 if design["metric"]["direction"] == "lower" else 1
+    contrasts = {}
+    for contrast in contrast_plan:
+        differences = [left - right for left, right in zip(
+            case_values[contrast["minuend"]], case_values[contrast["subtrahend"]])]
+        contrasts[contrast["id"]] = {**contrast, **_summary(differences, interval),
+            "case_differences": differences,
+            "adverse_case_ids": [case for case, difference in zip(design["cases"], differences)
+                                 if sign * difference < 0]}
+    _require(legacy or results["outcome"] == "inconclusive",
+             "explicit contrasts support descriptive summaries only; overall outcome must remain inconclusive")
+    delta = contrasts[contrast_plan[0]["id"]]
     improving = sign * delta["mean"] > 0
     _require(results["outcome"] != "positive" or improving,
              "positive outcome contradicts the observed paired mean")
     _require(results["outcome"] != "negative" or not improving,
              "negative outcome contradicts the observed paired mean; use inconclusive for uncertain evidence")
     rows = results["runs"]
-    return {
-        "schema_version": 1,
+    result = {
+        "schema_version": 1 if legacy else 2,
         "experiment_id": design["experiment_id"], "claim_id": design["claim_id"],
         "input_hashes": {"design": _sha(_read(root, design_path)),
                          "results": _sha(_read(root, results_path)), "raw": raw_hashes},
@@ -270,14 +307,22 @@ def _statistics(root, design_path, results_path, frozen_hash=None):
         "stopped_runs": sum(row["status"] == "stopped" for row in rows),
         "failure_policy": "penalty", "failure_value": design["failure_value"],
         "included_run_ids": [row["id"] for row in rows], "case_ids": design["cases"],
-        "case_values": case_values, "case_differences": differences,
-        "interval_type": interval, "conditions": condition_stats, "delta": delta,
-        "adverse_case_ids": [case for case, difference in zip(design["cases"], differences)
-                             if sign * difference < 0],
+        "case_values": case_values,
+        "interval_type": interval, "conditions": condition_stats,
+        "adverse_case_ids": [case for case in design["cases"]
+                             if any(case in contrast["adverse_case_ids"] for contrast in contrasts.values())],
         "outcome": results["outcome"],
         "limitations": ["descriptive_case_summary"] +
                        (["normal_approximation_not_confirmatory"] if interval == "ci95_normal" else []),
     }
+    if legacy:
+        result.update(delta={key: delta[key] for key in ("mean", "sd", "se", "interval")},
+                      case_differences=delta["case_differences"])
+    else:
+        result.update(contrasts=contrasts, condition_order=design["conditions"],
+                      contrast_order=[contrast["id"] for contrast in contrast_plan])
+        result["limitations"].append("multiple_contrasts_descriptive_no_multiplicity_adjustment")
+    return result
 
 
 def _caption(stats):
@@ -291,7 +336,13 @@ def _caption(stats):
         caption += f"Measurement failures/stops retain the frozen penalty {stats['failure_value']} in this denominator. "
     if stats['interval_type'] == 'sd':
         caption += "Bounds are mean plus/minus sample SD (ddof=1), not confidence limits or feasible-value ranges. "
-    return caption + "Delta is candidate minus baseline. These are descriptive case results."
+    if "contrasts" in stats:
+        caption += "Preregistered contrasts: " + "; ".join(
+            f"{name} = {stats['contrasts'][name]['minuend']} minus {stats['contrasts'][name]['subtrahend']}"
+            for name in stats["contrast_order"]) + ". No multiplicity-adjusted or confirmatory inference. "
+    else:
+        caption += "Delta is candidate minus baseline. "
+    return caption + "These are descriptive case results."
 
 
 def _tex(value):
@@ -303,11 +354,13 @@ def _tex(value):
 def _table(stats):
     label = {"none": "No interval", "sd": r"Mean $\pm$ SD bounds", "se": r"Mean $\pm$ SE bounds", "ci95_normal": r"Exploratory normal 95\% CI"}[stats["interval_type"]]
     lines = [r"\begin{minipage}{\linewidth}\centering", r"\begin{tabular}{lrr}", "Condition & Mean (" + _tex(stats["metric"]["unit"]) + ") & " + label + r" \\", r"\hline"]
-    for name in ("baseline", "candidate", "delta"):
-        values = stats["delta"] if name == "delta" else stats["conditions"][name]
+    entries = [(name, stats["conditions"][name]) for name in stats.get("condition_order", ["baseline", "candidate"])]
+    entries += ([("contrast " + name, stats["contrasts"][name]) for name in stats["contrast_order"]]
+                if "contrasts" in stats else [("delta", stats["delta"])])
+    for name, values in entries:
         interval = values["interval"]
         display = "none" if interval is None else f"[{interval[0]:.6f}, {interval[1]:.6f}]"
-        lines.append(f"{name} & {values['mean']:.6f} & {display} " + r"\\")
+        lines.append(f"{_tex(name)} & {values['mean']:.6f} & {display} " + r"\\")
     lines.extend([r"\end{tabular}", r"\par\smallskip\footnotesize\raggedright " + _tex(_caption(stats)), r"\end{minipage}"])
     return "\n".join(lines) + "\n"
 
@@ -323,18 +376,19 @@ def _svg(stats):
     low, high = low - pad, high + pad
     def y(value):
         return 315 - (value - low) / (high - low) * 255
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420">',
+    width = max(640, 160 * len(stats["conditions"]) + 120)
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="420" viewBox="0 0 {width} 420">',
              f'<desc>statistics sha256:{digest}; {html.escape(_caption(stats))}</desc>',
-             '<rect width="640" height="420" fill="white"/>',
+             f'<rect width="{width}" height="420" fill="white"/>',
              '<g font-family="sans-serif" font-size="14" fill="#202020">',
              f'<text x="24" y="26">{html.escape(stats["metric"]["name"])} ({html.escape(stats["metric"]["unit"])})</text>',
-             '<path d="M80 50 V315 H600" fill="none" stroke="#202020"/>']
+             f'<path d="M80 50 V315 H{width-40}" fill="none" stroke="#202020"/>']
     for index in range(6):
         value = low + (high - low) * index / 5
         parts.append(f'<text x="12" y="{y(value)+5:.3f}">{value:.3f}</text>')
-    for index, condition in enumerate(("baseline", "candidate")):
-        x = 225 + index * 230
-        color = ("#0072B2", "#D55E00")[index]
+    for index, condition in enumerate(stats.get("condition_order", ["baseline", "candidate"])):
+        x = 80 + (index + 0.5) * (width - 120) / len(stats["conditions"])
+        color = ("#0072B2", "#D55E00")[index % 2]
         for offset, value in enumerate(stats["case_values"][condition]):
             shift = (offset - (stats["n_cases"] - 1) / 2) * min(12, 80 / stats["n_cases"])
             if index == 0:
@@ -346,7 +400,7 @@ def _svg(stats):
             a, b = map(y, summary["interval"])
             parts.append(f'<path d="M{x} {a:.3f} V{b:.3f} M{x-8} {a:.3f} H{x+8} M{x-8} {b:.3f} H{x+8}" stroke="{color}" stroke-width="2" fill="none"/>')
         parts.append(f'<path d="M{x-15} {y(summary["mean"]):.3f} H{x+15}" stroke="{color}" stroke-width="3"/>')
-        parts.append(f'<text x="{x-40}" y="343">{condition}</text>')
+        parts.append(f'<text x="{x-40}" y="343">{html.escape(condition)}</text>')
     parts.extend([f'<text x="80" y="374">n={stats["n_cases"]} paired cases; {stats["interval_type"]}; failures={stats["failed_runs"]}; stops={stats["stopped_runs"]}</text>',
                   '<text x="80" y="399">Case points and mean; descriptive summary.</text>', '</g></svg>'])
     return ("\n".join(parts) + "\n").encode()
@@ -360,10 +414,10 @@ def _pdf(stats):
     except ImportError as error:
         raise ValueError("PDF statistics rendering needs installed Matplotlib; SVG works without it") from error
     with matplotlib.rc_context({"text.usetex": False, "font.family": "DejaVu Sans", "pdf.fonttype": 42}):
-        figure = Figure(figsize=(6.4, 4.2), layout="constrained")
+        figure = Figure(figsize=(max(6.4, 1.6 * len(stats["conditions"])), 4.2), layout="constrained")
         axis = figure.subplots()
-        for index, condition in enumerate(("baseline", "candidate")):
-            color, marker = (("#0072B2", "o"), ("#D55E00", "s"))[index]
+        for index, condition in enumerate(stats.get("condition_order", ["baseline", "candidate"])):
+            color, marker = (("#0072B2", "o"), ("#D55E00", "s"))[index % 2]
             points = stats["case_values"][condition]
             positions = [index + (i - (len(points) - 1) / 2) * min(0.04, 0.35 / len(points))
                          for i in range(len(points))]
@@ -376,8 +430,8 @@ def _pdf(stats):
                               fmt="_", markersize=20, color=color, capsize=6, linewidth=1.8)
             else:
                 axis.plot([index], [average], "_", markersize=20, color=color)
-        axis.set_xticks([0, 1], ["baseline", "candidate"])
-        axis.set_xlim(-0.5, 1.5)
+        axis.set_xticks(list(range(len(stats["conditions"]))), stats.get("condition_order", ["baseline", "candidate"]))
+        axis.set_xlim(-0.5, len(stats["conditions"]) - 0.5)
         axis.set_ylabel(f"{stats['metric']['name']} ({stats['metric']['unit']})")
         axis.set_title(f"Paired case means; {stats['metric']['direction']} is better")
         axis.grid(axis="y", alpha=0.2)
@@ -1024,8 +1078,13 @@ def _validate_write(packet, root):
         _require(type(record.get("denominator")) is int and record["denominator"] == stats.get("n_cases"),
                  "assertion denominator mismatch")
         measure = record.get("measure")
-        _require(measure in {"baseline.mean", "candidate.mean", "delta.mean"}, "unsupported assertion measure")
-        expected = stats["delta"]["mean"] if measure == "delta.mean" else stats["conditions"][measure.split(".")[0]]["mean"]
+        measures = {"conditions." + name + ".mean": summary["mean"] for name, summary in stats["conditions"].items()}
+        measures.update({"contrasts." + name + ".mean": summary["mean"] for name, summary in stats.get("contrasts", {}).items()})
+        if "delta" in stats:
+            measures.update({name + ".mean": stats["conditions"][name]["mean"] for name in ("baseline", "candidate")})
+            measures["delta.mean"] = stats["delta"]["mean"]
+        _require(isinstance(measure, str) and measure in measures, "unsupported assertion measure")
+        expected = measures[measure]
         _number(record.get("value"), "assertion value")
         _require(math.isclose(record["value"], expected, rel_tol=1e-10, abs_tol=1e-10), "assertion number differs from recorded statistics")
         tokens = re.findall(r"(?<![\w.])[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?", text)

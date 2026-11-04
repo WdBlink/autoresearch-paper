@@ -35,6 +35,39 @@ exploratory normal approximation (`mean ± 1.96 SE`), not a test of significance
 Non-`none` modes require at least two cases. Unknown estimators, nested unit
 structures, missing pairings, and success-only filtering fail explicitly.
 
+Named multi-arm designs use two or more distinct stable condition identifiers
+(letters, digits, `_`, `.`, `-`; at most 96 characters). Three, seven, or more
+conditions retain exactly the full case × seed × condition grid, bounded by
+100,000 planned slots. No arm is relabeled or dropped, even if it is absent from
+a requested contrast. The legacy `["baseline", "candidate"]` design without
+`contrasts` retains its version 1 `delta` output (candidate minus baseline).
+Other designs require explicit contrasts inside the frozen `statistics` plan:
+
+```json
+"conditions": ["control", "method_a", "method_b"],
+"statistics": {
+  "estimator": "mean", "interval": "sd", "paired": true,
+  "contrasts": [
+    {"id": "a_vs_control", "minuend": "method_a", "subtrahend": "control"},
+    {"id": "b_vs_a", "minuend": "method_b", "subtrahend": "method_a"}
+  ]
+}
+```
+
+Each contrast is `minuend minus subtrahend` after averaging the same planned
+seeds within each independent case. IDs and ordered pairs must be unique;
+unknown arms and self-comparisons fail. Version 2 statistics contain every
+condition, `condition_order`, `contrasts`, and `contrast_order`; each contrast
+has its mean, SD, SE, interval, case differences and adverse case IDs. There is
+no implicit primary contrast or overall winner. Explicit-contrast results must
+keep `outcome: "inconclusive"`; their values remain usable descriptive evidence.
+Intervals are not multiplicity-adjusted, confirmatory tests, or support for
+arbitrary statistical units. This capability does not establish scientific
+completion. Operational failures and unstarted slots remain recorded but block
+statistics; protocol-declared measurement failures retain the frozen penalty.
+The table reports every condition and contrast; figures plot every condition.
+Long condition labels still require visual review of the rendered deliverable.
+
 An experiment packet contains `design`, `results`, and `summary` paths. The
 summary is a nonempty readable Markdown file. The results file contains:
 
@@ -137,7 +170,9 @@ A write packet contains `manuscript` (TeX or Markdown), `assertions` (JSON), and
 ```
 
 Each assertion's exact text and each limitation must occur in the manuscript.
-`measure` is `baseline.mean`, `candidate.mean`, or `delta.mean`. Values, units,
+`measure` is `baseline.mean`, `candidate.mean`, or `delta.mean` for legacy designs.
+Named designs use `conditions.<condition-id>.mean` or
+`contrasts.<contrast-id>.mean`; only frozen, recomputed entries are admitted. Values, units,
 denominators, experiment claim IDs and conditions are cross-checked with raw
 statistics. Only `strength: descriptive` is automatically admissible. Unqualified
 universal, causal, or significant claims need a supported additional protocol;
