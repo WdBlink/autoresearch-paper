@@ -216,6 +216,10 @@ class Controller:
                 raise Refusal('Controller and latest durable checkpoint differ; recover before proceeding')
         if value.get('implementation_sha256') != self.implementation():
             raise Refusal('Execution code or stage knowledge changed; pin the old implementation or migrate explicitly')
+        if value.get('task_clock'):
+            for source in value['task_clock']['sources']:
+                if file_hash(safe(self.root, source['path'])) != source['sha256']:
+                    raise Refusal('Task clock snapshot changed; restore its original bytes')
         return value
 
     def implementation(self):
@@ -564,6 +568,49 @@ class Controller:
             raise Refusal('Known local WorkOrders remain executable; an external dependency cannot stop them')
         if status == 'stopped':
             state['task_stop'] = {'reason': 'budget_exhausted', 'meters': view['exhausted']}
+
+    def restore_task_clock(self, packet, op):
+        from .budget import task_started_at
+        with self.lock():
+            state = self.load()
+            if not isinstance(packet, dict) or set(packet) != {'snapshot', 'sha256'}:
+                raise Refusal('Task clock recovery needs snapshot and sha256')
+            request = {'command': 'restore-task-clock', 'packet': packet}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            path = safe(self.root, packet['snapshot'])
+            if file_hash(path) != packet['sha256']:
+                raise Refusal('Task clock snapshot hash differs')
+            prior = read_json(path)
+            if (not isinstance(prior, dict) or prior.get('schema_version') != 2 or not isinstance(prior.get('brief'), dict)
+                    or prior.get('brief_sha256') != digest(prior['brief'])
+                    or not isinstance(prior.get('usage_ledger'), dict)
+                    or not isinstance(prior.get('history'), list)):
+                raise Refusal('Task clock source must be a preserved schema2 controller snapshot')
+            for field in ('question', 'direction', 'paper_type', 'scope', 'deliverable_plan'):
+                if prior['brief'].get(field) != state['brief'].get(field):
+                    raise Refusal('Task clock snapshot belongs to a different task: ' + field)
+            try:
+                start = task_started_at(prior)
+                origin = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                created = datetime.fromisoformat(prior['created_at'].replace('Z', '+00:00'))
+                current = datetime.fromisoformat(task_started_at(state).replace('Z', '+00:00'))
+                if any(value.tzinfo is None for value in (origin, created, current)):
+                    raise ValueError('Timezone required')
+            except (KeyError, TypeError, ValueError, AttributeError) as error:
+                raise Refusal('Task clock needs timezone-aware controller timestamps') from error
+            if origin > datetime.now(timezone.utc) or created > datetime.now(timezone.utc):
+                raise Refusal('Task clock snapshot is in the future')
+            if origin > created or origin > current:
+                raise Refusal('Task clock recovery cannot move the task start later')
+            sources = list(state.get('task_clock', {}).get('sources', []))
+            source = {'path': packet['snapshot'], 'sha256': packet['sha256']}
+            if source not in sources:
+                sources.append(source)
+            state['task_clock'] = {'started_at': start, 'sources': sources}
+            return self.record(state, op, request, {'status': 'task_clock_restored',
+                'task_started_at': start, 'run_created_at': state['created_at'], 'source': source})
 
     def resume_task(self, human_response, op):
         from .user_input import check_human_response

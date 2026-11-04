@@ -56,8 +56,12 @@ def limits(brief):
     return quantities(brief.get('budget', {}), caps=True)
 
 
+def task_started_at(state):
+    return state.get('task_clock', {}).get('started_at', state['created_at'])
+
+
 def elapsed(state):
-    start = datetime.fromisoformat(state['created_at'].replace('Z', '+00:00'))
+    start = datetime.fromisoformat(task_started_at(state).replace('Z', '+00:00'))
     return max(0, (datetime.now(timezone.utc) - start).total_seconds() / 60)
 
 
@@ -130,7 +134,7 @@ def _summary(state):
     return {'limits': cap, 'known_usage': known, 'reserved': held, 'remaining': remaining,
             'unresolved_usage': unresolved, 'unknown_usage': unknown, 'unreported_fields': unreported,
             'incomplete_capped_usage': incomplete_caps,
-            'exhausted': exhausted, 'elapsed_task_minutes': duration,
+            'exhausted': exhausted, 'elapsed_task_minutes': duration, 'task_started_at': task_started_at(state),
             'new_local_work_allowed': 'minutes' not in exhausted and state.get('task_stop') is None,
             'scope': 'Explicitly registered research resource operations; no inferred host/model billing'}
 

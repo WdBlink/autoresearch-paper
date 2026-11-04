@@ -14,13 +14,31 @@ Every field is optional. `calls` and `tokens` are nonnegative integer caps for
 explicitly registered research resource operations. Zero permits no use of that
 meter. `cost` has a nonnegative plain decimal string and a three-letter uppercase
 currency. The controller does not price services or convert currencies.
-`minutes` is a positive, explicit task wall-time cap from run creation, including
-preparation, waiting and every host session. Omission imposes no time cap.
+`minutes` is a positive, explicit wall-time cap from the logical task start,
+including preparation, waiting and every host session. It defaults to the first
+run creation time. Omission imposes no time cap.
 
 `round_limits`, `resources.limits` and `resources.budget` are rejected for new
 runs. Resources describe hardware, access and authorization; they are not another
 limit configuration. The approved effective budget lives in the controller's
 Brief. Editing an input file does not amend that frozen state.
+
+## Preserve the task clock across explicit migrations
+
+Use `restore-task-clock --packet clock-source.json --operation-id ID` with
+`{snapshot, sha256}` naming a run-relative, byte-preserved schema2 controller
+snapshot. The source must have the same question, direction, paper type, scope
+and deliverable obligations as the current controller. Its Brief digest and file
+hash must match. The logical start may only stay equal or move earlier, never
+later or into the future. This updates internal clock provenance, not the public
+budget, scientific approval, usage ledger or software-run `created_at`.
+
+Budget elapsed time and the user budget question both show this logical start.
+Controllers without restored clock data retain the original creation-time
+behavior. The controller rechecks source hashes on load; preserve those files.
+Local hashes bind the supplied evidence, not an external attestation that an
+arbitrary snapshot is authentic. Use the actual archived predecessor and verify
+the preservation chain. This command restores no other migration state.
 
 ## Confirm or change a budget
 

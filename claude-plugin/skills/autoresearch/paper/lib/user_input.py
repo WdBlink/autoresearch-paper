@@ -88,7 +88,7 @@ def prepare(kind, packet, root, state):
         rows.append('比较来源 SHA-256：' + question['comparison_sha256'])
         question['summary'] = '\n'.join(rows)
     elif kind == 'budget':
-        from .budget import summary
+        from .budget import summary, task_started_at
         if set(packet) - {'budget', 'plan', 'reason', 'estimate'}:
             raise Refusal('Unknown budget question packet fields')
         proposal = copy.deepcopy(_object(packet.get('budget'), 'Proposed budget'))
@@ -117,8 +117,9 @@ def prepare(kind, packet, root, state):
                         fields={'calls': 'Explicit research resource calls, an integer count.',
                                 'tokens': 'Tokens covered by the research resource ledger, an integer count.',
                                 'cost': {'amount': 'Decimal string', 'currency': 'Three uppercase letters'},
-                                'minutes': 'Wall-clock minutes since the run was created, including waiting and all host sessions.'},
-                        time_scope={'origin': 'run.created_at', 'created_at': state.get('created_at'),
+                                'minutes': 'Wall-clock minutes since the logical task started, including waiting and all host sessions.'},
+                        time_scope={'origin': 'task_clock.started_at' if state.get('task_clock') else 'run.created_at',
+                                    'started_at': task_started_at(state), 'created_at': state.get('created_at'),
                                     'includes_waiting': True, 'cross_session': True},
                         checkpoint={'minutes': 30, 'is_task_limit': False},
                         options=[{'id': 'default', 'label': '默认预算，无隐含任务总上限', 'budget': {}},
@@ -137,7 +138,7 @@ def prepare(kind, packet, root, state):
                 '默认预算：{}，无隐含任务总上限。',
                 '默认值不新增付费服务或算力授权；执行仍须符合实际用户授权。',
                 '可选字段与单位：calls 为显式科研资源调用次数；tokens 为账本覆盖的 token 数；cost.amount 为十进制字符串，cost.currency 为三位大写币种；minutes 为任务墙钟分钟。',
-                '时间范围：从 run.created_at=' + str(state.get('created_at')) + ' 起，累计跨宿主会话并包含等待。30 分钟仅为检查点提示。',
+                '时间范围：从 task_started_at=' + task_started_at(state) + ' 起，累计跨宿主会话并包含等待。30 分钟仅为检查点提示。',
                 '理由：' + reason,
                 '计划：' + plan['path'] + '，SHA-256=' + plan['sha256']]
         if estimate:
