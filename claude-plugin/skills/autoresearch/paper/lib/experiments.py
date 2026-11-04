@@ -21,11 +21,14 @@ class MeasurementFailure(Exception):
 
 
 class ExperimentRecorder:
-    def __init__(self, root, design='experiment/design.json', results='experiment/results.json', raw_directory='experiment/raw'):
+    def __init__(self, root, design='experiment/design.json', results='experiment/results.json', raw_directory='experiment/raw', *, design_id=None):
         self.root = Path(root).resolve()
         self.design_path, self.results_path = design, results
         self.design = _design(self.root, design)
         self.design_sha256 = file_hash(safe(self.root, design))
+        self.design_id = design_id
+        if design_id is not None:
+            require(design_id == self.design['experiment_id'], 'Recorder design identity mismatch')
         self.started_at = now()
         self.raw_directory = raw_directory
         require(not safe(self.root, results, output=True).exists(), 'Preserve existing experiment results; use a new version')
@@ -59,6 +62,8 @@ class ExperimentRecorder:
         require(identity in self.grid and identity not in self.rows, 'Unplanned or duplicate attempt')
         case, seed, condition = identity
         record = {'case_id': case, 'seed': seed, 'condition': condition, 'status': status, 'value': value, **fields}
+        if self.design_id is not None:
+            record.update(design_id=self.design_id, design_sha256=self.design_sha256)
         name = f'{self.raw_directory}/{case}-{condition}-{seed}.json'
         # An old raw record must never be overwritten by a rerun with the same identity.
         require(not safe(self.root, name, output=True).exists(), 'Raw attempt already exists: ' + name)
@@ -103,6 +108,8 @@ class ExperimentRecorder:
                     'finished_at': now(), 'reported_denominator': len(self.grid),
                     'attempted_count': sum(row.get('attempted', True) for row in self.rows.values()),
                     'execution_status': execution_status, 'outcome': outcome, 'runs': [self.rows[key] for key in self.grid]}
+        if self.design_id is not None:
+            document['design_id'] = self.design_id
         write_once(self.root, self.results_path, json_bytes(document))
         return document
 
@@ -128,6 +135,12 @@ def template(packet, root, package):
     """Emit only the stable recording envelope; the scientific operation is input."""
     design = packet.get('design', 'experiment/design.json')
     _design(root, design)
+    results = packet.get('results', 'experiment/results.json')
+    raw_directory = packet.get('raw_directory', 'experiment/raw')
+    design_id = packet.get('design_id')
+    safe(root, results, output=True)
+    safe(root, raw_directory + '/probe.json', output=True)
+    require(design_id is None or design_id == _design(root, design)['experiment_id'], 'Template design identity mismatch')
     text = f'''# Generated recording envelope. Fill the scientific operation before freezing.
 import os
 import sys
@@ -137,7 +150,7 @@ from lib.experiments import ExperimentRecorder
 
 def run(root, measure):
     # measure(case_id, seed, condition) must implement the approved experiment.
-    with ExperimentRecorder(root, design={design!r}) as records:
+    with ExperimentRecorder(root, design={design!r}, results={results!r}, raw_directory={raw_directory!r}, design_id={design_id!r}) as records:
         for case_id, seed, condition in records.grid:
             with records.attempt(case_id, seed, condition) as complete:
                 value, evidence = measure(case_id, seed, condition)

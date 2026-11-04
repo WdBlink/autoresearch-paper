@@ -119,6 +119,25 @@ The argument refers to Fig~\ref{plot:flow}.
         before,after=science.publication_bounds('2011')
         self.assertEqual(2011,before.year);self.assertEqual(2011,after.year)
 
+    def test_public_design_check_needs_no_ledger_and_does_not_approve_science(self):
+        candidate = design()
+        candidate.update(protocol='paired_case_mean')
+        put(self.root, 'design.json', candidate)
+        packet = {'artifacts':['design.json'], 'experiment_designs':[{
+            'id':candidate['experiment_id'], 'path':'design.json',
+            'sha256':file_hash(self.root/'design.json'), 'protocol':'paired_case_mean',
+            'claim_ids':[candidate['claim_id']]}]}
+        put(self.root, 'check.json', packet)
+        result, report = self.cli('artifact','--name','experiment-design-check','--packet','check.json')
+        self.assertEqual(0, result.returncode, report)
+        self.assertEqual('pass', report['status'])
+        self.assertFalse(report['execution_authorized'])
+        self.assertFalse((self.root/'.paper').exists())
+        packet['experiment_designs'][0]['protocol']='local_response_identification'
+        report=production.run('experiment-design-check',packet,self.root)
+        self.assertEqual('fail',report['status'])
+        self.assertIn('unsupported', report['issues'][0])
+
     def test_missing_dependencies_are_not_available(self):
         value=production.run('environment',{'dependencies':['autoresearch-nonexistent-unit-test-package']},self.root)
         self.assertEqual('missing_dependencies',value['status'])

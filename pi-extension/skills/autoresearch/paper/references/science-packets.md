@@ -301,3 +301,66 @@ covering every other completion-role artifact. Every entry must resolve and
 match its current bytes; snapshot inventories do not replace the artifacts.
 The controller still verifies independent review, actual compilation, R6,
 quality gates, final binding freshness, and clean-package rebuilding.
+
+## Independent designs in one workflow
+
+A plan may replace the legacy `experiment_design_sha256` with
+`experiment_designs`. Do not supply both forms. Each entry has exactly:
+
+```json
+{"id":"online","path":"online/design.json","sha256":"<design-byte-sha256>",
+ "protocol":"paired_case_mean","claim_ids":["C-online"]}
+```
+
+Design IDs and physical paths are unique. The referenced design is a normal
+paired-case design with `experiment_id` matching `id`, `protocol` matching the
+registry, and `claim_id` matching the single element of `claim_ids`. This first
+protocol supports one measured claim per design, not cross-design synthesis.
+Plan acceptance validates and freezes every design. Unknown explicit protocols
+are refused by the shared design reader, including state-free statistics and
+experiment-template tools; absent protocol remains valid for legacy designs. In particular, nested checkpoint/trajectory analyses, local derivative
+identification, and causal or confirmatory inference are not implemented by
+renaming their units to `case`.
+
+The experiment packet replaces its legacy design/results/summary fields with
+`experiments: [{"design_id":"online","results":"online/results.json",
+"summary":"online/summary.md"}]`. Each registered design must occur exactly
+once. Use `ExperimentRecorder(root, design=..., results=...,
+raw_directory=..., design_id="online")`; independent result and raw paths are
+required. New-format results and every raw record carry the originating design
+identity; raw records additionally carry the frozen design hash. Existing
+recorder calls remain legacy-compatible. `experiment-template` accepts the same
+optional `results`, `raw_directory`, and `design_id` parameters.
+
+The figures packet replaces its legacy top-level evidence fields with
+`evidence_sets`, each containing exactly `id`, `design_id`, `results`,
+`statistics`, `table`, `figure`, `trace`, and `caption`. Evidence-set IDs and
+rendered artifact paths are unique. Every registered design must be covered;
+multiple separate views of one design are permitted. Each results path must
+match that design's accepted experiment entry, and every figure set retains
+independent raw-to-statistics and deterministic-render checks. The state-free
+`artifact --name statistics` tool renders one set at a time; rendering does
+not itself accept a workflow stage.
+
+Numerical writing assertions additionally specify `design_id` and
+`evidence_set_id`. They must reference the exact accepted set's statistics,
+registered claim, metric unit, case denominator and supported descriptive
+measure. Different designs may share a claim identifier but cannot borrow each
+other's evidence identity. Source claims retain their existing citation path.
+Legacy and collection fields must not be mixed within an evidence packet or
+numerical assertion.
+
+The controller still owns one receipt per stage. Collection validation occurs
+inside that receipt and preserves the existing freeze/rewind/artifact-hash
+rules. Separate designs are never concatenated into a common mean or
+uncertainty estimate. A combined illustration must preserve each evidence
+set's own unit, denominator, conditions, and descriptive scope; a new synthesis
+estimator requires a separately supported frozen protocol.
+
+Before plan acceptance, the public state-free CLI can preflight actual design
+contracts without initializing a controller or granting resource permission:
+`artifact --name experiment-design-check --packet PATH --out REPORT`.
+The packet supplies `experiment_designs` (or the legacy hash) and bound artifacts.
+This is the same design validator used at plan commit; it does not certify
+independence, scientific validity, final WorkOrder coverage or execution readiness.
+Unsupported identification or nested-data protocols remain explicit failures.

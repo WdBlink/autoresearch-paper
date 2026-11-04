@@ -111,7 +111,7 @@ Record the checkpoint and continue available authorized work. Keep internal
 implementation failures active. Scoped external blockers cannot stop independent
 local work. Only a source-bound user stop or a program-verified task-budget cause
 can record `stopped`; neither grants completion. There is no background scheduler:
-the current host continues after the checkpoint or truthfully records a handoff.
+the current host continues after the checkpoint.
 
 Use `tool --name venue-compare`, `venue-design-template`, `venue-calibrate`,
 `plan-snapshot`, `plan-audit` and `citation-check` for mechanical work. Exact
@@ -123,6 +123,33 @@ non-empirical reviews/surveys, retain a reasoned experiment/G2 inapplicability
 and use verified source claims and evidence diagrams without invented data.
 To share a preliminary PDF, use `draft-preview`; it marks DRAFT and reports
 the current incomplete requirements and blockers, without completing the run.
+
+## Continue the original task before ending a host turn
+
+An `active` checkpoint is a saved continuation point, not permission to finish a
+host turn. A short user reply about Chrome, authentication, foreground access or
+another prerequisite steers the existing research task; it does not replace the
+original objective. Venue and budget replies also steer that original request.
+After saving a checkpoint, continue the next available
+internal implementation, scientific preparation or verification step.
+
+Before a final reply, reconcile the original full objective against the actual
+finalizer and every remaining obligation. If required external input is missing,
+prepare its concrete proposal and actually ask through the host user-input tool.
+Do not leave an unasked budget, model/resource question or authorization as a
+reported blocker. Ask a concrete conditional budget while independent adapter
+work continues; approval does not waive the stated execution prerequisites.
+
+End the host turn only after verified scientific finalization, a genuine user
+pause/stop, a program-verified hard task-budget stop, or a necessary external
+question that was actually asked when no independent authorized work remains.
+Internal implementation gaps remain work. `checkpoint.continuation` makes this
+host action explicit; it cannot attest that the host displayed a question or
+find work that the host has not registered. A pending question, active status or
+list of remaining tasks is not by itself a global handoff. Record the actual
+pending question or external failure, checkpoint and next action. Report any
+host-enforced interruption truthfully; do not invent a research budget. No
+background scheduler is implied by an active checkpoint.
 
 ## Iterate, recover and escape a plateau
 

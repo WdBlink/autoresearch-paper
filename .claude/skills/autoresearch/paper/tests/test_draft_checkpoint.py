@@ -56,6 +56,8 @@ class DraftCheckpointTests(unittest.TestCase):
                 self.assertIsNone(after['active_round'])
                 self.assertIsNone(after['pending_round'])
                 self.assertEqual('active', after['last_round_status'])
+                self.assertFalse(result['checkpoint']['continuation']['host_turn_end_allowed'])
+                self.assertEqual('continue_authorized_work', result['checkpoint']['continuation']['action'])
 
     def test_draft_empty_checkpoint_does_not_require_final_brief(self):
         self.initialize()

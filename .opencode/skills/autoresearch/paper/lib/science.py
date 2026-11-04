@@ -125,6 +125,8 @@ def _bound(packet, path):
 
 def _design(root, path):
     design = _mapping(strict_json(root, path), "experiment design")
+    _require("protocol" not in design or design["protocol"] == "paired_case_mean",
+             "unsupported scientific protocol")
     for field in ("experiment_id", "claim_id", "hypothesis", "independent_variable",
                   "dependent_variable"):
         _text(design.get(field), field)
@@ -191,6 +193,8 @@ def _experiment(root, design_path, results_path, frozen_hash=None):
     if frozen_hash is not None:
         _require(design_hash == frozen_hash, "experiment design differs from the frozen plan")
     results = _mapping(strict_json(root, results_path), "experiment results")
+    if "design_id" in results:
+        _require(results["design_id"] == design["experiment_id"], "result design identity mismatch")
     _require(results.get('execution_status', 'completed') == 'completed',
              'operation failures cannot become scientific measurements, including errors after the last score')
     _require(results.get("design") == design_path, "result design path mismatch")
@@ -231,6 +235,9 @@ def _experiment(root, design_path, results_path, frozen_hash=None):
         _require(raw_path not in seen_raw, "each run needs its own raw record")
         seen_raw.add(raw_path)
         raw = _mapping(strict_json(root, raw_path), "raw record")
+        if "design_id" in results:
+            _require(raw.get("design_id") == results["design_id"] and raw.get("design_sha256") == design_hash,
+                     "raw design identity/hash mismatch")
         _require(type(raw.get("seed")) is int, "raw seed must be an integer")
         if row["status"] == "completed":
             _number(raw.get("value"), "raw measurement")
@@ -797,6 +804,13 @@ def _cited_keys(text):
     return keys
 
 
+def _derived_tables(packet):
+    figures = packet.get("_history", {}).get("figures", {})
+    if "evidence_sets" in figures:
+        return {row["table"] for row in figures["evidence_sets"]}
+    return {figures["table"]} if figures.get("table") else set()
+
+
 def _sections(packet, root, sources, assertions, citation_state):
     sections = _list(packet.get("section_packets"), "section_packets")
     claim_ids = {record["claim_id"] for record in assertions}
@@ -834,8 +848,7 @@ def _sections(packet, root, sources, assertions, citation_state):
                      "new generated TeX above 300 lines lacks a preserved large baseline")
             _require(len(_read(root, baseline["path"]).decode("utf-8").splitlines()) > 300,
                      "large-source exception baseline was not already large")
-    derived_table = packet.get("_history", {}).get("figures", {}).get("table")
-    authored_sources = set(sources) - {derived_table}
+    authored_sources = set(sources) - _derived_tables(packet)
     _require(authored_sources <= seen_paths, "included manuscript sections lack section packets")
     for path, content in sources.items():
         if path.endswith(".tex") and len(content.splitlines()) > 300 and path not in seen_paths:
@@ -935,7 +948,7 @@ def _validate_delivery(packet, root):
             snapshotted.add(name)
     _require(required <= snapshotted, "version snapshot omits completion artifacts")
     _require(all(name in completion["source"] for name in _source_bundle({**packet, "manuscript": write["manuscript"]}, root)
-                 if name != packet.get("_history", {}).get("figures", {}).get("table")),
+                 if name not in _derived_tables(packet)),
              "source completion omits an included manuscript section")
 
 
@@ -1000,7 +1013,115 @@ def _validate_literature(packet, root):
     _citation_state(packet, root)
 
 
+def _design_registry(plan, packet, root):
+    """Resolve the frozen registry; each entry is a separate statistical population."""
+    _require("experiment_design_sha256" not in plan, "cannot mix legacy and multiple designs")
+    entries = _list(plan.get("experiment_designs"), "experiment_designs")
+    registry, paths = {}, set()
+    for entry in entries:
+        _mapping(entry, "design registry entry")
+        _require(set(entry) == {"id", "path", "sha256", "protocol", "claim_ids"}, "invalid design registry fields")
+        identity = _text(entry.get("id"), "design ID")
+        _require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", identity), "invalid design ID")
+        path = _bound(packet, entry.get("path"))
+        _require(identity not in registry and _path(root, path).resolve() not in paths, "duplicate design ID or path")
+        _require(entry.get("protocol") == "paired_case_mean", "unsupported scientific protocol")
+        _require(entry.get("sha256") == _sha(_read(root, path)), "registered design hash mismatch")
+        claims = _list(entry.get("claim_ids"), "design claim IDs")
+        for claim in claims:
+            _text(claim, "claim ID")
+        _require(len(claims) == len(set(claims)), "duplicate design claim ID")
+        design = _design(root, path)
+        _require(design["experiment_id"] == identity, "registered experiment identity mismatch")
+        _require(design.get("protocol") == entry["protocol"], "design protocol mismatch")
+        # This protocol has one measured claim; multi-claim synthesis needs a separate protocol.
+        _require(claims == [design["claim_id"]], "registered claim identity mismatch")
+        registry[identity] = entry
+        paths.add(_path(root, path).resolve())
+    return registry
+
+
+def _validate_plan(packet, root):
+    if "experiment_designs" in packet:
+        _design_registry(packet, packet, root)
+    elif "experiment_design_sha256" in packet:
+        frozen = packet["experiment_design_sha256"]
+        _require(isinstance(frozen, str) and re.fullmatch(r"[0-9a-f]{64}", frozen), "invalid frozen design hash")
+        matches = [path for path in packet.get("artifacts", []) if _sha(_read(root, path)) == frozen]
+        _require(len(matches) == 1, "frozen design must identify one bound artifact")
+        _design(root, matches[0])
+    else:
+        _require(packet.get("_brief", {}).get("paper_type") != "original", "empirical plan needs a frozen experiment design")
+
+
+def _collection(packet, key, registry):
+    legacy = {"design", "results", "summary"} if key == "experiments" else {"design", "results", "statistics", "table", "figure", "trace", "caption"}
+    _require(not legacy.intersection(packet), "cannot mix legacy and collection evidence")
+    rows = _list(packet.get(key), key)
+    seen, identities = set(), set()
+    for row in rows:
+        _mapping(row, key + " entry")
+        design_id = _text(row.get("design_id"), "evidence design ID")
+        _require(design_id in registry, "unregistered evidence design")
+        if key == "experiments":
+            _require(set(row) == {"design_id", "results", "summary"}, "invalid experiment entry fields")
+            _require(design_id not in seen, "duplicate experiment design")
+        else:
+            _require(set(row) == {"id", "design_id", "results", "statistics", "table", "figure", "trace", "caption"}, "invalid evidence set fields")
+            identity = _text(row.get("id"), "evidence set ID")
+            _require(identity not in identities, "duplicate evidence set ID")
+            identities.add(identity)
+        seen.add(design_id)
+    _require(seen == set(registry), "evidence omits registered designs")
+    return rows
+
+
+def _single_packet(packet, entry, row):
+    return {**packet, **row, "design": entry["path"],
+            "_plan": {"experiment_design_sha256": entry["sha256"]}}
+
+
 def _validate_experiment(packet, root):
+    plan = _mapping(packet.get("_plan"), "frozen plan")
+    if "experiment_designs" not in plan:
+        _require("experiments" not in packet, "multiple experiments need a frozen registry")
+        return _validate_single_experiment(packet, root)
+    registry = _design_registry(plan, packet, root)
+    owners = {}
+    for row in _collection(packet, "experiments", registry):
+        entry = registry[row["design_id"]]
+        results = _mapping(strict_json(root, row["results"]), "experiment results")
+        _require(results.get("design_id") == entry["id"], "result design identity mismatch")
+        for path in [row["results"], row["summary"], *[run["raw"] for run in results.get("runs", [])]]:
+            resolved = _path(root, path).resolve()
+            _require(resolved not in owners, "cross-design evidence path reuse")
+            owners[resolved] = entry["id"]
+        _validate_single_experiment(_single_packet(packet, entry, row), root)
+
+
+def _validate_figures(packet, root):
+    plan = _mapping(packet.get("_plan", {}), "frozen plan")
+    if "experiment_designs" not in plan:
+        _require("evidence_sets" not in packet, "multiple evidence sets need a frozen registry")
+        return _validate_single_figures(packet, root)
+    _require(packet.get("mode", "statistics") == "statistics", "multiple designs require statistical evidence sets")
+    registry = _design_registry(plan, packet, root)
+    accepted = _mapping(packet.get("_history", {}).get("experiment"), "accepted experiment packet")
+    # Revalidate all accepted measurements, including design identity on every raw record.
+    _validate_experiment({**accepted, "_plan": plan, "_history": packet.get("_history", {})}, root)
+    experiments = {row["design_id"]: row for row in _collection(accepted, "experiments", registry)}
+    paths = set()
+    for row in _collection(packet, "evidence_sets", registry):
+        entry = registry[row["design_id"]]
+        _require(row["results"] == experiments[entry["id"]]["results"], "figures do not use accepted experiment results")
+        for key in ("statistics", "table", "figure", "trace"):
+            resolved = _path(root, row[key]).resolve()
+            _require(resolved not in paths, "duplicate evidence set artifact")
+            paths.add(resolved)
+        _validate_single_figures(_single_packet(packet, entry, row), root)
+
+
+def _validate_single_experiment(packet, root):
     design_path = _bound(packet, packet.get("design"))
     results_path = _bound(packet, packet.get("results"))
     frozen = _mapping(packet.get("_plan"), "frozen plan").get("experiment_design_sha256")
@@ -1017,7 +1138,7 @@ def _validate_experiment(packet, root):
     _statistics(root, design_path, results_path, frozen)
 
 
-def _validate_figures(packet, root):
+def _validate_single_figures(packet, root):
     if packet.get("mode") == "evidence_diagram":
         _validate_diagram(packet, root)
         return
@@ -1065,8 +1186,21 @@ def _validate_write(packet, root):
         stats_path = _bound(packet, record.get("statistics"))
         stats = _mapping(strict_json(root, stats_path), "assertion statistics")
         figures = packet.get("_history", {}).get("figures", {})
+        plan = _mapping(packet.get("_plan"), "frozen plan")
+        if "experiment_designs" in plan:
+            registry = _design_registry(plan, packet, root)
+            _validate_figures({**figures, "_plan": plan, "_history": packet.get("_history", {})}, root)
+            sets = {row["id"]: row for row in figures["evidence_sets"]}
+            evidence = sets.get(record.get("evidence_set_id"))
+            _require(evidence is not None and record.get("design_id") == evidence["design_id"], "assertion evidence/design identity mismatch")
+            entry = registry[evidence["design_id"]]
+            _require(record.get("claim_id") in entry["claim_ids"], "assertion registered claim mismatch")
+            figures = {**evidence, "design": entry["path"]}
+            frozen = entry["sha256"]
+        else:
+            _require("design_id" not in record and "evidence_set_id" not in record, "cannot mix legacy and collection assertions")
+            frozen = plan.get("experiment_design_sha256")
         _require(figures.get("statistics") == stats_path, "assertion does not use accepted figure statistics")
-        frozen = _mapping(packet.get("_plan"), "frozen plan").get("experiment_design_sha256")
         _require(isinstance(frozen, str) and len(frozen) == 64, "writing needs frozen design")
         computed = _statistics(root, figures.get("design"), figures.get("results"), frozen)
         _require(_canonical(computed) == _canonical(stats), "writing statistics differ from raw evidence")
@@ -1123,7 +1257,7 @@ def _validate_write(packet, root):
 
 def validate(stage: str, packet: dict, root: Path) -> list[str]:
     """Return blocking issues, without modifying research state or invoking models."""
-    validator = {"literature": _validate_literature, "experiment": _validate_experiment,
+    validator = {"plan": _validate_plan, "literature": _validate_literature, "experiment": _validate_experiment,
                  "figures": _validate_figures, "write": _validate_write, "delivery": _validate_delivery}.get(stage)
     if validator is None:
         return []

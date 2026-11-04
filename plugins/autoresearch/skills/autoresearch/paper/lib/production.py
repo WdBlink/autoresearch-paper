@@ -487,9 +487,21 @@ def revision_record(packet, root):
     return observed(root, [packet['target']], changes=len(records))
 
 
+def experiment_design_check(packet, root):
+    """Validate only design contracts; no approval, execution or readiness inference."""
+    from .science import validate
+    require(('experiment_designs' in packet) != ('experiment_design_sha256' in packet),
+            'Supply exactly one registry or legacy frozen design contract')
+    issues = validate('plan', packet, root)
+    return {'status': 'fail' if issues else 'pass', 'issues': issues,
+            'scope': 'Design schema, supported protocol, artifact identity and binding only',
+            'scientific_readiness': 'not_certified', 'execution_authorized': False,
+            'design_count': len(packet.get('experiment_designs', [])) if 'experiment_designs' in packet else 1}
+
+
 TOOLS = {'environment': environment, 'source-fetch': fetch_sources, 'reading-index': reading_index,
          'image-export': export_image, 'tex-prepare': prepare_tex, 'pdf-inspect': inspect_pdf, 'bibliography': bibliography,
-         'revision-record': revision_record}
+         'revision-record': revision_record, 'experiment-design-check': experiment_design_check}
 
 
 def run(name, packet, root):

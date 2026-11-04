@@ -41,6 +41,29 @@ def workload(root, before):
             'guidance': 'Inspect substantial changes and preserve evidence; file counts and line lengths do not stop the task'}
 
 
+def continuation(state):
+    """Describe the host action; a checkpoint receipt never grants completion."""
+    pending = [kind for kind, entry in state.get('user_questions', {}).items()
+               if entry.get('status') == 'needs_input']
+    if state.get('delivery'):
+        action, allowed = 'verify_delivery_then_report', True
+    elif state.get('task_stop'):
+        action, allowed = 'report_source_bound_stop_without_claiming_completion', True
+    elif state.get('last_round_status') == 'needs_input':
+        action, allowed = 'verify_actual_external_handoff', None
+    else:
+        action, allowed = 'continue_authorized_work', False
+    return {'action': action, 'host_turn_end_allowed': allowed,
+            'pending_question_kinds': sorted(pending),
+            'host_checks': [
+                'Preserve the original full objective; a foreground-access reply does not replace it',
+                'Actually present necessary questions through the host user-input tool; prepared questions are not asked questions',
+                'Continue independent internal work while external answers are pending',
+                'Only hand off for required external input after it was asked and no independent authorized work remains',
+            ],
+            'limits': 'The controller cannot attest host question presentation or discover unregistered local work. A saved active checkpoint requires continuation, not a final reply.'}
+
+
 def checkpoint(state):
     start = state.get('last_checkpoint_at', state['created_at'])
     elapsed = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(start.replace('Z', '+00:00'))).total_seconds() / 60)
@@ -54,4 +77,4 @@ def checkpoint(state):
     return {'due': elapsed >= CHECKPOINT_MINUTES, 'interval_minutes': CHECKPOINT_MINUTES,
             'minutes_since_checkpoint': elapsed, 'attention_required': state['stale_count'] >= 4,
             'advice': advice, 'action': 'Save an evidence-bound checkpoint, then continue authorized available work',
-            'terminal': False}
+            'terminal': False, 'continuation': continuation(state)}

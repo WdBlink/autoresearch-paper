@@ -114,6 +114,16 @@ counts likewise request review or a different approach. They are not budgets or
 scientific acceptance. The host saves the checkpoint and continues available
 authorized work; the package does not start a background scheduler.
 
+Before ending a host turn, compare the original full objective with the actual
+finalizer result and remaining obligations. An active checkpoint requires another
+available work step. Budget/model/resource questions must be actually presented
+through the host input tool, not merely generated or listed as future blockers.
+A concrete conditional budget may be asked while independent engineering continues;
+a real answer cannot waive its execution prerequisites. A global external handoff
+requires both an actually asked necessary question and no independent authorized
+work. `checkpoint.continuation` exposes this distinction; local state cannot
+prove host presentation or discover unregistered work.
+
 `active` records progress or a checkpoint. Internal implementation work stays
 active. `needs_input` requires structured external blockers with `kind`, `reason`
 and affected `requirement_ids`. Allowed kinds are `input`, `authorization`,

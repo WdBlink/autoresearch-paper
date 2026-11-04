@@ -49,6 +49,13 @@ dependencies. A stopped checkpoint requires an actual user stop or a verified
 task-budget reason. Full completion still belongs to the original finalizer.
 Read `paper/references/budget.md` for resource admission and recovery.
 
+An `active` checkpoint preserves a continuation point. Keep working on the next
+executable part of the original research request. Replies about venue, budget or
+browser availability steer that same request; completing that intermediate step
+does not finish it. Before ending a host turn, apply the continuation and handoff
+conditions in the main command. Required user choices must actually be asked
+through the host's user-input interface before they can justify waiting.
+
 Use the stage's `production_steps` and `paper/references/production.md` for
 provided acquisition, recording, render/export, source variants and review
 assembly. The main CLI owns path resolution, round-request persistence and
