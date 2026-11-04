@@ -405,6 +405,120 @@ class PlanningPdfTests(unittest.TestCase):
         self.assertFalse(computed['venue_profile']['sampling_policy']['budget_is_reference_only'])
         self.assertIsNone(computed['venue_profile']['sampling_policy']['count_deviation_reason'])
 
+    def add_rendered_visual_fixture(self):
+        source = self.root / 'sample.tex'
+        source.write_text(source.read_text().replace(r'\end{document}', r"""
+\noindent Figure A1 Appendix diagram without caption delimiter.
+\end{document}
+"""))
+        subprocess.run(['pdflatex', '-interaction=nonstopmode', '-halt-on-error', source.name],
+                       cwd=self.root, capture_output=True, check=True, timeout=60)
+        subprocess.run(['pdftoppm', '-f', '1', '-singlefile', '-scale-to', '600', '-png',
+                        str(self.root / 'sample.pdf'), str(self.root / 'page')],
+                       capture_output=True, check=True, timeout=60)
+        self.packet['artifacts'].append('page.png')
+        sample = self.packet['samples'][0]
+        sample['measurement_additions'] = [{'kind': 'figures', 'number': 'A1', 'page': 1,
+            'caption': 'Figure A1 Appendix diagram without caption delimiter.',
+            'reason': 'Synthetic fixture caption has no delimiter and is omitted by text extraction.',
+            'pdf_sha256': sha(self.root / 'sample.pdf'),
+            'rendered_evidence': {'path': 'page.png', 'sha256': sha(self.root / 'page.png')}, 'panels': []}]
+        template = venue_tools.design_template(self.packet, self.root)['papers']['S1']
+        original = deepcopy(sample['design'])
+        for plural in ('figures', 'tables'):
+            for row in template[plural]:
+                for key in ('type', 'placement', 'question', 'claim', 'evidence', 'design_takeaway', 'limitations'):
+                    row[key] = original[plural][0][key]
+        sample['design'] = {key: template[key] for key in ('figures', 'tables')}
+        return sample
+
+    def test_rendered_omissions_preserve_raw_and_enter_calibration_index(self):
+        from lib import production
+        sample = self.add_rendered_visual_fixture()
+        computed = planning.calibrate(self.packet, self.root)
+        measured = computed['measurements'][0]
+        self.assertEqual(1, measured['raw_extraction']['counts']['figures'])
+        self.assertEqual(2, measured['counts']['figures'])
+        self.assertEqual('host_rendered_reading', measured['figures'][1]['measurement_origin'])
+        self.assertEqual(sample['measurement_additions'], measured['measurement_additions'])
+        row = sample['design']['figures'][1]
+        row.update(observed_page=1, observed_caption=row['caption'], caption_measurement_note='Manual omission retained separately.')
+        result = production.reading_index({'samples': [sample], 'target': 'added-reading.md'}, self.root)
+        self.assertEqual(2, result['counts']['figures'])
+        text = (self.root / 'added-reading.md').read_text()
+        self.assertIn('S1-FA1 (figure)', text)
+        self.assertIn('Observed PDF page 1', text)
+        self.assertIn('Manual omission retained separately.', text)
+        sample['design']['figures'].pop()
+        with self.assertRaisesRegex(planning.PlanningError, 'cover every measured'):
+            planning.calibrate(self.packet, self.root)
+
+    def test_rendered_omissions_require_bound_images_pdf_and_read_pages(self):
+        sample = self.add_rendered_visual_fixture()
+        base = deepcopy(sample)
+        mutations = [{'pdf_sha256': '0'*64}, {'number': 1}, {'number': True}, {'number': 'a1'},
+                     {'page': 2}, {'page': 0}, {'kind': 'unknown'}, {'caption': ''}, {'reason': ''},
+                     {'rendered_evidence': {'path': 'page.png', 'sha256': '0'*64}},
+                     {'rendered_evidence': {'path': 'rules.md', 'sha256': sha(self.root / 'rules.md')}},
+                     {'panels': ['a', 'a']}]
+        for change in mutations:
+            trial=deepcopy(base);trial['measurement_additions'][0].update(change)
+            with self.subTest(change=change), self.assertRaises(planning.PlanningError):
+                venue_tools.measure_sample(trial, self.root, self.packet)
+        trial=deepcopy(base);trial['visual_read']['pages']=[]
+        with self.assertRaises(planning.PlanningError): venue_tools.measure_sample(trial, self.root, self.packet)
+        trial=deepcopy(base);trial['measurement_additions']*=2
+        with self.assertRaises(planning.PlanningError): venue_tools.measure_sample(trial, self.root, self.packet)
+        self.packet['artifacts'].remove('page.png')
+        with self.assertRaises(planning.PlanningError): venue_tools.measure_sample(base, self.root, self.packet)
+
+    def test_rendered_correction_binds_original_and_preserves_raw(self):
+        sample = self.add_rendered_visual_fixture()
+        raw = planning.venue_profile.measure_pdf(self.root / 'sample.pdf')
+        correction = deepcopy(sample['measurement_additions'][0])
+        correction.update(number=1, caption=raw['figures'][0]['caption'],
+                          expected_raw={key: raw['figures'][0][key] for key in ('page', 'caption')})
+        sample['measurement_corrections'] = [correction]
+        measured = venue_tools.measure_sample(sample, self.root, self.packet)
+        self.assertEqual(raw, measured['raw_extraction'])
+        self.assertEqual([1, 'A1'], [row['number'] for row in measured['figures']])
+        self.assertEqual('host_rendered_reading', measured['figures'][0]['measurement_origin'])
+        self.assertEqual([correction], measured['measurement_corrections'])
+        for change in ({'expected_raw': {}}, {'number': 2}, {'page': 2}):
+            trial=deepcopy(sample);trial['measurement_corrections'][0].update(change)
+            with self.subTest(change=change), self.assertRaises(planning.PlanningError):
+                venue_tools.measure_sample(trial, self.root, self.packet)
+        sample['measurement_corrections'] *= 2
+        with self.assertRaisesRegex(planning.PlanningError, 'Duplicate manual'):
+            venue_tools.measure_sample(sample, self.root, self.packet)
+
+    def test_letter_prefixed_pdf_calibrates_and_appears_in_reading_index(self):
+        from lib import production
+        source = self.root / 'sample.tex'
+        source.write_text(source.read_text().replace(r'\end{document}', r"""
+\noindent Figure A1: Appendix comparison under fixed test conditions.
+
+\noindent Table S1: Supplementary results including all recorded failures.
+\end{document}
+"""))
+        subprocess.run(['pdflatex', '-interaction=nonstopmode', '-halt-on-error', source.name],
+                       cwd=self.root, capture_output=True, check=True, timeout=60)
+        design = venue_tools.design_template(self.packet, self.root)['papers']['S1']
+        for plural in ('figures', 'tables'):
+            semantics = self.packet['samples'][0]['design'][plural][0]
+            for row in design[plural]:
+                for key in ('type', 'placement', 'question', 'claim', 'evidence', 'design_takeaway', 'limitations'):
+                    row[key] = semantics[key]
+        self.packet['samples'][0]['design'] = {key: design[key] for key in ('figures', 'tables')}
+        computed = planning.calibrate(self.packet, self.root)
+        self.assertEqual([1, 'A1'], [row['number'] for row in computed['measurements'][0]['figures']])
+        self.assertEqual([1, 'S1'], [row['number'] for row in computed['venue_profile']['visual_designs']['S1']['tables']])
+        result = production.reading_index({'samples': self.packet['samples'], 'target': 'reading.md'}, self.root)
+        self.assertEqual(2, result['counts']['figures'])
+        self.assertEqual(2, result['counts']['tables'])
+        self.assertIn('S1-FA1 (figure)', (self.root / 'reading.md').read_text())
+        self.assertIn('S1-TS1 (table)', (self.root / 'reading.md').read_text())
+
     def test_panel_semantics_and_measurement_corrections_are_explicit(self):
         sample = self.packet['samples'][0]
         measured = planning.venue_profile.measure_pdf(self.root / 'sample.pdf')

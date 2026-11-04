@@ -178,6 +178,17 @@ def reading_index(packet, root, *, check=False):
                     require(type(page) is int and page > 0, 'Invalid visual page: ' + item['id'])
                     relative_pdf = Path(os.path.relpath(pdf, index_directory)).as_posix()
                     lines += [f'[PDF page {page}]({relative_pdf}#page={page})', '']
+                observed_page = item.get('observed_page')
+                if observed_page is not None:
+                    require(type(observed_page) is int and observed_page > 0, 'Invalid observed visual page')
+                    relative_pdf = Path(os.path.relpath(pdf, index_directory)).as_posix()
+                    lines += [f'[Observed PDF page {observed_page}]({relative_pdf}#page={observed_page})', '']
+                for field, label in [('observed_caption', 'Observed caption'),
+                                     ('caption_measurement_note', 'Caption measurement correction'),
+                                     ('measurement_revision', 'Measurement revision')]:
+                    if field in item:
+                        require(isinstance(item[field], str), label + ' must be text')
+                        lines += [label + ': ' + item[field], '']
                 if 'locator' in item:
                     require(isinstance(item['locator'], str), 'Visual locator must be text')
                     lines += ['Locator: ' + item['locator'], '']

@@ -105,7 +105,9 @@ Every measured figure and table must have one structured row:
 Each detected panel needs its own `label`, `question`, `claim`, `evidence`,
 `design_takeaway` and `limitations`. `visual_read` records the actual `pages`,
 `method: rendered_pdf`, and a `notes` explanation. All measured caption numbers
-must be covered exactly once; stable IDs must be unique and captions must match
+must be covered exactly once; numeric and Roman labels use integer identities,
+while letter-prefixed labels such as A1, S2 and A.1 use canonical uppercase strings.
+The original printed label remains in measurement `label_text`; stable IDs must be unique and captions must match
 measured bytes. Merely matching the number of `type/placement` entries is insufficient.
 The validator checks this correspondence, not whether a model understood an image.
 
@@ -114,6 +116,28 @@ inspection corrects missed or wrongly grouped panels, record
 `panel_measurement_note` on that visual; never silently present parser output as
 visual truth. The profile preserves the measurement, the reading declaration and
 all completed design notes for the planner/writer/reviewer.
+
+## Explicit rendered-reading additions
+
+Text extraction can miss a numbered visual, including in two-column layouts.
+Do not discard it or silently rewrite the raw extraction. A sample can declare
+`measurement_additions` with `kind: figures|tables`, canonical `number`, actual
+`page`, observed `caption`, an omission `reason`, the source `pdf_sha256`, and
+`rendered_evidence: {path, sha256}` for a real PNG/JPEG page listed in packet
+artifacts. Figure additions also declare `panels` as a list of labels. The page
+must appear in the sample's actual `visual_read` declaration. Existing identities cannot be duplicated through additions. To correct a
+misparsed existing caption/page, use `measurement_corrections` with the same
+fields and `expected_raw: {page, caption}` matching the original extraction.
+Correction targets must already exist; each identity can be touched only once.
+
+Calibration and design templates use the combined inventory. Measurements retain
+`raw_extraction`, `measurement_additions`, and `measurement_corrections` separately, with a warning that
+binding an image does not verify semantic correctness or exhaustive coverage.
+Every added visual still needs complete design and panel notes. A source PDF or
+render change invalidates the corresponding hash binding. Design fields match the effective inventory. Preserve prior matching fields in
+the retained raw extraction, and include `observed_caption`, `observed_page`,
+and `caption_measurement_note` in the reading records; the index displays these
+explicit observations alongside the effective locator. Do not claim such corrections are automatic.
 
 ## Keep page rules separate from sample habits
 

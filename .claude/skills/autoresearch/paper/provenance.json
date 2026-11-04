@@ -10,7 +10,7 @@
   },
   "attribution_policy": {
     "deli_public": "Deli upstream protocol has no standard license identified in the local PROVENANCE. No full original protocol or HTML snapshot copied; independent method synthesis only.",
-    "deli_local": "User-local additions and their actual source hashes are identified separately from the public Deli protocol. The six copied local helper/test files are enumerated as copied_verbatim with destination; knowledge files are independent method synthesis. The checkpoint ledger is not copied. The two user-local academic-prose guides are also copied with exact hashes; the writing/review contexts load the full principles and chosen E01–E14 cases progressively.",
+    "deli_local": "User-local additions and their actual source hashes are identified separately from the public Deli protocol. The six local helper/test sources retain their original hashes; the adapted venue_profile.py is marked copied_verbatim=false with its destination hash and adaptation, while the remaining five stay verbatim; knowledge files are independent method synthesis. The checkpoint ledger is not copied. The two user-local academic-prose guides are also copied with exact hashes; the writing/review contexts load the full principles and chosen E01–E14 cases progressively.",
     "paperflow_local": "The content snapshot includes uncommitted changes; HEAD alone does not identify it. Only methods/contract shapes are adapted.",
     "llm_wiki": "Wiki pages are local summaries/inferences with explicit empirical boundaries. No claim of reproducing the cited papers or deploying their frameworks."
   },
@@ -251,11 +251,13 @@
       "source_version": "local unversioned snapshot 2026-11-03",
       "git_head": null,
       "git_file_status": "not_a_git_checkout",
-      "use": "Byte-identical local helper or regression test; only pure functions imported by planning.py, not its state-writing CLI",
-      "copied_verbatim": true,
+      "use": "Adapted pure measurement/profile helper; original source hash preserved separately from current destination.",
+      "copied_verbatim": false,
       "destination": "foundation/vendor/deli-local/scripts/venue_profile.py",
       "inspection": "interfaces_and_regression_cases",
-      "physical_source_path": "/Users/wdblink/.codex/skills/deli-autoresearch/scripts/venue_profile.py"
+      "physical_source_path": "/Users/wdblink/.codex/skills/deli-autoresearch/scripts/venue_profile.py",
+      "adaptation": "2026-11-04: support letter-prefixed figure/table identities, natural ordering, per-prefix gap checks and mixed-label mentions; preserve numeric/Roman behavior and original label_text.",
+      "destination_sha256": "2940f0d5cbaa842b8cd1f75ad7d8aebe61252531962bfa316e3c528d3bded2f5"
     },
     {
       "id": "deli_local:scripts/plan_audit.py",

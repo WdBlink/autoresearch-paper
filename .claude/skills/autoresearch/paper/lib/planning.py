@@ -226,7 +226,7 @@ def calibrate(packet, root):
         _need(type(sample.get('year')) is int and sample['year'] >= 1900, 'Representative sample missing publication year')
         _need(_text(sample.get('direction_match')), 'Representative sample needs its direction-match reason')
         _evidence(root, packet, sample.get('acceptance_evidence'), 'Sample acceptance evidence')
-        measured = venue_profile.measure_pdf(path)
+        measured = venue_tools.measure_sample(sample, root, packet)
         record = {**measured, 'source': sample['pdf'], 'sample_id': sample_id, 'venue_label': sample['venue_label'],
                   'year': sample['year'], 'acceptance_evidence': sample['acceptance_evidence'],
                   'direction_match': sample['direction_match']}

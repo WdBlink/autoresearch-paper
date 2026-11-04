@@ -40,22 +40,25 @@ TABLE_TYPES = {
 PRIORITIES = ("must", "optional")
 PLACEMENTS = ("body", "appendix", "supplementary")
 
+LABEL_PATTERN = r"[a-z]+[.-]?\d+|\d+(?:[-–]\d+)?|[ivxlcdm]+"
+PREFIXED_LABEL = re.compile(r"(?P<prefix>[A-Za-z]+[.-]?)(?P<index>\d+)")
+
 FIGURE_LABEL = re.compile(
     r"^[ \t]*(?:figures?|figs?)\.?(?=[ \t])[ \t]*"
-    r"(?P<num>\d+(?:[-–]\d+)?|[ivxlcdm]+)(?=[ \t.:\-–—])[ \t]*"
+    rf"(?P<num>{LABEL_PATTERN})(?=[ \t.:\-–—])[ \t]*"
     r"(?P<sep>[:.．\-–—])[ \t]*(?P<rest>\S.*)?$",
     re.IGNORECASE,
 )
 TABLE_LABEL = re.compile(
     r"^[ \t]*(?:tables?|tabs?)\.?(?=[ \t])[ \t]*"
-    r"(?P<num>\d+(?:[-–]\d+)?|[ivxlcdm]+)(?=[ \t.:\-–—])[ \t]*"
+    rf"(?P<num>{LABEL_PATTERN})(?=[ \t.:\-–—])[ \t]*"
     r"(?P<sep>[:.．\-–—])[ \t]*(?P<rest>\S.*)?$",
     re.IGNORECASE,
 )
 FIGURE_MENTION = re.compile(
-    r"\b(?:figures?|figs?)\.?\s*(?P<num>\d+(?:[-–]\d+)?|[ivxlcdm]+)\b", re.IGNORECASE)
+    rf"\b(?:figures?|figs?)\.?\s*(?P<num>{LABEL_PATTERN})\b", re.IGNORECASE)
 TABLE_MENTION = re.compile(
-    r"\b(?:tables?|tabs?)\.?\s*(?P<num>\d+(?:[-–]\d+)?|[ivxlcdm]+)\b", re.IGNORECASE)
+    rf"\b(?:tables?|tabs?)\.?\s*(?P<num>{LABEL_PATTERN})\b", re.IGNORECASE)
 PANEL_TOKEN = re.compile(r"\((?P<label>[a-z])\)")
 SECTION_HEAD = re.compile(r"^[ \t]*(?:\d+(?:\.\d+)*[ \t]+)?[A-Z][A-Za-z0-9 ,:'’\-]{0,60}$")
 REFERENCE_HEAD = re.compile(
@@ -118,6 +121,9 @@ def roman_to_int(text):
 
 
 def label_number(text):
+    prefixed = PREFIXED_LABEL.fullmatch(text)
+    if prefixed:
+        return prefixed["prefix"].upper() + str(int(prefixed["index"]))
     if text.isdigit():
         return int(text)
     if "-" in text or "–" in text:
@@ -128,6 +134,22 @@ def label_number(text):
     if to_roman(value).lower() != text.lower():
         return None
     return value
+
+
+def label_sort_key(number):
+    if type(number) is int:
+        return ("", number)
+    match = PREFIXED_LABEL.fullmatch(number)
+    return (match["prefix"], int(match["index"]))
+
+
+def numbering_has_gaps(records):
+    families = {}
+    for record in records:
+        prefix, index = label_sort_key(record["number"])
+        families.setdefault(prefix, set()).add(index)
+    return any(sorted(indices) != list(range(1, len(indices) + 1))
+               for indices in families.values())
 
 
 def to_roman(value):
@@ -312,8 +334,8 @@ def measure_text(text, source=None, digest=None, reported_pages=None):
                         "result_hint": bool(RESULT_HINT.search(body)),
                     }
                     tables.append(record)
-    figures.sort(key=lambda item: item["number"])
-    tables.sort(key=lambda item: item["number"])
+    figures.sort(key=lambda item: label_sort_key(item["number"]))
+    tables.sort(key=lambda item: label_sort_key(item["number"]))
     # References usually starts mid-page, so the page carrying the heading still
     # holds body content: count it as body, not as references.
     if reference_page is not None:
@@ -327,9 +349,9 @@ def measure_text(text, source=None, digest=None, reported_pages=None):
         main_body_pages = total_pages
         pages_basis = "total_pages_fallback"
     warnings = []
-    if figures and max(item["number"] for item in figures) != len(figures):
+    if numbering_has_gaps(figures):
         warnings.append("figure numbering is not contiguous; some captions were not detected")
-    if tables and max(item["number"] for item in tables) != len(tables):
+    if numbering_has_gaps(tables):
         warnings.append("table numbering is not contiguous; some captions were not detected")
     if reference_page is None:
         warnings.append("no References heading found; main-body page count falls back to total pages")
@@ -343,8 +365,8 @@ def measure_text(text, source=None, digest=None, reported_pages=None):
     body_limit = reference_page if reference_page is not None else total_pages
     cited_figures = body_cited_numbers(text, FIGURE_MENTION, limit=body_limit)
     cited_tables = body_cited_numbers(text, TABLE_MENTION, limit=body_limit)
-    missed_figures = sorted(cited_figures - {item["number"] for item in figures})
-    missed_tables = sorted(cited_tables - {item["number"] for item in tables})
+    missed_figures = sorted(cited_figures - {item["number"] for item in figures}, key=label_sort_key)
+    missed_tables = sorted(cited_tables - {item["number"] for item in tables}, key=label_sort_key)
     if missed_figures:
         warnings.append("figures cited in the body but not captured as captions "
                         f"(likely undercount): {missed_figures}")

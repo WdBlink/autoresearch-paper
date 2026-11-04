@@ -5,8 +5,11 @@
     {
       "path": "scripts/venue_profile.py",
       "source": "/Users/wdblink/.codex/skills/deli-autoresearch/scripts/venue_profile.py",
-      "sha256": "5c7860fd2994602ef2bc2650644fad4fbfd2957470b6350ab8e68503e699fc7c",
-      "origin": "user-authored local Deli adaptation; not Deli upstream original"
+      "sha256": "2940f0d5cbaa842b8cd1f75ad7d8aebe61252531962bfa316e3c528d3bded2f5",
+      "origin": "user-authored local Deli adaptation; not Deli upstream original",
+      "source_sha256": "5c7860fd2994602ef2bc2650644fad4fbfd2957470b6350ab8e68503e699fc7c",
+      "copied_verbatim": false,
+      "adaptation": "2026-11-04: support letter-prefixed figure/table identities, natural ordering, per-prefix gap checks and mixed-label mentions; preserve numeric/Roman behavior and original label_text."
     },
     {
       "path": "scripts/plan_audit.py",

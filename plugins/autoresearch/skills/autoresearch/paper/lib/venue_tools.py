@@ -150,6 +150,77 @@ def sampling_report(packet, records):
             'limits': 'Edition/year labels and justifications are host claims; source and visual review remain required.'}
 
 
+def measure_sample(sample, root, packet):
+    """Preserve raw extraction and bind host-observed omissions to rendered evidence."""
+    p = _planning()
+    raw = p.venue_profile.measure_pdf(p._path(root, sample.get('pdf'), packet))
+    additions = p._list(sample.get('measurement_additions', []), 'measurement_additions', nonempty=False)
+    corrections = p._list(sample.get('measurement_corrections', []), 'measurement_corrections', nonempty=False)
+    if not additions and not corrections:
+        return raw
+    measured = copy.deepcopy(raw)
+    reading = p._dict(sample.get('visual_read'), 'sample visual_read')
+    p._need(reading.get('method') == 'rendered_pdf' and p._text(reading.get('notes')),
+            'Manual measurement additions require actual rendered reading')
+    touched = set()
+    for mode, addition in [('add', row) for row in additions] + [('correct', row) for row in corrections]:
+        p._dict(addition, 'measurement addition')
+        plural = addition.get('kind')
+        p._need(plural in ('figures', 'tables'), 'Measurement addition kind must be figures or tables')
+        number = addition.get('number')
+        p._need(type(number) in (int, str) and p.venue_profile.label_number(str(number)) == number,
+                'Measurement addition needs a canonical visual number')
+        identity = (plural, number)
+        p._need(identity not in touched, 'Duplicate manual measurement identity')
+        touched.add(identity)
+        previous = next((row for row in raw[plural] if row['number'] == number), None)
+        if mode == 'add':
+            p._need(previous is None, 'Measurement addition duplicates an existing visual')
+        else:
+            p._need(previous is not None, 'Measurement correction needs an existing raw visual')
+            p._need(addition.get('expected_raw') == {key: previous[key] for key in ('page', 'caption')},
+                    'Measurement correction does not bind the original extraction')
+        page = addition.get('page')
+        p._need(type(page) is int and 1 <= page <= raw['pages_total'] and page in reading.get('pages', []),
+                'Measurement addition lacks an actual read PDF page')
+        p._need(p._text(addition.get('caption')) and p._text(addition.get('reason')),
+                'Measurement addition needs its observed caption and omission reason')
+        p._need(addition.get('pdf_sha256') == raw['sha256'], 'Measurement addition PDF hash differs')
+        evidence = p._dict(addition.get('rendered_evidence'), 'rendered evidence')
+        image_path = p._path(root, evidence.get('path'), packet)
+        p._need(p._hash(image_path) == evidence.get('sha256'), 'Rendered evidence hash differs')
+        from PIL import Image
+        try:
+            with Image.open(image_path) as image:
+                p._need(image.format in ('PNG', 'JPEG'), 'Rendered evidence must be PNG or JPEG')
+                image.verify()
+        except (OSError, ValueError) as exc:
+            raise p.PlanningError('Rendered evidence is not a valid image') from exc
+        panels = p._list(addition.get('panels', []), 'addition panels', nonempty=False)
+        p._need(all(p._text(label) for label in panels) and len(panels) == len(set(panels)),
+                'Addition panel labels must be unique text')
+        record = {'number': number, 'label_text': str(number), 'page': page,
+                  'caption': addition['caption'], 'measurement_origin': 'host_rendered_reading'}
+        if plural == 'figures':
+            record.update(panels=panels, panel_count=len(panels))
+        else:
+            p._need(not panels, 'Table measurement additions use semantic panels only in design')
+            record['result_hint'] = bool(p.venue_profile.RESULT_HINT.search(addition['caption']))
+        if mode == 'correct':
+            measured[plural] = [row for row in measured[plural] if row['number'] != number]
+        measured[plural].append(record)
+    for plural in ('figures', 'tables'):
+        measured[plural].sort(key=lambda row: p.venue_profile.label_sort_key(row['number']))
+    measured['counts'] = {'figures': len(measured['figures']), 'tables': len(measured['tables']),
+        'figure_panels': sum(row['panel_count'] for row in measured['figures']),
+        'result_tables': sum(bool(row['result_hint']) for row in measured['tables'])}
+    measured['raw_extraction'] = raw
+    measured['measurement_additions'] = copy.deepcopy(additions)
+    measured['measurement_corrections'] = copy.deepcopy(corrections)
+    measured['warnings'].append('Host rendered-reading additions/corrections are included; image hashes bind evidence, not semantic correctness or exhaustive coverage.')
+    return measured
+
+
 def design_template(packet, root):
     """Prefill only measurable fields; empty semantic fields require actual reading."""
     p = _planning()
@@ -158,7 +229,7 @@ def design_template(packet, root):
         p._dict(sample, 'venue sample')
         sample_id = sample.get('id')
         p._need(p._text(sample_id) and sample_id not in papers, 'Sample IDs must be unique')
-        measured = p.venue_profile.measure_pdf(p._path(root, sample.get('pdf'), packet))
+        measured = measure_sample(sample, root, packet)
         entry = {'visual_read': {'pages': [], 'method': 'rendered_pdf', 'notes': ''}, 'figures': [], 'tables': []}
         for plural, letter in (('figures', 'F'), ('tables', 'T')):
             for visual in measured[plural]:
@@ -195,7 +266,8 @@ def validate_design(sample, measured):
             number = entry.get('number')
             p._need(p._text(identifier) and identifier not in used, 'Each visual needs a unique stable ID')
             used.add(identifier)
-            p._need(type(number) is int and number in expected, 'Visual number differs from measured PDF evidence')
+            p._need(type(number) in (int, str) and number in expected,
+                    'Visual number differs from measured PDF evidence')
             numbers.append(number)
             raw = expected[number]
             p._need(entry.get('page') == raw['page'] and entry.get('page') in pages,
