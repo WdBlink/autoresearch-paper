@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lib.runtime import Controller, Refusal, digest, read_json, safe, tex_without_comments
+from lib.runtime import Controller, Refusal, digest, file_hash, read_json, safe, tex_without_comments
 
 
 def brief():
@@ -28,6 +28,29 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, 'already exists'): self.ctl.init(brief())
         self.approve()
         self.assertEqual('software fixture', self.ctl.load()['approval']['basis'])
+
+    def test_delegation_records_the_real_instruction_without_inventing_exact_human_approval(self):
+        source = self.root / 'request.md'; source.write_text('Choose a small public-data topic and run the full research workflow.')
+        authority = {'mode': 'delegated', 'path': 'request.md', 'sha256': file_hash(source),
+                     'quote': source.read_text(), 'scope': 'Local public-data research and internal delivery only'}
+        result = self.ctl.approve(self.init['brief_sha256'], 'host executing delegated task', authority)
+        self.assertEqual('delegated user instruction', result['approval']['basis'])
+        self.assertEqual(authority, result['approval']['authorization'])
+        self.assertEqual(result, self.ctl.approve(self.init['brief_sha256'], 'host executing delegated task', authority))
+        with self.assertRaisesRegex(Refusal, 'different actor or authorization'):
+            self.ctl.approve(self.init['brief_sha256'], 'host executing delegated task')
+        source.write_text('Changed instruction')
+        with self.assertRaisesRegex(Refusal, 'instruction quote differs'):
+            self.ctl.ready(self.ctl.load())
+
+    def test_delegated_authority_needs_real_source_and_scope(self):
+        source = self.root / 'request.md'; source.write_text('Run the local study')
+        authority = {'mode': 'delegated', 'path': 'request.md', 'sha256': file_hash(source), 'quote': 'Not the instruction', 'scope': 'Local study'}
+        with self.assertRaisesRegex(Refusal, 'instruction quote differs'):
+            self.ctl.approve(self.init['brief_sha256'], 'host', authority)
+        authority.update(quote=source.read_text(), scope='')
+        with self.assertRaisesRegex(Refusal, 'actual scope'):
+            self.ctl.approve(self.init['brief_sha256'], 'host', authority)
 
     def test_tex_comments_do_not_count_as_manuscript_insertion(self):
         visible = tex_without_comments("% \\includegraphics{missing.pdf}\nActual \\includegraphics{present.pdf} % \\label{fake}\nEscaped \\% is text")

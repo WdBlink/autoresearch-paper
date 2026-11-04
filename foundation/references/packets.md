@@ -26,6 +26,16 @@ cryptographic attestation or a legacy Harness signed receipt. State cannot be
 initialized again to reset historical work. Changing obligations requires an
 explicitly approved revised Brief in a new run, retaining the old run as evidence.
 
+When the actual user instruction delegates topic/venue selection and execution,
+do not invent a later human approval of an unseen Brief or ask again for a choice
+already delegated. Pass `--authorization authority.json` to `approve` and to
+`confirm-venue`. The record is `{mode:'delegated',path,sha256,quote,scope}`:
+an actual saved instruction, its exact hash/quote and the concrete delegated
+scope. Name the host as the decision actor. The controller records `delegated
+user instruction`, binds the selected Brief and rechecks the source on use.
+This validates record integrity; the host must verify the actual authorization
+and cannot expand it to paid resources, private data or publication.
+
 ## Shared packet fields and boundaries
 
 Every stage packet has `stage`, `producer`, and a nonempty unique `artifacts`

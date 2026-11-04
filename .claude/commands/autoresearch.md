@@ -24,6 +24,10 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    citation or page quota does not replace the venue calibration.
 2. Choose the preparation branch before approval. A concrete research Brief with an already chosen venue and complete obligations can use `init`, display that exact Brief and relay its actual approval. If venue/obligations are undecided, use `contract_status: draft`, `venue: undecided`, and an empty `deliverable_plan`; do not ask for final approval yet.
 3. For a draft, commit read-only intake, prepare sourced venue candidates, relay the actual selected candidate with `confirm-venue`, calibrate the chosen target, and commit venue. Use `set-contract` to produce the concrete post-calibration Brief, show it, and relay its actual final approval. No experimental dispatch can use a draft or a merely completed selection audit.
+   If the current user has already delegated topic/venue selection and the whole
+   bounded research run, use the evidence-bound `--authorization` record described
+   in `packets.md`. Record the host's delegated decision, never a fictitious exact
+   human approval or an extra confirmation for an already authorized action.
 4. Run `context`. It returns the current stage knowledge, upstream protocol,
    frozen input hashes, itemized obligations and typed action contracts.
    Actually read this returned context. Perform that stage's task with the
@@ -54,7 +58,10 @@ Before each work round, call `begin-round` to capture the actual original plan
 and document baseline. After work, `prepare-round --evidence ...` issues the
 current state/rules/evidence-bound judgment request. Return the real host
 judgment using `apply-round`; unchanged reads are not research progress.
-Write decision JSON outside the run or in `control/round-decisions/`. A plan
+Store both the returned request JSON and decision JSON outside the run or in
+`control/round-decisions/`. Keep CLI transport/response logs outside the run as
+well; writing them into ordinary research documents after preparation changes
+the captured digest and invalidates `apply-round`. A plan
 change needs an actual R6 report bound to the round and both plan versions.
 Use the Brief's approved limits; defaults are 15 rounds / 30 minutes per host
 session, at most five empirical experiment rounds, and at most five changed

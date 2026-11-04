@@ -240,25 +240,42 @@ class Controller:
             self.save(state)
             return {'status': 'preparation' if brief.get('contract_status') == 'draft' else 'needs_brief_approval', 'brief_sha256': state['brief_sha256'], 'brief': brief}
 
-    def approve(self, brief_sha256, actor):
+    def authorization(self, record):
+        if record is None:
+            return None
+        if not isinstance(record, dict) or set(record) != {'mode', 'path', 'sha256', 'quote', 'scope'} or record.get('mode') != 'delegated':
+            raise Refusal('Delegated authorization requires mode, source path/hash/quote and concrete scope')
+        path = safe(self.root, record['path'])
+        if file_hash(path) != record['sha256'] or not isinstance(record['quote'], str) or not record['quote'].strip() or record['quote'] not in path.read_text():
+            raise Refusal('Delegated authorization source hash or exact instruction quote differs')
+        if not isinstance(record['scope'], str) or not record['scope'].strip():
+            raise Refusal('Delegated authorization needs its actual scope; the host must verify its meaning')
+        return copy.deepcopy(record)
+
+    def approve(self, brief_sha256, actor, authorization=None):
         with self.lock():
             state = self.load()
             check_brief(state['brief'])
             if state['brief'].get('contract_status') == 'draft':
                 raise Refusal('Calibrate the venue and set the concrete contract before final Brief approval')
+            authority = self.authorization(authorization)
             if brief_sha256 != state['brief_sha256'] or not actor.strip():
-                raise Refusal('Approval must name the exact displayed Brief and human actor')
-            if state['approval'] and state['approval']['actor'] != actor:
-                raise Refusal('Approval already recorded by a different actor')
+                raise Refusal('Approval must bind the exact Brief and truthful decision actor')
+            if state['approval'] and (state['approval']['actor'] != actor or state['approval'].get('authorization') != authority):
+                raise Refusal('Approval already recorded with different actor or authorization')
             if not state['approval']:
                 state['approval'] = {'actor': actor, 'brief_sha256': brief_sha256, 'at': now(),
                                      'basis': 'host-relayed human approval' if not state['brief'].get('software_fixture') else 'software fixture'}
+                if authority is not None:
+                    state['approval'].update(basis='delegated user instruction', authorization=authority)
                 self.save(state)
             return {'status': 'approved', 'approval': state['approval']}
 
     def ready(self, state, *, preparation=False):
         if not preparation and (not state['approval'] or state['brief'].get('contract_status') == 'draft'):
             raise Refusal('Exact Brief approval is required before research stages')
+        if state['approval']:
+            self.authorization(state['approval'].get('authorization'))
         issues = self.stale(state)
         if issues:
             raise Refusal('; '.join(issues))
@@ -299,11 +316,12 @@ class Controller:
             state['brief'], state['brief_sha256'], state['approval'] = brief, digest(brief), None
             return self.record(state, op, request, {'status': 'needs_brief_approval', 'brief': brief, 'brief_sha256': digest(brief)})
 
-    def confirm_venue(self, packet, actor, comparison_sha256, op):
+    def confirm_venue(self, packet, actor, comparison_sha256, op, authorization=None):
         from .venue_tools import comparison_digest, comparison_report
         with self.lock():
             state = self.load()
-            request = {'command': 'confirm-venue', 'packet': packet, 'actor': actor, 'comparison_sha256': comparison_sha256}
+            authority = self.authorization(authorization)
+            request = {'command': 'confirm-venue', 'packet': packet, 'actor': actor, 'comparison_sha256': comparison_sha256, 'authorization': authority}
             previous = self.operation(state, op, request)
             if previous is not None:
                 return previous
@@ -313,6 +331,8 @@ class Controller:
                 raise Refusal('Confirm venue after intake and before calibration acceptance')
             state['venue_confirmation'] = {'candidate_id': packet['venue_selection']['selected_id'], 'venue': packet['venue'],
                                            'comparison_sha256': comparison_sha256, 'actor': actor, 'at': now()}
+            if authority is not None:
+                state['venue_confirmation'].update(basis='delegated user instruction', authorization=authority)
             return self.record(state, op, request, {'status': 'venue_confirmed', **state['venue_confirmation']})
 
     def context(self, writing_cases=()):
