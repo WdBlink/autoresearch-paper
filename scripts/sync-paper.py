@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle the paper subcommand into the selected upstream skill distributions."""
+"""Bundle the research-to-paper runtime into the selected skill distributions."""
 from pathlib import Path
 import shutil
 import sys

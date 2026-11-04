@@ -22,11 +22,20 @@ def packet(stage, files, **fields):
     return {'stage': stage, 'producer': 'fixture-author', 'artifacts': list(dict.fromkeys(files)), **fields}
 
 
+def answer_question(ctl, kind, packet, answer, name):
+    question = ctl.prepare_user_input(kind, packet)['question']
+    quote = 'SOFTWARE FIXTURE scripted answer, not a human response: ' + json.dumps(answer, sort_keys=True)
+    path = put(ctl.root, 'fixture-answers/' + name + '.txt', quote)
+    return {'question_sha256': question['question_sha256'], 'answer': answer,
+            'human_response': {'path': path, 'sha256': file_hash(ctl.root / path), 'quote': quote}}
+
+
 def make_brief(survey=False):
     brief = {'software_fixture': True, 'question': 'Exercise a paper workflow using fixed local CPU transformations; no scientific claim',
             'venue': 'Synthetic Software Fixture', 'direction': 'software-contract testing', 'paper_type': 'original',
             'scope': 'Local software validation only', 'angle': 'Evidence and artifact contract closure', 'audience': 'Developers reviewing the Skill',
-            'resources': {'authorization': 'offline software verification only', 'model_calls': 0, 'remote_jobs': 0, 'cpu': 'sequential local fixture'},
+            'resources': {'authorization': 'offline software verification only', 'cpu': 'sequential local fixture'},
+            'budget': {'calls': 0},
             'reviewers': ['fixture-reviewer'],
             'deliverable_plan': [{'id': key, 'kind': kind, 'title': title,
                                   'purpose': 'Verify ' + title + ' against the measured software fixture',
@@ -72,7 +81,7 @@ class FixturePaused(Exception):
     pass
 
 
-def run(root, *, stop_after=None, undecided=False, survey=False):
+def run(root, *, stop_after=None, undecided=False, survey=False, budget=None):
     from lib import planning, science
     root = Path(root).resolve()
     if (root / '.paper/control.json').exists():
@@ -80,6 +89,8 @@ def run(root, *, stop_after=None, undecided=False, survey=False):
     root.mkdir(parents=True, exist_ok=True)
     ctl = Controller(root)
     brief = make_brief(survey)
+    if budget is not None:
+        brief['budget'] = budget
     initial = copy.deepcopy(brief)
     if undecided: initial.update(venue='undecided', deliverable_plan=[], contract_status='draft')
     result = ctl.init(initial)
@@ -164,8 +175,9 @@ def run(root, *, stop_after=None, undecided=False, survey=False):
         other = copy.deepcopy(venue['venue_selection']['candidates'][0]); other.update(id='V2', venue='Synthetic Alternative', limitations=['Different synthetic scope; not selected.'])
         venue['venue_selection']['mode'] = 'candidate_comparison'
         venue['venue_selection']['candidates'].append(other)
-        comparison = ctl.tool('venue-compare', venue)['value']
-        ctl.confirm_venue(venue, 'offline fixture selection', comparison['comparison_sha256'], 'select-fixture-venue')
+    comparison = ctl.tool('venue-compare', venue)['value']
+    response = answer_question(ctl, 'venue', venue, {'candidate_id': 'V1'}, 'venue')
+    ctl.confirm_venue(venue, 'offline fixture selection', comparison['comparison_sha256'], 'select-fixture-venue', response=response)
     venue['reading_index'] = 'venue/reading-index.md'
     venue['artifacts'].append(venue['reading_index'])
     ctl.tool('venue-calibrate', venue, publish=True)
@@ -196,6 +208,10 @@ def run(root, *, stop_after=None, undecided=False, survey=False):
     if not survey:
         plan['artifacts'] += [design_name, evaluator]
         plan['experiment_design_sha256'] = file_hash(root / design_name)
+    response = answer_question(ctl, 'budget', {'budget': brief.get('budget', {}), 'plan': plan_name,
+        'reason': 'Offline software fixture only; no scientific or paid calls'},
+        {'choice': 'custom', 'budget': brief.get('budget', {})}, 'budget')
+    ctl.confirm_budget(response, 'confirm-fixture-budget')
     commit(plan)
     ctl.begin_round()
 

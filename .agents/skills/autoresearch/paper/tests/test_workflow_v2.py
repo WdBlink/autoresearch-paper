@@ -31,7 +31,7 @@ class WorkflowV2Tests(unittest.TestCase):
         self.assertEqual('Synthetic Software Fixture', state['brief']['venue'])
         self.assertEqual('offline fixture final Brief', state['approval']['actor'])
         self.assertEqual('V1', state['venue_confirmation']['candidate_id'])
-        draft = next(h['brief'] for h in state['history'] if h.get('event') == 'brief_superseded')
+        draft = next(h['brief'] for h in state['history'] if h.get('event') == 'user_field_amendment' and h.get('field') == 'venue')
         self.assertEqual([], draft['deliverable_plan']); self.assertEqual('undecided', draft['venue'])
         self.assertLess(state['receipts'][1]['at'], state['approval']['at'])
         self.assertEqual(set(['source','pdf','bibliography','citation_plan','citation_verification','review','revision','snapshot']), set(state['receipts'][-1]['packet']['completion']))
@@ -61,15 +61,15 @@ class WorkflowV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, 'R6 disclosure'): self.decide(request, 'bad-plan-rewrite')
         self.assertEqual(0, self.ctl.load()['session']['rounds'])
 
-    def test_round_workload_limits_new_tex_and_scientific_code(self):
+    def test_round_workload_reports_large_sources_without_stopping_the_task(self):
         self.init(); self.ctl.begin_round()
         for n in range(6): put(self.root, f'code/{n}.py', '# software fixture\n' * 301)
         request = self.ctl.prepare_round([])
-        with self.assertRaisesRegex(Refusal, 'large documents'): self.decide(request, 'over-budget')
-        self.decide(request, 'record-deviation', workload_deviation_reason='Six existing scientific modules required one coordinated schema change.')
+        self.assertTrue(request['workload']['attention_required'])
+        self.decide(request, 'large-change-checkpoint')
         self.ctl.begin_round(); put(self.root, 'new.tex', '% generated fixture\n' * 301)
         request = self.ctl.prepare_round([])
-        with self.assertRaisesRegex(Refusal, '300 lines'): self.decide(request, 'new-long-tex')
+        self.decide(request, 'new-long-tex')
 
     def test_round_prepare_cannot_be_forged_or_applied_after_workload_changes(self):
         from lib.runtime import digest
@@ -82,34 +82,29 @@ class WorkflowV2Tests(unittest.TestCase):
         put(self.root,'another.py','# changed after preparation\n')
         with self.assertRaisesRegex(Refusal,'documents changed'): self.decide(request,'stale-workload',workload_deviation_reason='Temporary coordinated work')
 
-    def test_session_stop_four_stale_attention_and_finding_revisions(self):
-        self.init(round_limits={'session_rounds': 4})
+    def test_four_stale_rounds_request_attention_without_a_hidden_stop(self):
+        self.init()
         for n in range(4):
             self.ctl.begin_round(); request = self.ctl.prepare_round([])
             result = self.decide(request, 'stale'+str(n), direction={'id': 'direction'+str(n), 'change': 'Different comparison family '+str(n), 'reason':'Software pivot fixture'})
         self.assertTrue(result['attention_required'])
-        with self.assertRaisesRegex(Refusal, 'budget'): self.ctl.begin_round()
+        self.ctl.begin_round()
         self.assertEqual(4, len(self.ctl.load()['rounds']))
 
-    def test_experiment_limit_applies_even_when_caller_uses_a_later_stage(self):
-        self.init(round_limits={'experiment_rounds':1})
+    def test_experiment_round_counts_do_not_create_an_implicit_resource_limit(self):
+        self.init()
         self.ctl.begin_round(); request = self.ctl.prepare_round([])
         self.decide(request,'experiment-1',phase='experiment')
         self.ctl.begin_round(); request = self.ctl.prepare_round([])
-        with self.assertRaisesRegex(Refusal,'stopping condition'):
-            self.decide(request,'experiment-2',phase='experiment')
-        self.assertEqual(1,self.ctl.load()['session']['experiment_rounds'])
+        self.decide(request,'experiment-2',phase='experiment')
+        self.assertEqual(2,self.ctl.load()['session']['experiment_rounds'])
 
-    def test_pending_experiment_steps_cannot_be_repeated_before_round_accounting(self):
+    def test_experiment_repair_is_not_blocked_by_session_diagnostic_counts(self):
         with self.assertRaises(FixturePaused): run(self.root, stop_after='experiment')
         state = self.ctl.load(); previous = state['receipts'][-1]['packet']
-        # Four earlier accepted experiment rounds plus this still-open fifth step.
-        state['session']['experiment_rounds'] = 4; self.ctl.save(state)
-        self.ctl.rewind('experiment', 'Proposed sixth experiment in the same open round', 'rewind-pending-experiment')
-        with self.assertRaisesRegex(Refusal, 'budget'):
-            self.ctl.commit(previous, 'repeat-experiment-before-checkpoint')
-        with self.assertRaisesRegex(Refusal, 'budget'):
-            self.ctl.execute('W-experiment', 'execute-before-checkpoint')
+        state['session']['experiment_rounds'] = 99; self.ctl.save(state)
+        self.ctl.rewind('experiment', 'Repair measured evidence', 'rewind-pending-experiment')
+        self.ctl.commit(previous, 'repeat-experiment-before-checkpoint')
 
     def test_snapshot_tool_and_lost_ledger_do_not_reset_history(self):
         self.init(); put(self.root,'plan.json',{'items':[]})
@@ -154,7 +149,7 @@ class WorkflowV2Tests(unittest.TestCase):
     def test_draft_can_record_a_real_wait_before_final_approval(self):
         self.init(contract_status='draft',venue='undecided',deliverable_plan=[])
         self.ctl.begin_round(); request = self.ctl.prepare_round([])
-        result = self.decide(request,'wait-for-selection',status='needs_input',blockers=['Await actual user venue choice'])
+        result = self.decide(request,'wait-for-selection',status='needs_input',blockers=[{'kind':'input','reason':'Await actual user venue choice','requirement_ids':[]}])
         self.assertEqual('round_recorded',result['status'])
         self.assertEqual('needs_input',self.ctl.load()['last_round_status'])
         self.assertIsNone(self.ctl.load()['approval'])
@@ -172,9 +167,12 @@ class WorkflowV2Tests(unittest.TestCase):
         self.assertEqual(pending,after['pending_round'])
         self.assertEqual(before['active_round'],after['active_round'])
 
-    def test_round_budget_cannot_be_reopened_by_rewind(self):
-        run(self.root)
-        state = self.ctl.load(); state['session']['rounds'] = 15; self.ctl.save(state)
+    def test_explicit_task_deadline_cannot_be_reopened_by_rewind(self):
+        run(self.root, budget={'calls': 0, 'minutes': 1})
+        from datetime import datetime, timedelta, timezone
+        state = self.ctl.load()
+        state['created_at'] = (datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
+        self.ctl.save(state)
         with self.assertRaisesRegex(Refusal,'budget'): self.ctl.rewind('write','Proposed revision','budget-rewind')
         with self.assertRaisesRegex(Refusal,'budget'):
             self.ctl.execute('W-writing','budget-execute')

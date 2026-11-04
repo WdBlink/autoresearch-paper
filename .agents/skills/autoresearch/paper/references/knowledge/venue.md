@@ -8,6 +8,8 @@ Use [production.md](../production.md): `source-fetch` retains real source identi
 
 当前批准目标中的 venue、年份/track、方向、论文类型、页数口径，以及实际来源快照。用户尚未定目标时先比较有来源支持的候选及其代价，由用户已有选择落定；不能擅自把候选变成已批准目标。
 
+选刊/会议是“请用户回答”节点。比较完成后运行 `ask-user --kind venue`，向用户展示来源、适配性、约束、未知和推荐，通过真实问答工具等待选择后 `confirm-venue --response`。推荐、预选和泛化执行授权不构成回答。已有明确目标选择可复用实际原文与来源，不重复索取同一决定；不能伪造对未展示候选的用户批准。详见 [user-input.md](../user-input.md)。
+
 ## 校准顺序
 
 1. 查本届官方作者/审稿指南、CFP、author kit。分别记录硬性要求、建议、未知和检索日期。相邻年份规则或样本惯例不得填成官方要求。

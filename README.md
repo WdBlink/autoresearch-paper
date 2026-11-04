@@ -26,6 +26,16 @@ The host performs source reading, scientific reasoning, actual experiments and
 independent review. Deterministic scripts reveal the current stage and verify
 inputs, records, hashes, budgets and handoffs. They do not infer scientific truth.
 
+Venue choice, the concrete plan budget and every budget increase are actual
+user-answer steps. The host shows sourced candidates or the plan/resources,
+asks through its user-input interface and waits for the reply. The single
+optional `budget` defaults to `{}` with no hidden task total cap and grants no
+new paid-resource permission. Calls, tokens, cost and total wall time can be
+capped explicitly; usage persists across sessions. Thirty minutes is a checkpoint
+prompt followed by continued available work. See the
+[question/answer contract](foundation/references/user-input.md) and
+[budget/exit contract](foundation/references/budget.md).
+
 ## Run and inspect
 
 ```sh

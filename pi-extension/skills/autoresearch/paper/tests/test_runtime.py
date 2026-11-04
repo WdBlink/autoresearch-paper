@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -80,19 +82,36 @@ class RuntimeTests(unittest.TestCase):
         decide('r2')
         request = self.ctl.prepare_round(['evidence.json'])
         decision = {'request_sha256': request['request_sha256'], 'progress': 'no_progress', 'reason': 'Fixture', 'status': 'active'}
-        with self.assertRaisesRegex(Refusal, 'pivot'): self.ctl.apply_round(request, decision, 'r3')
+        continued = self.ctl.apply_round(request, decision, 'r3')
+        self.assertEqual('round_recorded', continued['status'])
+        self.assertEqual('active', self.ctl.load()['last_round_status'])
+        self.assertTrue(continued['checkpoint']['advice'])
+        request = self.ctl.prepare_round(['evidence.json'])
+        decision['request_sha256'] = request['request_sha256']
         decision['direction'] = {'id': 'different-comparison', 'change': 'Compare a different algorithm family', 'reason': 'Previous family plateaued'}
-        self.ctl.apply_round(request, decision, 'r3')
+        self.ctl.apply_round(request, decision, 'r4')
         request = self.ctl.prepare_round(['evidence.json'])
         (self.root / 'evidence.json').write_text('{"fixture":2}')
         decision['request_sha256'] = request['request_sha256']
-        with self.assertRaisesRegex(Refusal, 'evidence changed'): self.ctl.apply_round(request, decision, 'r4')
+        with self.assertRaisesRegex(Refusal, 'evidence changed'): self.ctl.apply_round(request, decision, 'r5')
 
     def test_unresolved_citations_do_not_produce_an_accepted_pdf(self):
         (self.root / 'bad.tex').write_text(r'\documentclass{article}\begin{document}Missing source \cite{missing}.\end{document}')
         with self.assertRaises(Refusal):
             self.ctl._action(self.ctl.load(), {'type': 'compile_tex', 'source': 'bad.tex', 'pdf': 'bad.pdf'})
         self.assertFalse((self.root / 'bad.pdf').exists())
+
+    def test_cli_repeated_evidence_flags_bind_every_file(self):
+        self.approve()
+        for name in ('first.json','second.json','third.json'):
+            (self.root / name).write_text('{"software_fixture":true}')
+        cli = Path(__file__).resolve().parents[1] / 'scripts/research.py'
+        completed = subprocess.run([sys.executable,str(cli),'--run',str(self.root),'prepare-round',
+            '--evidence','first.json','--evidence','second.json','third.json'],capture_output=True,text=True)
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        result = json.loads(completed.stdout)
+        self.assertEqual({'first.json','second.json','third.json'}, set(result['evidence']))
+        self.assertEqual(result, self.ctl.load()['pending_round'])
 
     def test_work_order_omission_unknown_action_and_coverage(self):
         state = self.ctl.load()

@@ -15,7 +15,9 @@ write `.paper/`, `delivery/`, Git state or round-decision files.
 | Stage | Default operation | Host-owned judgment |
 | --- | --- | --- |
 | Intake and venue | `tool source-fetch`, `tool environment` | Source authority, suitability, resources and missing metadata |
+| Venue choice | `venue-compare`, `ask-user --kind venue`, `confirm-venue --response` | Ask the real user, wait and retain the actual venue choice |
 | Venue | `venue-calibrate --publish`, including its declared `reading_index` | Actual per-visual reading and source corrections |
+| Plan budget and increases | `ask-user --kind budget`, `confirm-budget --response` | Show defaults, current usage and the concrete proposal; wait for the actual answer |
 | Plan and experiment | `tool experiment-template` and `lib.experiments.ExperimentRecorder` | Scientific operation, scoring, exposure and protocol |
 | Figures | `render_statistics`, `export_image` WorkOrder actions | Figure choice, units, interpretation and venue policy |
 | Write | `prepare_tex`, `compile_tex` WorkOrder actions; `tool pdf-inspect` | Source policy, argument, captions and actual PDF viewing |
@@ -29,6 +31,13 @@ production tools below. Use `artifact` for copying/replaying historical inputs
 without initializing, resetting or upgrading their old controller state. It
 cannot approve a stage. `artifact review-request` consumes a saved `context`;
 the normal current-run review uses `prepare-review` instead.
+
+The question commands prepare packets, not human answers. Follow
+[user-input.md](user-input.md) for the actual host question and source-bound
+reply. Before an explicitly registered research resource call, reserve its
+verifiable maximum with `budget-reserve`; afterwards preserve and settle the
+actual receipt with `budget-settle`, including failed/unknown/overrun use.
+[budget.md](budget.md) specifies this single task budget and its accounting scope.
 
 ## Acquire and inspect inputs
 

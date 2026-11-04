@@ -60,13 +60,17 @@
 
 ```text
 init → read-material / commit intake
-venue-compare → confirm-venue → venue-calibrate / commit venue
-set-contract → approve → begin-round / commit plan
+venue-compare → ask-user venue → actual user answer → confirm-venue → venue-calibrate / commit venue
+set-contract → approve → concrete plan → ask-user budget → actual user answer → confirm-budget → begin-round / commit plan
 commit literature → execute / commit experiment
 execute / commit figures → execute / commit write
 bind-all → prepare-review → actual judgment → assemble-review / commit review
 prepare-round → actual host judgment → deliver (apply, finalize, ZIP verification)
 ```
+
+问答、单一预算与增额均遵循主流程的 [user-input](../../foundation/references/user-input.md)
+和 [budget](../../foundation/references/budget.md) 契约。此例的历史运行不热迁移；
+不能伪造答复来适配新入口。
 
 精确 Brief、各阶段包、冻结 WorkOrder、实际调用及错误保存在本次私有运行目录；
 轮次 request 和 decision 均放 `control/round-decisions/`，其后不改研究文件再 apply。

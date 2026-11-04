@@ -2,8 +2,8 @@
 name: autoresearch
 description: "Research to paper: develop a research question, compare venues, study matched accepted papers, plan and run experiments, then write and independently review an evidence-bound manuscript."
 metadata:
-  version: "2.3.0"
-  research-workflow: "2"
+  version: "3.0.0"
+  research-workflow: "3"
 ---
 
 # Autoresearch — Research to Paper
@@ -26,14 +26,28 @@ normal calibration sample is 8–15 accepted papers in the same direction, drawn
 from the recent two editions or journal years; exceptions are explicit. Inspect
 each measured figure/table and panel, not just caption counts. Venue knowledge
 and the final obligation contract are ready before manuscript drafting.
-When a consequential research choice is still missing, use AskUserQuestion or
-the host's supported input interface. Reuse the user's existing choices and
-approval; a routine implementation detail does not require another question.
+Venue selection and the concrete plan budget are user-answer checkpoints.
+Prepare the sourced candidates or budget proposal with `ask-user`; use
+AskUserQuestion or the host's supported user-input interface (Codex can use
+`request_user_input_async` when available), wait for an actual
+answer, then apply its source-bound response. Show the budget default of no
+implicit task cap and the optional calls, tokens, cost and total-time limits.
+An increase requires another concrete question. Existing explicit answers may
+be reused when they match the current question; execution delegation and a
+preselected option do not supply an answer. See `paper/references/user-input.md`.
 
 The stages are intake → venue selection/calibration → plan → literature →
 experiment/evidence synthesis → figures → write → independent review → delivery.
 Use the same state owner for rounds, snapshots, effects, bindings and recovery.
 A code keep, a completed tool or an overall score cannot satisfy a missing claim.
+
+The only public resource-limit configuration is the Brief's `budget`.
+Usage is receipt-backed in the same controller and survives host-session changes.
+Thirty minutes prompts a checkpoint and continuation, not task termination.
+Continue authorized internal repair; wait only on the affected external
+dependencies. A stopped checkpoint requires an actual user stop or a verified
+task-budget reason. Full completion still belongs to the original finalizer.
+Read `paper/references/budget.md` for resource admission and recovery.
 
 Use the stage's `production_steps` and `paper/references/production.md` for
 provided acquisition, recording, render/export, source variants and review

@@ -16,7 +16,9 @@ Its schema is an example, not a research design or a default scientific budget.
 item has a stable letter-first `id`, `kind` (`figure`, `table`, `section` or
 `manuscript`), `title`, `purpose`, `claim`, `acceptance_criteria` and
 `evidence_requirements`. Array entries describe actual obligations. Resources
-state the real hardware, limits, cost basis and actual authorization. Unknowns
+state the real hardware, access, cost basis and actual authorization. The single
+optional top-level `budget` contains the disclosed task limits; its default is
+`{}` with no implicit total cap. See [budget.md](budget.md). Unknowns
 remain unknown. The fixture uses `software_fixture: true`; real research does
 not. Reviewers name the actual independent actors expected to return reviews.
 
@@ -26,10 +28,11 @@ cryptographic attestation or a legacy Harness signed receipt. State cannot be
 initialized again to reset historical work. Changing obligations requires an
 explicitly approved revised Brief in a new run, retaining the old run as evidence.
 
-When the actual user instruction delegates topic/venue selection and execution,
-do not invent a later human approval of an unseen Brief or ask again for a choice
-already delegated. Pass `--authorization authority.json` to `approve` and to
-`confirm-venue`. The record is `{mode:'delegated',path,sha256,quote,scope}`:
+When the actual user instruction delegates preparation and execution, do not
+invent a later human approval of an unseen Brief. `approve` can retain that
+actual authority with `--authorization authority.json`. This does not answer
+the mandatory venue and plan-budget questions in [user-input.md](user-input.md).
+The authorization record is `{mode:'delegated',path,sha256,quote,scope}`:
 an actual saved instruction, its exact hash/quote and the concrete delegated
 scope. Name the host as the decision actor. The controller records `delegated
 user instruction`, binds the selected Brief and rechecks the source on use.
@@ -62,10 +65,13 @@ recorded packet is a technical handoff, not a scientific pass or a waiver.
 
 `materials` lists `{id,path,sha256,availability,read_spans}`. Availability is
 `readable` or `metadata_only`; the latter requires `limitation` and cannot
-claim content spans. Readable spans cover the whole text. Actually use
+claim content spans. `read_spans` is a list of two-integer character intervals,
+for example `[[0,100],[100,250]]` for a 250-character file. Readable spans cover
+the whole text, with inclusive starts and exclusive ends. Actually use
 `read-material --path FILE --start N --end N` to receive exact character spans
 and read receipts in the same ledger. Each call returns at most 100000
-characters; chunk longer files. The packet's quote records are
+characters; chunk longer files. The intake packet requires a nonempty top-level
+`evidence` array of quote records, separate from each option's evidence. They are
 `{material_id,start,end,quote}` and must resolve exactly to read content.
 This proves bytes were returned, not that a model understood them.
 
@@ -75,6 +81,8 @@ Each option has `id`, `implementation`, `selection_reason` and span `evidence`.
 Resources state `authorization` and `cost_basis`. Each experiment states
 `claim`, `metric`, `comparison`, `protocol`, `completion`, and `failure_route`.
 A conditional/blocked route cannot silently become an executable plan.
+`status: conditional` requires a nonempty `prerequisites` array; `blocked`
+requires nonempty `blocking_questions`. State the actual unresolved conditions.
 Review/survey scope may explicitly declare an experiment inapplicable in the
 approved Brief; this does not admit unimplemented statistics or remove other
 required artifacts.
@@ -105,17 +113,25 @@ design takeaway and limitations. Blank semantic fields never count as an analysi
 Calibration publishes measurements, venue comparison/profile and plan-check JSON
 to the packet's declared output fields, refusing a conflicting existing version.
 
-A target already exactly approved is reused. For undecided venues, prepare a
+A target already explicitly chosen is reused with the actual answer source.
+For undecided venues, prepare a
 `contract_status: draft` Brief with `venue: undecided`, `deliverable_plan: []`.
 Intake and venue preparation need no fictitious final approval. Compare actual
-sourced candidates, then relay the real selection with
+sourced candidates, issue `ask-user --kind venue --packet venue.json`, present
+the question to the user and wait for the real selection. Relay that answer with
 `confirm-venue --packet venue.json --actor HUMAN --comparison-sha256 HASH
---operation-id ID`. The hash comes from `venue-compare`.
+--response venue-answer.json --operation-id ID`. The hash comes from
+`venue-compare`; delegated authorization is not a venue answer.
 After accepting calibration, `set-contract --brief concrete.json --operation-id ID`
 returns the final visible Brief and digest. It preserves scope/resources and
 history. Relay the actual exact approval using `approve` before plan/experiments.
 
 The plan packet contains `figure_table_plan`, `plan_snapshot` and `work_orders`.
+Before plan acceptance, issue `ask-user --kind budget --packet proposal.json`,
+show the uncapped default, optional caps and the concrete resource proposal,
+then wait for the actual reply and `confirm-budget`. Default selection also
+requires an answer. Every budget increase follows the same route. Source-bound
+answer records and their exact fields are in [user-input.md](user-input.md).
 For empirical scope it also contains `experiment_design_sha256`; create the
 design and evaluator before plan acceptance. Approved non-empirical synthesis
 omits that empirical adapter and retains its explicit experiment N/A reason.
@@ -214,28 +230,30 @@ contains its required upstream protocols.
 Call `begin-round` **before** work, including source changes. It captures the
 original plan and supported text engineering assets. It is required for post-plan
 artifact commits and typed actions. Rewind captures a before-revision baseline.
-An explicit `--session-id` names an actual host session, not a permission to fake
-new sessions to evade limits. The controller cannot prove the host session identity.
-Defaults from the local Deli engineering policy are 15 rounds/30 minutes per
-session, five experiment rounds, five large changed text files and 300 lines for
-generated TeX; explicit approved limits take priority. Here large-text workload
-means at least 300 lines in TeX/Markdown/BibTeX/JSONL/Python/JSON/YAML/CSV/shell.
-Existing oversized manuscripts retain a bound baseline and specific deviation.
-Two stagnant rounds require a structural pivot; four surface attention required.
-Refinement stops at its declared target, two gains at most 0.3, or over 12 rounds;
-these are auxiliary refinement signals, not scientific acceptance or real billing.
+An explicit `--session-id` names an actual host session. It cannot reset the task
+budget, usage or creation time; the controller cannot prove host identity.
+Thirty minutes since a checkpoint is a continuation/review prompt, not a task
+cap. Large-file workload, stagnant rounds and refinement scores are advisory.
+They cannot require a stop, split a valid manuscript or bypass scientific gates.
+The one public `budget` is disclosed and answered during planning; known usage
+and held reservations derive from actual resource receipts. See
+[budget.md](budget.md) for scope and explicit deadline/closeout behavior.
 `last_seen_at` and `last_progress_at` remain distinct. A revised finding has a new
 ID and `revises` link; it does not inflate the count of distinct findings.
 
 
-`prepare-round --evidence PATH ... [--current-plan PATH]` returns the before-round snapshot, actual plan diff, workload and a state/rules/evidence-bound request. Zero evidence is allowed only for a genuine no-progress judgment.
+`prepare-round --evidence PATH ... [--current-plan PATH]` returns the before-round snapshot, actual plan diff, workload and a state/rules/evidence-bound request. Repeated `--evidence` flags accumulate their paths too. Zero evidence is allowed only for a genuine no-progress judgment.
 `apply-round --request JSON --decision JSON --operation-id ID` accepts a host
 judgment with `request_sha256`, `progress` (`verified_progress`, `no_progress`,
 `regression`), `reason`, `status` (`active`, `needs_input`, `stopped`), optional
 `finding` and `direction`. Waiting/stopped judgments name `blockers`.
 A finding has `claim`, `validation`, and `limitations`; a structural pivot has
-`id`, `change`, and `reason`. Two stale rounds require a new direction before
-active continuation. Unchanged evidence is not new progress; duplicate findings
+`id`, `change`, and `reason`. Stagnation advises a different direction while
+available authorized work continues. `needs_input` requires concrete external
+blockers with affected `requirement_ids`, covering all obligations and no known
+executable local WorkOrders for a global wait. `stopped` additionally requires
+an actual source-bound user stop or program-verified explicit budget exhaustion.
+Internal implementation failures remain active work. Unchanged evidence is not new progress; duplicate findings
 cannot inflate it. This judgment validates structure/binding, not scientific
 truth. A round cannot grant final completion.
 

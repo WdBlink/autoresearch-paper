@@ -108,8 +108,8 @@ def identifier(value):
 def check_brief(brief, *, draft=False):
     if not isinstance(brief, dict):
         raise Refusal('Brief must be an object')
-    from .rounds import policy
-    policy(brief)
+    from .budget import limits
+    limits(brief)
     for field in ('question', 'venue', 'direction', 'paper_type', 'resources', 'scope', 'angle', 'audience'):
         if not brief.get(field):
             raise Refusal('Brief missing ' + field)
@@ -204,8 +204,8 @@ class Controller:
         if not self.path.exists():
             raise Refusal('Not initialized; use a new run directory')
         value = read_json(self.path)
-        if value.get('schema_version') != 1:
-            raise Refusal('Unknown run format; read-only migration required')
+        if value.get('schema_version') != 2:
+            raise Refusal('Old or unknown run format; use its pinned runtime or an explicit reviewed migration')
         if digest(value['brief']) != value['brief_sha256']:
             raise Refusal('Approved Brief changed')
         checkpoint = self.home / 'checkpoint.json'
@@ -235,10 +235,11 @@ class Controller:
                 raise Refusal('Run already exists; do not reset its history')
             if any(p.name != 'lock' for p in self.home.iterdir()) or (self.root / 'delivery').exists():
                 raise Refusal('Historical controller/export records exist; recover the ledger instead of reinitializing')
-            state = {'schema_version': 1, 'created_at': now(), 'brief': brief,
+            state = {'schema_version': 2, 'created_at': now(), 'brief': brief,
                      'brief_sha256': digest(brief), 'implementation_sha256': self.implementation(), 'approval': None, 'receipts': [],
                      'history': [], 'operations': {}, 'attempts': {}, 'bindings': {},
-                     'frozen_plan': None, 'delivery': None, 'rounds': [], 'stale_count': 0, 'material_reads': [], 'additional_orders': [], 'venue_confirmation': None, 'active_round': None, 'last_seen_at': now(), 'last_progress_at': None, 'session': {'started_at': now(), 'rounds': 0, 'experiment_rounds': 0}, 'last_round_status': None, 'pending_round': None}
+                     'frozen_plan': None, 'delivery': None, 'rounds': [], 'stale_count': 0, 'material_reads': [], 'additional_orders': [], 'venue_confirmation': None, 'active_round': None, 'last_seen_at': now(), 'last_progress_at': None, 'session': {'started_at': now(), 'rounds': 0, 'experiment_rounds': 0}, 'last_round_status': None, 'pending_round': None,
+                     'usage_ledger': {}, 'task_stop': None, 'last_checkpoint_at': now(), 'user_questions': {}, 'budget_confirmation': None}
             self.save(state)
             return {'status': 'preparation' if brief.get('contract_status') == 'draft' else 'needs_brief_approval', 'brief_sha256': state['brief_sha256'], 'brief': brief}
 
@@ -278,6 +279,9 @@ class Controller:
             raise Refusal('Exact Brief approval is required before research stages')
         if state['approval']:
             self.authorization(state['approval'].get('authorization'))
+            from .user_input import check_human_response
+            for change in state['approval'].get('user_amendments', []):
+                check_human_response(change['human_response'], self.root)
         issues = self.stale(state)
         if issues:
             raise Refusal('; '.join(issues))
@@ -318,12 +322,58 @@ class Controller:
             state['brief'], state['brief_sha256'], state['approval'] = brief, digest(brief), None
             return self.record(state, op, request, {'status': 'needs_brief_approval', 'brief': brief, 'brief_sha256': digest(brief)})
 
-    def confirm_venue(self, packet, actor, comparison_sha256, op, authorization=None):
+    def prepare_user_input(self, kind, packet):
+        from .user_input import prepare
+        with self.lock():
+            state = self.load()
+            self.ready(state, preparation=True)
+            stages = [r['stage'] for r in state['receipts']]
+            if kind == 'venue' and stages != ['intake']:
+                raise Refusal('Ask venue choice after intake and before calibration acceptance')
+            if kind == 'budget':
+                if 'venue' not in stages:
+                    raise Refusal('Ask the concrete plan budget after venue calibration')
+                from .budget import quantities
+                quantities(packet.get('budget'), caps=True)
+            question = prepare(kind, packet, self.root, state)
+            previous = state['user_questions'].get(kind)
+            if previous and previous['question'] == question:
+                return {'status': previous['status'], 'question': question}
+            if previous:
+                state['history'].append({'event': 'user_question_superseded', 'record': previous, 'at': now()})
+            state['user_questions'][kind] = {'status': 'needs_input', 'question': question}
+            self.save(state)
+            return {'status': 'needs_user_input', 'question': question}
+
+    def _answer(self, state, kind, response):
+        from .user_input import validate_response
+        issued = state['user_questions'].get(kind)
+        if not issued or issued['status'] != 'needs_input':
+            raise Refusal('Prepare and ask the current ' + kind + ' question; wait for an actual user answer')
+        answer = validate_response(issued['question'], response, self.root, state)
+        state['user_questions'][kind] = {**issued, 'status': 'answered', 'response': copy.deepcopy(response), 'answer': answer}
+        return issued['question'], answer
+
+    def _amend_user_field(self, state, field, value, response):
+        if state['brief'].get(field, {} if field == 'budget' else None) == value:
+            return
+        state['history'].append({'event': 'user_field_amendment', 'field': field,
+                                 'brief': copy.deepcopy(state['brief']), 'approval': copy.deepcopy(state['approval']),
+                                 'response': copy.deepcopy(response), 'at': now()})
+        state['brief'][field] = copy.deepcopy(value)
+        state['brief_sha256'] = digest(state['brief'])
+        if state['approval']:
+            state['approval'] = {**state['approval'], 'brief_sha256': state['brief_sha256'],
+                                'user_amendments': [*state['approval'].get('user_amendments', []),
+                                    {'field': field, 'question_sha256': response['question_sha256'],
+                                     'human_response': copy.deepcopy(response['human_response'])}]}
+
+    def confirm_venue(self, packet, actor, comparison_sha256, op, authorization=None, response=None):
         from .venue_tools import comparison_digest, comparison_report
         with self.lock():
             state = self.load()
-            authority = self.authorization(authorization)
-            request = {'command': 'confirm-venue', 'packet': packet, 'actor': actor, 'comparison_sha256': comparison_sha256, 'authorization': authority}
+            request = {'command': 'confirm-venue', 'packet': packet, 'actor': actor, 'comparison_sha256': comparison_sha256,
+                       'authorization': authorization, 'response': response}
             previous = self.operation(state, op, request)
             if previous is not None:
                 return previous
@@ -331,11 +381,204 @@ class Controller:
                 raise Refusal('Venue confirmation must bind the exact sourced comparison and actual user selection')
             if len(state['receipts']) != 1 or state['receipts'][0]['stage'] != 'intake':
                 raise Refusal('Confirm venue after intake and before calibration acceptance')
+            if authorization is not None:
+                raise Refusal('Delegated execution authorization does not replace the venue user answer')
+            question, answer = self._answer(state, 'venue', response)
+            report = comparison_report(packet, self.root)
+            if report['candidates'] != question['candidates'] or report['criteria'] != question['comparison']['criteria']:
+                raise Refusal('Venue candidate materials changed; ask again')
+            if answer['candidate_id'] != report['selected_id']:
+                raise Refusal('Final venue packet does not match the actual user choice')
+            self._amend_user_field(state, 'venue', packet['venue'], response)
             state['venue_confirmation'] = {'candidate_id': packet['venue_selection']['selected_id'], 'venue': packet['venue'],
-                                           'comparison_sha256': comparison_sha256, 'actor': actor, 'at': now()}
-            if authority is not None:
-                state['venue_confirmation'].update(basis='delegated user instruction', authorization=authority)
+                                           'comparison_sha256': comparison_sha256, 'actor': actor, 'at': now(),
+                                           'basis': 'source-bound user answer', 'human_response': response['human_response']}
             return self.record(state, op, request, {'status': 'venue_confirmed', **state['venue_confirmation']})
+
+    def confirmed_venue(self, state, packet):
+        from .user_input import check_human_response
+        from .venue_tools import comparison_report, comparison_digest
+        record = state.get('venue_confirmation')
+        if not record:
+            raise Refusal('Ask the user to choose the venue before accepting calibration')
+        check_human_response(record['human_response'], self.root)
+        if comparison_digest(comparison_report(packet, self.root)) != record['comparison_sha256']:
+            raise Refusal('Venue selection changed after the user answer; ask again')
+
+    def confirm_budget(self, response, op):
+        from .budget import quantities, summary
+        with self.lock():
+            state = self.load()
+            request = {'command': 'confirm-budget', 'response': response}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            question, answer = self._answer(state, 'budget', response)
+            if not answer['proceed']:
+                return self.record(state, op, request, {'status': 'budget_declined', 'action': 'Revise the proposed plan or continue work within the existing approved budget'})
+            value = quantities(answer['budget'], caps=True)
+            self._amend_user_field(state, 'budget', value, response)
+            state['budget_confirmation'] = {'budget_sha256': digest(value), 'plan': question['plan'],
+                'contract_sha256': digest({k:v for k,v in state['brief'].items() if k != 'budget'}),
+                'human_response': copy.deepcopy(response['human_response']), 'question_sha256': question['question_sha256'], 'at': now()}
+            if (state.get('task_stop') or {}).get('reason') == 'budget_exhausted':
+                state['task_stop'] = None
+            return self.record(state, op, request, {'status': 'budget_confirmed', 'budget': summary(state)})
+
+    def confirmed_budget(self, state, plan=None):
+        from .user_input import check_human_response
+        from .budget import limits
+        record = state.get('budget_confirmation')
+        if not record:
+            raise Refusal('Show defaults and optional caps, then ask the user to confirm the plan budget')
+        check_human_response(record['human_response'], self.root)
+        if digest(limits(state['brief'])) != record['budget_sha256'] or digest({k:v for k,v in state['brief'].items() if k != 'budget'}) != record['contract_sha256']:
+            raise Refusal('Budget or research contract changed; ask the current plan-budget question again')
+        if plan is not None and plan != record['plan']['path']:
+            raise Refusal('Budget answer names another plan')
+        if file_hash(safe(self.root, record['plan']['path'])) != record['plan']['sha256']:
+            raise Refusal('Plan changed after the user budget answer; ask again')
+
+    def reserve_budget(self, packet, op):
+        from .budget import admit, summary
+        identifier(op)
+        with self.lock():
+            state = self.load()
+            request = {'command': 'budget-reserve', 'packet': packet}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            self.ready(state)
+            self.confirmed_budget(state)
+            self.budget_evidence(state)
+            if op in state['usage_ledger']:
+                raise Refusal('Resource ledger identity already exists; use a new operation ID')
+            if state['frozen_plan'] is None or not any(r['stage'] == 'plan' for r in state['receipts']):
+                raise Refusal('Freeze the confirmed research plan before reserving research calls')
+            if state['active_round'] is None:
+                raise Refusal('begin-round must capture the research baseline before reserving a call')
+            state['usage_ledger'][op] = {**admit(state, packet), 'created_at': now()}
+            return self.record(state, op, request, {'status': 'reserved', 'reservation': op, 'budget': summary(state)})
+
+    def settle_budget(self, reservation, packet, op):
+        from .budget import settlement, summary
+        identifier(op)
+        with self.lock():
+            state = self.load()
+            request = {'command': 'budget-settle', 'reservation': reservation, 'packet': packet}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            key = reservation if reservation is not None else 'unreserved-' + digest(op)[:24]
+            entry = state['usage_ledger'].get(key)
+            if reservation is None and entry is not None:
+                raise Refusal('Resource ledger identity already exists')
+            if reservation is not None and entry is None:
+                raise Refusal('Unknown reservation')
+            filling_missing = bool(entry and key in summary(state)['incomplete_capped_usage'])
+            if entry and entry['status'] not in {'reserved', 'unknown'} and not filling_missing:
+                raise Refusal('Usage already settled; identical operations can be replayed, not recharged')
+            self.budget_evidence(state)
+            value = settlement(state, entry, packet)
+            if entry and value['status'] != 'not_started' and any(value['reported_usage'].get(field) != amount for field, amount in entry.get('reported_usage', {}).items()):
+                raise Refusal('Reconciliation may fill missing meters, not rewrite previously known usage')
+            receipt = safe(self.root, value['receipt'])
+            receipt_sha = file_hash(receipt)
+            if any(other != key and item.get('receipt') == value['receipt'] for other, item in state['usage_ledger'].items()):
+                raise Refusal('This actual receipt is already accounted for')
+            receipts = list((entry or {}).get('receipts', []))
+            source = {'path': value['receipt'], 'sha256': receipt_sha}
+            if source not in receipts:
+                receipts.append(source)
+            state['usage_ledger'][key] = {**value, 'receipt_sha256': receipt_sha, 'receipts': receipts, 'settled_at': now()}
+            return self.record(state, op, request, {'status': value['status'], 'reservation': key, 'budget': summary(state)})
+
+    def budget_evidence(self, state):
+        sources = {}
+        for entry in state['usage_ledger'].values():
+            for source in entry.get('receipts', []):
+                if file_hash(safe(self.root, source['path'])) != source['sha256']:
+                    raise Refusal('Recorded usage receipt changed; restore it and use a new version for corrections')
+                sources[source['path']] = source['sha256']
+        return sources
+
+    def available_local_orders(self, state):
+        completed = {a['work_id'] for a in state['attempts'].values() if a['status'] == 'completed'}
+        orders = [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']]
+        available = []
+        for order in orders:
+            if order['id'] in completed:
+                continue
+            produced = set()
+            for action in order['actions']:
+                outputs = action_outputs(action)
+                inputs = [action[key] for key in ACTIONS[action['type']]
+                          if key != 'options' and action[key] not in outputs]
+                if any(name not in produced and not (self.root / name).is_file() for name in inputs):
+                    break
+                produced.update(outputs)
+            else:
+                available.append(order['id'])
+        return available
+
+    def validate_exit(self, state, request, decision):
+        from .budget import summary
+        from .user_input import check_human_response
+        status = decision['status']
+        if status == 'active':
+            if decision.get('stop'):
+                raise Refusal('An active checkpoint cannot stop the task')
+            return
+        stop = decision.get('stop', {})
+        if not isinstance(stop, dict):
+            raise Refusal('stop must name a user_request or a verifiable budget_exhausted reason')
+        if status == 'stopped' and stop.get('reason') == 'user_request':
+            check_human_response(stop.get('human_response'), self.root)
+            state['task_stop'] = copy.deepcopy(stop)
+            return
+        view = summary(state)
+        if status == 'stopped' and stop.get('reason') != 'budget_exhausted':
+            raise Refusal('Internal work or a checkpoint cannot stop the task; stopped needs user_request or verified budget_exhausted')
+        if status == 'stopped' and not view['exhausted']:
+            raise Refusal('No explicit task budget is exhausted')
+        if status == 'stopped' and 'minutes' in view['exhausted']:
+            state['task_stop'] = {'reason': 'budget_exhausted', 'meters': view['exhausted']}
+            return
+        if status == 'stopped' and not any(r['stage'] == 'plan' for r in state['receipts']):
+            raise Refusal('Resource caps do not stop local plan preparation; only their new calls are blocked')
+        blockers = decision.get('blockers')
+        if not isinstance(blockers, list) or not blockers:
+            raise Refusal('Waiting needs concrete external blockers; internal work remains active')
+        ids = {item['id'] for item in state['brief']['deliverable_plan']}
+        covered = set()
+        for blocker in blockers:
+            if not isinstance(blocker, dict) or blocker.get('kind') not in {'input', 'authorization', 'external_service', 'budget'} or not isinstance(blocker.get('reason'), str) or not blocker['reason'].strip():
+                raise Refusal('Use structured external blockers; internal implementation failures are actionable work')
+            requirements = blocker.get('requirement_ids')
+            if not isinstance(requirements, list) or not all(isinstance(value, str) for value in requirements) or not set(requirements) <= ids:
+                raise Refusal('External blocker must name actual requirement_ids')
+            covered.update(requirements)
+        if covered != ids:
+            raise Refusal('Only some requirements are externally blocked; continue the remaining authorized work')
+        if self.available_local_orders(state):
+            raise Refusal('Known local WorkOrders remain executable; an external dependency cannot stop them')
+        if status == 'stopped':
+            state['task_stop'] = {'reason': 'budget_exhausted', 'meters': view['exhausted']}
+
+    def resume_task(self, human_response, op):
+        from .user_input import check_human_response
+        with self.lock():
+            state = self.load()
+            request = {'command': 'resume-task', 'human_response': human_response}
+            previous = self.operation(state, op, request)
+            if previous is not None:
+                return previous
+            check_human_response(human_response, self.root)
+            if human_response == (state.get('task_stop') or {}).get('human_response'):
+                raise Refusal('Resumption needs a new actual user instruction, not the stop instruction')
+            state['history'].append({'event': 'task_resumed', 'previous_stop': state.get('task_stop'), 'human_response': human_response, 'at': now()})
+            state['task_stop'] = None
+            return self.record(state, op, request, {'status': 'resumed', 'scope': 'Original task authorization and remaining budget only'})
 
     def context(self, writing_cases=()):
         with self.lock():
@@ -354,8 +597,8 @@ class Controller:
             prose = guidance(self.package, writing_cases) if stage in {'write','review'} else None
             production_steps = {
                 'intake': ['source-fetch for declared public inputs', 'environment', 'read-material'],
-                'venue': ['source-fetch', 'venue-design-template', 'venue-calibrate --publish (includes reading index)'],
-                'plan': ['environment', 'experiment-template for the frozen task-specific measure function'],
+                'venue': ['source-fetch', 'venue-compare', 'ask-user --kind venue', 'Host asks actual user and records response', 'confirm-venue --response', 'venue-design-template', 'venue-calibrate --publish (includes reading index)'],
+                'plan': ['environment', 'Prepare the concrete local plan and resource proposal', 'ask-user --kind budget', 'Host asks defaults and optional caps; wait for actual response', 'confirm-budget --response', 'experiment-template for the frozen task-specific measure function'],
                 'experiment': ['Use lib.experiments.ExperimentRecorder; preserve all planned attempt slots'],
                 'literature': ['bibliography from explicit primary metadata', 'citation-check'],
                 'figures': ['render_statistics', 'export_image with source-bound venue policy', 'pdf-inspect'],
@@ -371,7 +614,10 @@ class Controller:
                     'upstream_protocol': protocol.read_text(),
                     'action_contracts': ACTIONS,
                     'requirements': state['brief']['deliverable_plan'],
-                    'round_status': __import__('lib.rounds', fromlist=['stop_reasons']).stop_reasons(state), 'active_round': state['active_round'],
+                    'budget': __import__('lib.budget', fromlist=['summary']).summary(state),
+                    'checkpoint': __import__('lib.rounds', fromlist=['checkpoint']).checkpoint(state), 'active_round': state['active_round'],
+                    'user_questions': [q['question'] for q in state['user_questions'].values() if q.get('status') == 'needs_input'],
+                    'user_input_contract': 'references/user-input.md',
                     'bindings': state['bindings'],
                     'work_orders': [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']],
                     'production_steps': production_steps.get(stage, []),
@@ -520,9 +766,6 @@ class Controller:
         packet['_history'] = {r['stage']: copy.deepcopy(r['packet']) for r in state['receipts']}
         packet['_plan'] = packet['_history'].get('plan', {})
         packet['_venue_confirmation'] = copy.deepcopy(state.get('venue_confirmation'))
-        if packet['stage'] == 'venue' and packet.get('venue_selection', {}).get('mode') == 'existing_target' and state['approval']:
-            from .venue_tools import comparison_digest, comparison_report
-            packet['_venue_confirmation'] = {'candidate_id': packet['venue_selection']['selected_id'], 'venue': state['brief']['venue'], 'comparison_sha256': comparison_digest(comparison_report(packet, self.root)), 'actor': state['approval']['actor'], 'basis': 'existing exact Brief approval'}
         if packet['stage'] == 'write':
             if packet.get('manuscript') != packet.get('manuscript_tex'):
                 raise Refusal('Writing checks and final compilation must use the same manuscript source')
@@ -616,10 +859,10 @@ class Controller:
                 raise Refusal('begin-round must record the pre-work snapshot before research artifacts are committed')
             if len(state['receipts']) == len(STAGES) or packet.get('stage') != STAGES[len(state['receipts'])]:
                 raise Refusal('Out-of-order stage')
-            if packet.get('stage') == 'experiment':
-                from .rounds import stop_reasons
-                if 'experiment_rounds' in stop_reasons(state)['reasons']:
-                    raise Refusal('Experiment round budget reached; another experiment receipt is blocked')
+            if packet.get('stage') == 'venue':
+                self.confirmed_venue(state, packet)
+            if packet.get('stage') == 'plan':
+                self.confirmed_budget(state, packet['figure_table_plan'])
             hashes = self.validate(state, packet)
             if packet['stage'] == 'plan':
                 state['frozen_plan'] = digest(packet)
@@ -638,8 +881,9 @@ class Controller:
             if stage not in STAGES or not reason.strip():
                 raise Refusal('Rewind requires a known stage and reason')
             if state['active_round'] is None:
-                from .rounds import documents, stop_reasons
-                if stop_reasons(state)['reasons']: raise Refusal('Round budget reached; rewind cannot open another work round')
+                from .rounds import documents
+                from .budget import ensure_work_allowed
+                ensure_work_allowed(state)
                 plan_path = next((r['packet']['figure_table_plan'] for r in state['receipts'] if r['stage'] == 'plan'), None)
                 state['active_round'] = {'id': 'round-' + str(len(state['rounds'])+1), 'started_at': now(), 'stage': stage, 'stages_completed': [], 'documents': documents(self.root),
                     'plan_path': plan_path, 'plan': read_json(safe(self.root,plan_path)) if plan_path else None, 'plan_sha256': file_hash(safe(self.root,plan_path)) if plan_path else None}
@@ -665,7 +909,7 @@ class Controller:
             return self.record(state, op, request, {'status': 'rewound', 'stage': stage, 'baselines': baselines})
 
     def begin_round(self, *, session_id=None):
-        from .rounds import documents, stop_reasons
+        from .rounds import documents, checkpoint
         with self.lock():
             state = self.load()
             self.ready(state, preparation=True)
@@ -678,8 +922,8 @@ class Controller:
                         raise Refusal('Session identifier was already used')
                     state['session'] = {'id': session_id, 'started_at': now(), 'rounds': 0, 'experiment_rounds': 0}
                     state['history'].append({'event': 'session_started', 'id': session_id, 'at': now()})
-            if stop_reasons(state)['reasons']:
-                raise Refusal('Round budget reached; stop and report the actual state')
+            from .budget import ensure_work_allowed
+            ensure_work_allowed(state)
             state['last_seen_at'] = now()
             if state['active_round'] is None:
                 plan = next((r['packet']['figure_table_plan'] for r in state['receipts'] if r['stage'] == 'plan'), None)
@@ -688,10 +932,11 @@ class Controller:
                                          'plan': read_json(safe(self.root, plan)) if plan else None,
                                          'plan_sha256': file_hash(safe(self.root, plan)) if plan else None}
             self.save(state)
-            return {'status': 'round_started', 'round': state['active_round'], 'budget': stop_reasons(state)}
+            from .budget import summary
+            return {'status': 'round_started', 'round': state['active_round'], 'budget': summary(state), 'checkpoint': checkpoint(state)}
 
     def prepare_round(self, evidence, current_plan=None):
-        from .rounds import workload, policy, documents
+        from .rounds import workload, documents
         with self.lock():
             state = self.load()
             self.ready(state, preparation=True)
@@ -710,7 +955,7 @@ class Controller:
                        'current_plan_sha256': file_hash(safe(self.root, plan_path)) if plan_path else None,
                        'plan_diff': {'removed': sorted(set(old)-set(new)), 'added': sorted(set(new)-set(old)),
                                      'changed': sorted(k for k in set(old)&set(new) if old[k] != new[k])},
-                       'workload': workload(self.root, active['documents'], policy(state['brief'])) if active else None,
+                       'workload': workload(self.root, active['documents']) if active else None,
                        'documents_sha256': digest(documents(self.root)), 'rules_sha256': self.rules_hash()}
             issued = {**request, 'request_sha256': digest(request)}
             state['pending_round'] = issued
@@ -758,29 +1003,17 @@ class Controller:
                 raise Refusal('Round needs a supported progress kind and reason')
             if decision.get('status') not in {'active', 'needs_input', 'stopped'}:
                 raise Refusal('Round cannot grant completion; use the deterministic finalizer')
-            if decision['status'] != 'active' and not decision.get('blockers'):
-                raise Refusal('A waiting or stopped round must name its blockers or stop reason')
+            self.validate_exit(state, request, decision)
             if state['rounds'] and kind == 'verified_progress' and request['evidence'] == state['rounds'][-1]['request']['evidence']:
                 raise Refusal('Unchanged evidence is not new progress')
-            from .rounds import stop_reasons, experimental_scope, policy
+            from .rounds import checkpoint, experimental_scope
             active = state['active_round'] or {}
             experiment_steps = active.get('stages_completed', []).count('experiment')
             experimental_round = experimental_scope(state['brief']) and (decision.get('phase') == 'experiment' or active.get('stage') == 'experiment' or experiment_steps > 0)
-            limit_decision = {**decision, 'phase': 'experiment' if experimental_round else decision.get('phase')}
-            if stop_reasons(state, limit_decision)['reasons'] and decision['status'] == 'active':
-                raise Refusal('Budget or refinement stopping condition reached; active continuation is refused')
-            if experimental_round and state['session']['experiment_rounds'] + max(1, experiment_steps) > policy(state['brief'])['experiment_rounds'] and decision['status'] == 'active':
-                raise Refusal('Recorded experiment steps exceed the approved experiment round budget')
             if kind != 'no_progress' and not request.get('evidence'):
                 raise Refusal('Progress or regression needs real evidence')
             if request.get('current_plan') and file_hash(safe(self.root, request['current_plan'])) != request['current_plan_sha256']:
                 raise Refusal('Current plan changed after round preparation')
-            if request.get('workload') and request['workload']['exceeded'] and not decision.get('workload_deviation_reason'):
-                raise Refusal('Round changed more than the allowed large documents; record the specific deviation')
-            if (request.get('workload') or {}).get('oversized_new_tex') and decision['status'] == 'active':
-                raise Refusal('New generated TeX sources exceed 300 lines; revise the source before continuing')
-            if (request.get('workload') or {}).get('oversized_existing_tex') and not decision.get('workload_deviation_reason'):
-                raise Refusal('Existing large sources need a recorded preservation deviation')
             changed_plan = any(request.get('plan_diff', {}).values())
             if changed_plan:
                 r6 = decision.get('r6', {})
@@ -792,8 +1025,6 @@ class Controller:
                            and report.get('current_plan_sha256') == request.get('current_plan_sha256') and report.get('verdict') == r6['verdict'] for report in reports):
                     raise Refusal('R6 report must bind this round original plan and actual current plan')
             direction = decision.get('direction')
-            if state['stale_count'] >= 2 and decision['status'] == 'active' and not direction:
-                raise Refusal('After two stale rounds, active continuation needs a structural pivot')
             if direction:
                 if not direction.get('id') or not direction.get('change') or not direction.get('reason'):
                     raise Refusal('Pivot must state the structural change and rationale')
@@ -818,12 +1049,14 @@ class Controller:
             state['last_seen_at'] = now()
             if kind == 'verified_progress': state['last_progress_at'] = now()
             state['last_round_status'] = decision['status']
+            state['last_checkpoint_at'] = now()
             state['active_round'] = None
             state['pending_round'] = None
             state['rounds'].append({'request': request, 'decision': decision, 'at': now(),
                                     'validation': 'structure_and_binding_only'})
+            from .budget import summary
             return self.record(state, op, arguments, {'status': 'round_recorded', 'round': len(state['rounds']),
-                                                      'stale_count': state['stale_count'], 'budget': stop_reasons(state), 'attention_required': state['stale_count'] >= 4, 'total_findings': sum(1 for r in state['rounds'] if r['decision'].get('finding') and not r['decision']['finding'].get('revises'))})
+                                                      'stale_count': state['stale_count'], 'budget': summary(state), 'checkpoint': checkpoint(state), 'attention_required': state['stale_count'] >= 4, 'total_findings': sum(1 for r in state['rounds'] if r['decision'].get('finding') and not r['decision']['finding'].get('revises'))})
 
     def revise_orders(self, orders, reason, op):
         with self.lock():
@@ -914,8 +1147,8 @@ class Controller:
             if op in state['attempts']:
                 raise Refusal('Attempt has no terminal receipt; reconcile before replay')
             self.ready(state)
-            from .rounds import stop_reasons
-            if stop_reasons(state)['reasons']: raise Refusal('Round budget reached; typed execution is blocked')
+            from .budget import ensure_work_allowed
+            ensure_work_allowed(state)
             if state['active_round'] is None:
                 raise Refusal('begin-round must capture pre-work evidence before typed actions execute')
             if any(a['work_id'] == work_id and a['status'] == 'completed' for a in state['attempts'].values()):
@@ -1171,6 +1404,14 @@ class Controller:
             if not pdf.read_bytes().startswith(b'%PDF-'):
                 raise Refusal('Final manuscript is not a PDF')
             assets = {name: sha for r in state['receipts'] for name, sha in r['hashes'].items()}
+            assets.update(self.budget_evidence(state))
+            from .user_input import check_human_response
+            answers = [q['response']['human_response'] for q in state['user_questions'].values() if q.get('status') == 'answered']
+            answers += [change['human_response'] for change in (state.get('approval') or {}).get('user_amendments', [])]
+            answers += [record['human_response'] for record in [state.get('venue_confirmation'), state.get('budget_confirmation')] if record and record.get('human_response')]
+            for answer in answers:
+                source = check_human_response(answer, self.root)
+                assets[source['path']] = source['sha256']
             dest = self.root / 'delivery' / op
             if dest.exists():
                 # Reconcile an interrupted export by verifying a finished manifest; never overwrite it.
@@ -1220,7 +1461,8 @@ class Controller:
                             software[name] = file_hash(target)
                     rebuild = self.rebuild_package(temp, write)
                     atomic(temp / 'control.json', state)
-                    payload = {'schema_version': 1, 'brief_sha256': state['brief_sha256'],
+                    from .budget import summary
+                    payload = {'schema_version': 1, 'brief_sha256': state['brief_sha256'], 'task_budget': summary(state),
                                'software_fixture': bool(state['brief'].get('software_fixture')), 'rebuild': rebuild,
                                'artifacts': assets, 'software': software, 'state_sha256': file_hash(temp / 'control.json'),
                                'manuscript_pdf': write['manuscript_pdf'], 'manuscript_tex': write['manuscript_tex']}

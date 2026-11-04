@@ -23,11 +23,20 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    instructions and representative accepted papers before choosing. A generic
    citation or page quota does not replace the venue calibration.
 2. Choose the preparation branch before approval. A concrete research Brief with an already chosen venue and complete obligations can use `init`, display that exact Brief and relay its actual approval. If venue/obligations are undecided, use `contract_status: draft`, `venue: undecided`, and an empty `deliverable_plan`; do not ask for final approval yet.
-3. For a draft, commit read-only intake, prepare sourced venue candidates, relay the actual selected candidate with `confirm-venue`, calibrate the chosen target, and commit venue. Use `set-contract` to produce the concrete post-calibration Brief, show it, and relay its actual final approval. No experimental dispatch can use a draft or a merely completed selection audit.
-   If the current user has already delegated topic/venue selection and the whole
-   bounded research run, use the evidence-bound `--authorization` record described
+3. Commit read-only intake and prepare sourced venue candidates. Run `ask-user
+   --kind venue --packet ...`, present its question through the host's real
+   user-input tool, and wait for the answer. Apply `confirm-venue --response ...`,
+   calibrate the selected target, and commit venue. For a draft, use `set-contract`
+   to produce the concrete post-calibration Brief, show it and relay its approval.
+   No experimental dispatch can use a draft or a merely completed selection audit.
+   A previously explicit venue answer can be bound and reused; a recommendation
+   or broad delegation is not that answer.
+   If the current user has already delegated execution of the research run,
+   use the evidence-bound `--authorization` record described
    in `packets.md`. Record the host's delegated decision, never a fictitious exact
-   human approval or an extra confirmation for an already authorized action.
+   human approval or an extra confirmation for an already authorized routine action.
+   Venue selection, initial plan budget and budget increases still require their
+   concrete user answers. Do not treat delegation as a reply to those questions.
 4. Run `context`. It returns the current stage knowledge, upstream protocol,
    frozen input hashes, itemized obligations and typed action contracts.
    Actually read this returned context. Perform that stage's task with the
@@ -47,6 +56,13 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    compilation or validation. The host performs actual research/experiments;
    its raw outcomes still go through the same experiment and figure checks.
    No generated program or arbitrary shell action is executed by this command.
+   Before committing plan, prepare the concrete resource proposal with
+   `ask-user --kind budget --packet ...`. Show the default of no implicit task
+   cap and the optional `budget` fields, current usage, proposal and plan.
+   Ask the actual user, wait, then apply `confirm-budget --response ...`.
+   A declined proposal retains the existing budget and requires plan adjustment.
+   Every increase uses this same question/answer route. Read
+   `paper/references/user-input.md` and `paper/references/budget.md`.
    Use `export_image` and `prepare_tex` actions for venue-selected output
    policies. Before freezing an empirical evaluator, probe its actual environment
    and use the supplied `ExperimentRecorder` envelope to retain failed/unstarted
@@ -83,10 +99,17 @@ reserved round directory; `apply-round --decision ...` uses the issued request
 without copying it by hand. Writing ordinary research documents after
 preparation invalidates the digest. A plan
 change needs an actual R6 report bound to the round and both plan versions.
-Use the Brief's approved limits; defaults are 15 rounds / 30 minutes per host
-session, at most five empirical experiment rounds, and at most five changed
-large documents per round. Explain justified workload deviations. A limit
-ends continuation; it does not grant completion.
+Use the single approved task `budget`; omitted caps impose no hidden limit and
+do not grant new resource permissions. Before an explicit research-resource
+request, use `budget-reserve`; settle its actual usage with the preserved receipt
+through `budget-settle`, including failures and overruns. Unknown usage retains
+its reservation. The same ledger survives host-session changes.
+Thirty minutes, file size and stalled refinement are checkpoint/review advice.
+Record the checkpoint and continue available authorized work. Keep internal
+implementation failures active. Scoped external blockers cannot stop independent
+local work. Only a source-bound user stop or a program-verified task-budget cause
+can record `stopped`; neither grants completion. There is no background scheduler:
+the current host continues after the checkpoint or truthfully records a handoff.
 
 Use `tool --name venue-compare`, `venue-design-template`, `venue-calibrate`,
 `plan-snapshot`, `plan-audit` and `citation-check` for mechanical work. Exact
