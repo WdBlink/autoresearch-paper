@@ -230,6 +230,9 @@ def calibrate(packet, root):
         record = {**measured, 'source': sample['pdf'], 'sample_id': sample_id, 'venue_label': sample['venue_label'],
                   'year': sample['year'], 'acceptance_evidence': sample['acceptance_evidence'],
                   'direction_match': sample['direction_match']}
+        if 'raw_extraction' in record:
+            # A measurement locator is run-relative at every depth for relocation/export.
+            record['raw_extraction'] = {**record['raw_extraction'], 'source': sample['pdf']}
         if 'publication_date' in sample:
             record['publication_date'] = sample['publication_date']
         records.append(record)

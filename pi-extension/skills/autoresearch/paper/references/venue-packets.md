@@ -130,6 +130,15 @@ misparsed existing caption/page, use `measurement_corrections` with the same
 fields and `expected_raw: {page, caption}` matching the original extraction.
 Correction targets must already exist; each identity can be touched only once.
 
+Calibration stores both the top-level measurement `source` and nested
+`raw_extraction.source` as the declared run-relative PDF path. This locator
+normalization permits a copied run/export to revalidate; all raw scientific
+fields and PDF/render hashes remain exact. The direct measurement helper still
+retains its invocation locator. Previously generated absolute-locator artifacts
+remain preserved; regenerate versioned derived calibration outputs during an
+explicit migration instead of editing accepted evidence or ignoring source/hash
+fields globally.
+
 Calibration and design templates use the combined inventory. Measurements retain
 `raw_extraction`, `measurement_additions`, and `measurement_corrections` separately, with a warning that
 binding an image does not verify semantic correctness or exhaustive coverage.
