@@ -216,10 +216,7 @@ class Controller:
                 raise Refusal('Controller and latest durable checkpoint differ; recover before proceeding')
         if value.get('implementation_sha256') != self.implementation():
             raise Refusal('Execution code or stage knowledge changed; pin the old implementation or migrate explicitly')
-        if value.get('task_clock'):
-            for source in value['task_clock']['sources']:
-                if file_hash(safe(self.root, source['path'])) != source['sha256']:
-                    raise Refusal('Task clock snapshot changed; restore its original bytes')
+        self.task_clock_evidence(value)
         return value
 
     def implementation(self):
@@ -506,6 +503,14 @@ class Controller:
                 sources[source['path']] = source['sha256']
         return sources
 
+    def task_clock_evidence(self, state, root=None):
+        sources = {}
+        for source in state.get('task_clock', {}).get('sources', []):
+            if file_hash(safe(root or self.root, source['path'])) != source['sha256']:
+                raise Refusal('Task clock snapshot changed; restore its original bytes')
+            sources[source['path']] = source['sha256']
+        return sources
+
     def available_local_orders(self, state):
         completed = {a['work_id'] for a in state['attempts'].values() if a['status'] == 'completed'}
         orders = [*[o for r in state['receipts'] if r['stage'] == 'plan' for o in r['packet']['work_orders']], *state['additional_orders']]
@@ -772,6 +777,7 @@ class Controller:
             if self.path.exists() and digest(read_json(self.path)) == latest['sha256']:
                 raise Refusal('The current ledger is intact; it must not be overwritten by recovery')
             if manifest: self.verify_export(manifest)
+            self.task_clock_evidence(state)
             state['history'].append({'event': 'ledger_recovered', 'source': 'latest_durable_checkpoint', 'at': now()})
             self.save(state)
             return {'status': 'recovered', 'source': 'latest_durable_checkpoint', 'history_preserved': True,
@@ -1453,6 +1459,7 @@ class Controller:
                 raise Refusal('Final manuscript is not a PDF')
             assets = {name: sha for r in state['receipts'] for name, sha in r['hashes'].items()}
             assets.update(self.budget_evidence(state))
+            assets.update(self.task_clock_evidence(state))
             from .user_input import check_human_response
             answers = [q['response']['human_response'] for q in state['user_questions'].values() if q.get('status') == 'answered']
             answers += [change['human_response'] for change in (state.get('approval') or {}).get('user_amendments', [])]
@@ -1551,6 +1558,11 @@ class Controller:
                 raise Refusal('Export runtime changed: ' + name)
         if file_hash(path.parent / 'control.json') != payload['state_sha256']:
             raise Refusal('Export control record changed')
+        exported_state = read_json(path.parent / 'control.json')
+        for source in exported_state.get('task_clock', {}).get('sources', []):
+            if payload['artifacts'].get(source['path']) != source['sha256']:
+                raise Refusal('Task clock source missing or mismatched in export manifest: ' + source['path'])
+        self.task_clock_evidence(exported_state, path.parent / 'artifacts')
         archive = path.parent.parent / (path.parent.name + '.zip')
         result = {'status': 'verified', 'manifest': manifest}
         if archive.exists():
