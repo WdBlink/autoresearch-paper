@@ -983,8 +983,9 @@ class Controller:
             previous = self.operation(state, op, arguments)
             if previous is not None:
                 return previous
-            preparation_wait = state['brief'].get('contract_status') == 'draft' and decision.get('progress') == 'no_progress' and decision.get('status') in {'needs_input','stopped'}
-            self.ready(state, preparation=preparation_wait)
+            preparation_round = state['brief'].get('contract_status') == 'draft' and all(
+                receipt['stage'] in {'intake', 'venue'} for receipt in state['receipts'])
+            self.ready(state, preparation=preparation_round)
             core = {k: v for k, v in request.items() if k != 'request_sha256'}
             if request.get('request_sha256') != digest(core) or decision.get('request_sha256') != digest(core):
                 raise Refusal('Round request digest mismatch')

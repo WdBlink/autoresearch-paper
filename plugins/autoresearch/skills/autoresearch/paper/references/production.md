@@ -106,10 +106,11 @@ it does not make that statistical protocol universal.
 `statistics`: `{input:RESULTS,table:PATH,figure:PATH}` is available through
 both `tool` and state-free `artifact`; it uses the same validated paired-case
 renderer as the WorkOrder action. This produces evidence, not stage acceptance.
-The current numerical adapter supports exactly baseline/candidate paired cases.
-Preflight the actual full condition matrix before freezing a research plan;
-a three-arm or larger study needs a compatible validated adapter, not removal
-or relabeling of required arms to fit the recorder.
+The numerical adapter supports two or more named conditions with explicit,
+preregistered paired contrasts; legacy baseline/candidate designs remain supported.
+Preflight the actual full condition matrix before freezing a research plan.
+Preserve every required arm and the complete case × seed × condition denominator;
+this descriptive adapter does not supply universal scientific inference.
 
 ## Prepare figures, text and bibliography
 

@@ -167,9 +167,10 @@ actions are refused.
 
 ## Literature, experiment, figures and write
 
-Use `science-packets.md`. The default numerical adapter supports paired
-independent cases, within-case seed means and mean/SD/SE or exploratory normal
-95% CI. Unsupported data/units/statistics fail explicitly; do not force real
+Use `science-packets.md`. The numerical adapter supports named conditions with
+explicit paired contrasts across independent cases, within-case seed means and
+mean/SD/SE or exploratory normal 95% CI. It preserves the complete condition grid;
+legacy baseline/candidate designs remain supported. Unsupported data/units/statistics fail explicitly; do not force real
 research into the software fixture. Figure knowledge covers broader design
 choices, while automated plotting is limited to the admitted adapter.
 
