@@ -1,0 +1,21 @@
+{
+  "name": "autoresearch",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+  "version": "3.0.0",
+  "author": {
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
+  },
+  "repository": "https://github.com/WdBlink/autoresearch-paper",
+  "license": "MIT",
+  "homepage": "https://github.com/WdBlink/autoresearch-paper",
+  "keywords": [
+    "autonomous",
+    "iteration",
+    "optimization",
+    "debugging",
+    "security-audit",
+    "shipping",
+    "evals"
+  ]
+}

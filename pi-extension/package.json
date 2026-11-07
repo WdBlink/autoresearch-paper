@@ -1,0 +1,28 @@
+{
+  "name": "@wdblink/autoresearch-paper-pi",
+  "version": "3.0.0",
+  "description": "Autoresearch Paper research workflow, commands, and guardrails for pi.",
+  "license": "MIT",
+  "type": "module",
+  "author": {
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WdBlink/autoresearch-paper.git"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "autoresearch",
+    "autonomous",
+    "iteration",
+    "agent"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

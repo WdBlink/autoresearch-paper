@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0
+
+- Use the `autoresearch` skill for research, manuscript review, and delivery.
+- Ask for venue and budget choices during planning and keep their answers in the run record.
+- Distribute the skill and host integrations as Autoresearch Paper.
+
 ## v0.22.0 — 2026-08-13
 
 - Add `autoresearch-radar` as the suite's second conditional capability. The

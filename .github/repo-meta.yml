@@ -1,13 +1,12 @@
 description: >
-  Modular evidence-first Agent Skills for research discovery, bounded experiments,
-  verified research monitoring, claim validation, and autonomous paper production.
+  An independent research skill for venue calibration, experiments, manuscript
+  writing, independent review, and verified paper delivery.
 topics:
   - ai
   - llm
   - ai-agents
   - agent-skills
   - research-automation
-  - research-monitoring
   - scientific-literature
   - academic-writing
   - paper-writing

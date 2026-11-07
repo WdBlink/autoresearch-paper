@@ -1,0 +1,10 @@
+{
+  "name": "autoresearch-paper",
+  "private": true,
+  "description": "Autoresearch Paper skill and pi integration.",
+  "pi": {
+    "extensions": [
+      "./pi-extension/src/index.ts"
+    ]
+  }
+}

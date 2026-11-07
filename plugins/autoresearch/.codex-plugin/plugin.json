@@ -1,0 +1,38 @@
+{
+  "name": "autoresearch",
+  "version": "3.0.0-codex.0",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+  "author": {
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
+  },
+  "homepage": "https://github.com/WdBlink/autoresearch-paper",
+  "repository": "https://github.com/WdBlink/autoresearch-paper",
+  "license": "MIT",
+  "keywords": [
+    "autoresearch",
+    "codex",
+    "automation",
+    "debugging",
+    "security",
+    "documentation",
+    "evals"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Autoresearch Paper",
+    "shortDescription": "A complete research-to-paper workflow.",
+    "longDescription": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+    "developerName": "WdBlink",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/WdBlink/autoresearch-paper",
+    "defaultPrompt": [
+      "$autoresearch Start from my research question and materials"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

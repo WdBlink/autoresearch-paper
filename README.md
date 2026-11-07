@@ -1,362 +1,86 @@
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset=".github/logo-light.svg">
-    <img alt="Autoresearch Paper" src=".github/logo-light.svg" width="440">
-  </picture>
-</div>
+# Autoresearch Paper
 
-<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
+  <img alt="Autoresearch Paper" src=".github/logo-light.svg" width="440">
+</picture>
 
-[![License: MIT][license-shield]][license-url]
-[![Version][version-shield]][repo-url]
-[![Agent Skills][skills-shield]][skills-url]
-[![Get it on Agensi][agensi-shield]][agensi-url]
+![version](https://img.shields.io/badge/version-3.0.0-blue)
 
-</div>
+Autoresearch Paper is an independent skill for conducting research and producing
+a manuscript with verified evidence. Start with `$autoresearch <research question>`
+in Codex or `/autoresearch <research question>` in Claude Code. The same workflow
+carries the project through experiments, writing, independent review, and delivery.
 
-Autoresearch is a modular, evidence-first lifecycle for turning an early idea
-into a compiled scientific manuscript while keeping research, evaluation,
-experimentation, evidence review, and writing in separate contexts.
+## Workflow
 
-## Status
+Materials and scope/angle/audience → candidate venue comparison → chosen target
+and 8–15 matched accepted-paper samples → per-figure/table/panel analysis →
+concrete research and deliverable plan → literature and citation verification →
+experiments or review evidence → figures → writing → independent quality/R6/item
+review → verified PDF, editable source and evidence archive.
 
-- **Current version:** v0.22.0
-- **Stability:** experimental
-- **Architecture:** eight independently invokable Agent Skills
-- **Compatibility:** the previous v0.20 runtime remains available only through
-  an explicitly selected, deprecated compatibility entry point
+An unknown venue starts a draft research Brief. Read-only preparation can
+compare sourced candidates and measure templates before the final obligations
+are frozen. The actual concrete Brief is approved before experiments. Existing
+exact choices and authorizations are reused. Every changed obligation remains
+explicit; no research result, simulated score or operator silence grants approval.
 
-The modular suite is now the default. A new project enters at the stage that
-matches the artifact it already has; it does not need to start a supervisory
-runtime or load the whole lifecycle.
+The host performs source reading, scientific reasoning, actual experiments and
+independent review. Deterministic scripts reveal the current stage and verify
+inputs, records, hashes, budgets and handoffs. They do not infer scientific truth.
 
-## Architecture
+Venue choice, the concrete plan budget and every budget increase are actual
+user-answer steps. The host shows sourced candidates or the plan/resources,
+asks through its user-input interface and waits for the reply. The single
+optional `budget` defaults to `{}` with no hidden task total cap and grants no
+new paid-resource permission. Calls, tokens, cost and total wall time can be
+capped explicitly; usage persists across sessions. Thirty minutes is a checkpoint
+prompt followed by continued available work. See the
+[question/answer contract](foundation/references/user-input.md) and
+[budget/exit contract](foundation/references/budget.md).
 
-The suite is **1 thin router + 5 lifecycle skills + 2 conditional capabilities**:
+## Install and run
 
-| Role | Skill | Owns |
-| --- | --- | --- |
-| Thin router | `autoresearch-workflow` | Select exactly one next skill from a compact handoff, then stop |
-| Lifecycle | `autoresearch-discovery` | Turn an idea into a falsifiable Research Brief |
-| Lifecycle | `karpathy-autoresearch-adapter` | Map a frozen brief and repository into an Experiment Contract |
-| Conditional capability | `autoresearch-evaluator-engineering` | Build and validate a missing or partial evaluator, then return to Adapter |
-| Conditional capability | `autoresearch-radar` | Monitor authorized research sources and publish verified, contract-aware signals |
-| Lifecycle | `autoresearch-experiment` | Run the bounded Research → Development → Review → Record loop |
-| Lifecycle | `autoresearch-evidence` | Validate the frozen candidate and freeze its Claim Boundary |
-| Lifecycle | `autoresearch-paper` | Produce and compile the manuscript package without reopening research |
-
-All eight can be installed together, but one invocation loads only the selected
-skill, its focused references, one compact manifest or contract from the prior
-stage, and the necessary linked project files. It does not preload a prior
-package. The router never performs domain work.
-
-```text
-idea
-  → Discovery → Research Brief
-  → Adapter → Experiment Contract
-       ↘ partial/missing evaluator → Evaluator Engineering → Adapter
-       ↘ authorized watch profile → Research Radar ─┐
-  → Experiment ← verified, contract-fit signals ───┘
-               → Candidate Package
-  → Evidence → Validated Research Package + Claim Boundary
-  → Paper → Manuscript Package
+```sh
+git clone https://github.com/WdBlink/autoresearch-paper.git
+cd autoresearch-paper
+bash scripts/install.sh --codex --global
 ```
 
-Research Radar is an asynchronous sidecar, not a sixth lifecycle stage. It may
-run on an explicit request or external schedule, but it cannot change the
-Research Brief, frozen Experiment Contract, evaluator, candidate, or Claim
-Boundary. Experiment alone decides whether a verified signal becomes a bounded
-literature-guided proposal.
+Start a new Codex session and invoke `$autoresearch` with your research question
+and materials. The installed controller is `skills/autoresearch/paper/scripts/research.py`.
+See the [installation guide](guide/getting-started.md) for other hosts and local installs.
 
-## Choose an entry point
+Use `context` for the actual stage knowledge and task contract. Scriptable steps
+include `tool --name venue-compare`, `venue-design-template`, `venue-calibrate`,
+`plan-snapshot`, `plan-audit`, and `citation-check`. Round snapshots, citation
+batches, per-item delivery, section ownership, compilation and recovery use the
+same controller store. Full fields are in
+[packets](foundation/references/packets.md),
+[venue packets](foundation/references/venue-packets.md), and
+[science packets](foundation/references/science-packets.md).
 
-Start with the narrowest skill that matches the artifact already in hand.
+## Auxiliary engineering commands
 
-| What you have | Invoke | Expected next artifact |
-| --- | --- | --- |
-| You want the suite to decide | `autoresearch-workflow` | Four-field route handoff |
-| An idea, constraints, or early literature | `autoresearch-discovery` | `research-brief.md` |
-| A frozen Research Brief and a repository | `karpathy-autoresearch-adapter` | `autoresearch/experiment-contract.md` after explicit apply authorization |
-| Adapter issued `autoresearch/evaluator_plan.md` for `partial` or `missing` readiness | `autoresearch-evaluator-engineering` | `autoresearch/evaluator-package/manifest.json`, followed by Adapter reclassification |
-| Adapter issued `autoresearch/research-watch-profile.yaml` and a refresh is due | `autoresearch-radar` | `autoresearch/research-radar/manifest.json`, then stop without taking lifecycle control |
-| An Adapter-issued frozen ready Experiment Contract | `autoresearch-experiment` | `autoresearch/candidate-package/manifest.json` |
-| A bound `autoresearch/evidence-request.md` from Evidence | `autoresearch-experiment` | Resume against the linked frozen Experiment Contract; never expand its authority |
-| A bound `autoresearch/evaluator-invalid-return.md` from Experiment | `karpathy-autoresearch-adapter` | Treat the stale contract as ineligible in memory, then return a replacement plan for explicit apply authorization |
-| An accepted Candidate Package manifest and intended claims | `autoresearch-evidence` | `validated-research-package/manifest.json` with Claim Boundary |
-| A valid frozen Validated Research Package manifest and venue constraints | `autoresearch-paper` | `manuscript-package/` |
+Use `$autoresearch iterate` for the classic metric loop.
+Plan/debug/fix/probe/reason/predict/scenario/improve/learn/evals/regression and
+security/ship support specific engineering tasks. Use `$autoresearch --auto` for
+predicate orchestration. The frozen evaluator and research ledger stay outside the
+scope of Git rollback. See the [command guides](guide/README.md).
 
-Use `autoresearch-workflow` when the correct stage is unclear. It reads one
-compact handoff, emits exactly one next-skill decision, and stops.
+## Evidence and ownership
 
-## Artifacts
+[Deli parity audit](docs/DELI_PARITY_AUDIT.md) distinguishes actual migrated
+checks, host judgment and intentionally inapplicable historical heuristics.
+[Source provenance](foundation/provenance.json) records the Deli, PaperFlow, and
+Wiki materials used to develop the workflow. The [MIT license](LICENSE) includes
+the applicable copyright notices.
 
-Artifacts are the lifecycle boundary. Each producer owns its artifact's
-semantics; downstream skills consume the frozen result rather than reconstructing
-the prior stage's context.
-
-| Producer | Canonical product | Consumer |
-| --- | --- | --- |
-| Discovery | `research-brief.md` | Adapter |
-| Adapter | `autoresearch/experiment-contract.md` | Experiment |
-| Evaluator Engineering | `autoresearch/evaluator-package/` | Adapter for reclassification |
-| Research Radar | `autoresearch/research-radar/manifest.json` | Experiment as an optional, policy-bounded signal input |
-| Experiment | `autoresearch/candidate-package/` | Evidence, only when it contains an accepted candidate |
-| Evidence | `validated-research-package/`, including `claim-boundary.md` | Paper |
-| Paper | `manuscript-package/` | User or a future dissemination capability |
-
-The Paper product includes editable manuscript sources, bibliography,
-figures/tables, traceability and review records, venue support files, a package
-manifest, and a compiled submission artifact. It does not submit anything to an
-external venue.
-
-Package directories expose one compact entry point: Evaluator Engineering hands
-Adapter `autoresearch/evaluator-package/manifest.json`, accepted Experiment
-hands Evidence `autoresearch/candidate-package/manifest.json`, and Evidence
-hands Paper `validated-research-package/manifest.json`. Each consumer opens only
-the linked files needed for its current task.
-
-Adapter separately freezes `autoresearch/research-watch-profile.yaml` after its
-existing explicit apply authorization. Each successful Radar cycle writes an
-immutable run and atomically updates the stable pointer
-`autoresearch/research-radar/manifest.json`. Radar keeps a Source Cursor and
-Signal Decision Ledger; Experiment keeps the separate Adoption Ledger. A cycle
-with zero forwarded signals is still a valid, recorded success. Unproven source
-synchronization, stale cache data, incomplete decisions, failed validation, or
-failure before pointer replacement advances no state. A post-replace durability
-error is reported as commit-indeterminate and requires inspection before retry.
-
-## Install
-
-> **One-prompt install via Agensi ($9.99, one-time).** Prefer not to manage the
-> GitHub install? [Autoresearch Paper: Codex + Claude Code ML Research
-> Pipeline][agensi-url] is a curated stable build (v0.20.1, single skill,
-> experimental MVP-0 preview removed) that has passed Agensi's security scan.
-> Your agent installs it from one prompt. The code below stays free and
-> MIT-licensed.
-
-List the repository's discoverable skills before selecting one:
-
-```bash
-npx skills add WdBlink/autoresearch-paper --list
-```
-
-Standard discovery exposes exactly the eight skills in the architecture table.
-The deprecated MVP0 compatibility entry is deliberately excluded.
-
-Install one explicit entry point—for example, Paper:
-
-```bash
-npx skills add WdBlink/autoresearch-paper --skill autoresearch-paper -g --copy
-```
-
-Or intentionally install the complete eight-skill suite:
-
-```bash
-npx skills add WdBlink/autoresearch-paper --all -g --copy
-```
-
-`--all` installs all eight skills for availability; a run still loads only one
-skill at a time. Omit `-g` for a project-local installation. New modular Paper
-users do not run `scripts/setup.sh`; that script belongs to the compatibility
-backend.
-
-## Examples
-
-Route from the current project state:
-
-```text
-Use autoresearch-workflow. I have research-brief.md but no Experiment Contract.
-```
-
-Start with an early question:
-
-```text
-Use autoresearch-discovery to frame a falsifiable Research Brief for reducing
-tail latency in an existing inference service. The deployment constraints and
-initial sources are attached.
-```
-
-Adapt a repository after the brief is frozen:
-
-```text
-Use karpathy-autoresearch-adapter with research-brief.md and this repository.
-Inspect first and return the plan without changing files.
-```
-
-Refresh the project research watch after Adapter has applied its policy:
-
-```text
-Use autoresearch-radar with autoresearch/research-watch-profile.yaml. Refresh
-the authorized source, publish the validated Research Signal Package, and stop.
-```
-
-Enter directly at Paper when research has already been validated:
-
-```text
-Use autoresearch-paper with validated-research-package/manifest.json. Target the supplied
-conference format and compile the final manuscript package.
-```
-
-Paper works autonomously inside the frozen Claim Boundary. It may verify
-citations and derive reproducible presentation artifacts from existing data,
-but it will not run claim-changing experiments.
-
-## Stage boundaries
-
-- **Discovery owns the question.** It does not inspect implementation details,
-  choose an evaluator, adapt a repository, or run experiments.
-- **Adapter owns execution design and all evaluator-readiness classification.**
-  `ready` requires fixed inputs/splits, candidate-edit isolation,
-  known-outcome/discrimination checks, and adequate repeatability—not merely a
-  deterministic command. Adapter requires explicit authorization before
-  persisting the approved plan or final ready Experiment Contract and never
-  emits a partial contract. It accepts a bound evaluator-invalid return,
-  treats its durable manifest as plan-only invalidation evidence without
-  changing the worktree, and requires a new explicit apply authorization before
-  persisting a revised adaptation plan and replacement artifact. The stale
-  contract is never edited or reused in place.
-- **Evaluator Engineering owns measurement construction.** It consumes only
-  Adapter's `autoresearch/evaluator_plan.md` plus necessary linked project files.
-  The plan carries frozen evaluation requirements and permitted design latitude
-  plus the Research Brief identity/hash/reference, so Evaluator Engineering
-  never loads the Brief. It changes only evaluator assets and returns its
-  compact manifest to Adapter.
-- **Research Radar owns monitoring, not adoption.** It consumes only an
-  Adapter-issued `autoresearch/research-watch-profile.yaml`, proves a fresh
-  authenticated source synchronization, reads a safe profile-scoped snapshot,
-  records one decision per candidate, verifies forwarded leads against primary
-  sources, publishes immutable content-addressed runs through the sole stable
-  pointer `autoresearch/research-radar/manifest.json`, and stops. An RSS summary
-  is a lead, never scientific evidence or a citable source. Radar cannot change
-  a lifecycle artifact or write Experiment's Adoption Ledger. If pointer
-  durability is indeterminate, it stops for inspection instead of retrying.
-- **Experiment owns candidate search.** It accepts exactly one compact handoff:
-  an Adapter-issued frozen contract for a new run, or a bound
-  `autoresearch/evidence-request.md` for a resume. A resume opens the exact
-  linked contract and cannot expand its authority. An optional Radar manifest
-  supplies only verified, contract-fit literature-guided proposals within the
-  contract's external-research policy and proposal budget. Every considered
-  signal, selection, rejection, and resulting attempt is recorded;
-  evaluator integrity/readiness failures return only to Adapter in
-  `autoresearch/evaluator-invalid-return.md`.
-- **Evidence owns scientific validation.** It opens claim-needed files from the
-  Candidate Package manifest, freezes only `supported|qualified|unsupported`
-  rows, audits the total search and selection path including Radar-derived
-  candidates, and never tunes the method. `insufficient-evidence` produces an upstream
-  request to Experiment, not a Validated Research Package. The request binds
-  the exact contract, candidate, evaluator, missing evidence, permitted scope,
-  and provenance needed for a safe resume.
-- **Paper owns presentation.** It enters through the Validated Research Package
-  manifest, refuses any package containing `insufficient-evidence`, and remains
-  autonomous for a valid frozen package without altering research authority.
-  A disclosed limitation is not missing evidence when every required frozen
-  asset is present. For an absent/invalid required asset, Paper first attempts
-  only an already-frozen deterministic recovery task exactly as recorded, when
-  one exists. Only unavailable or failed recovery that leaves the asset
-  absent/invalid is terminal; it cannot coexist with
-  `manuscript-package-complete` or authorize new research. Radar output may
-  supply citation leads, but Paper verifies and cites the primary source rather
-  than an RSS summary.
-
-Honest return paths are part of the architecture: `insufficient-evidence`
-returns to Experiment; a partial or missing evaluator detours through Evaluator
-Engineering and back to Adapter; `research-frame-invalid` waits for human
-confirmation as `research-frame-invalid-confirmation-pending` before a
-target-specific Evidence or Experiment route. `no-testable-opportunity`,
-`evaluator-not-validatable`, `no-improvement`, `budget-exhausted`, and
-`contract-reauthorization-needed`, `repository-not-runnable`, and
-`baseline-failed` are terminal/no-route outcomes. Workflow uses
-literal `next_skill: none` for them and for confirmation-pending states; none is
-permission to weaken the scientific contract.
-
-Radar refresh and evaluator construction are conditional operational detours,
-not scientific return loops. The scientific loops remain exactly two: Evidence
-insufficiency returns to Experiment, and confirmed Paper frame invalidity
-returns to the selected Evidence or Experiment target. There is no automatic
-return to Discovery.
-
-## Compatibility backend
-
-The **v0.20 compatibility backend** preserves the former Codex Host,
-Claude Code/MiniMax worker, Research IR, receipt ledger, evidence gate,
-recompile loop, watchdog, dashboard, and optional MAVIS compatibility behavior.
-It is deprecated, non-default, and not the semantic implementation of the new
-Experiment, Evidence, or Paper skills.
-
-The nested `autoresearch-paper-mvp0` entry point is not one of the eight modular
-skills and is not part of standard modular discovery. Install it only when an
-existing v0.20 workflow specifically depends on it:
-
-```bash
-skills/autoresearch-paper/scripts/install-mvp0.sh
-```
-
-This compatibility installer synchronizes files into its fixed shared install
-location and creates runtime links. It does not promise backup-and-replace
-semantics for pre-existing content. Review the script and preserve anything
-important before choosing this deprecated path.
-
-MAVIS remains optional and is used only by explicitly selected compatibility
-fixtures. The modular lifecycle does not require MAVIS, the legacy watchdog, or
-the legacy supervisory controller.
-
-## Tests
-
-Run the modular contract and documentation suite from the repository root:
-
-```bash
-scripts/test.sh modular
-```
-
-Run the v0.20 compatibility regression suite separately:
-
-```bash
-cd skills/autoresearch-paper
-scripts/setup.sh test
-```
-
-Run both only when a change intentionally spans the modular suite and the
-compatibility backend:
-
-```bash
-scripts/test.sh all
-```
-
-## Contributing
-
-Keep every skill focused on its unique product and stop condition. Do not make a
-domain skill preload the suite, duplicate the platform runtime, or reinterpret a
-previous stage's scientific artifact. Add or update modular contract tests for
-stage changes, and run the compatibility suite when touching retained v0.20
-files.
-
-Issues and pull requests are welcome. Describe the stage boundary being changed,
-the artifact contract affected, and the evidence used to verify the change.
-
-## Citation
-
-If this suite contributed to a research artifact, cite the release as:
-
-```bibtex
-@software{autoresearch_paper,
-  title   = {Autoresearch: A Modular Evidence-First Research Lifecycle},
-  author  = {WdBlink},
-  year    = {2026},
-  url     = {https://github.com/WdBlink/autoresearch-paper},
-  version = {0.22.0}
-}
-```
-
-## License
-
-MIT
-
-[license-shield]: https://img.shields.io/github/license/WdBlink/autoresearch-paper.svg
-[license-url]: https://github.com/WdBlink/autoresearch-paper/blob/main/LICENSE
-[version-shield]: https://img.shields.io/badge/version-0.22.0-CC785C
-[repo-url]: https://github.com/WdBlink/autoresearch-paper
-[skills-shield]: https://img.shields.io/badge/Agent%20Skills-compatible-2f6f8f
-[skills-url]: https://skills.sh/
-[agensi-shield]: https://img.shields.io/badge/Agensi-%249.99-6b4fbb
-[agensi-url]: https://www.agensi.io/skills/autoresearch-paper-codex-claude-code-ml-research-pipeline
+Offline fixtures exercise real PDF measurements, eight generated venue sample
+PDFs, statistics, TeX builds, citation/claim bindings, itemized review interfaces,
+recovery and export. They are software tests, not real papers or actual model
+reviews. The statistical tools support paired independent cases and a bounded
+local response protocol. See the [science packets](foundation/references/science-packets.md)
+for their assumptions and the [runtime contract](foundation/references/runtime-contract.md)
+for run versioning.

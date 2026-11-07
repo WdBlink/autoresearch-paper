@@ -1,0 +1,8 @@
+interface:
+  display_name: "Autoresearch · Research to Paper"
+  short_description: "Research, venue calibration, experiments and evidence-bound writing"
+  brand_color: "#7C3AED"
+  default_prompt: "Start from my research question and materials; build evidence before writing the paper"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+# Autoresearch installer — supports Claude Code, OpenCode, OpenAI Codex, and Muse, local or global.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+TOOL=""
+LOCATION=""
+CONFIG_DIR=""
+FORCE=0
+
+cancelled() { printf "\nInstallation cancelled\n"; exit 0; }
+trap cancelled INT
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/install.sh [options]
+
+Options:
+  --claude            Install for Claude Code
+  --opencode          Install for OpenCode
+  --codex             Install for OpenAI Codex
+  --pi                Install for pi (coding agent)
+  --muse              Install for Muse
+  -g, --global        Install globally
+  -l, --local         Install in the current project
+  -c, --config-dir    Override the global config directory
+  --force             Replace existing files without prompting
+  -h, --help          Show this help message
+
+Examples:
+  ./scripts/install.sh                          # interactive
+  ./scripts/install.sh --claude --global
+  ./scripts/install.sh --opencode --local
+  ./scripts/install.sh --codex --global
+  ./scripts/install.sh --pi --global
+  ./scripts/install.sh --muse --global
+EOF
+}
+
+expand_path() {
+  local raw="$1"
+  if [[ "$raw" == ~* ]]; then
+    printf '%s\n' "${raw/#\~/$HOME}"
+  else
+    printf '%s\n' "$raw"
+  fi
+}
+
+is_interactive() { [[ -t 0 && -t 1 ]]; }
+
+die() { printf 'Error: %s\n' "$1" >&2; exit 1; }
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --claude)
+        if [[ -n "$TOOL" && "$TOOL" != "claude" ]]; then die "choose only one tool"; fi
+        TOOL="claude" ;;
+      --opencode)
+        if [[ -n "$TOOL" && "$TOOL" != "opencode" ]]; then die "choose only one tool"; fi
+        TOOL="opencode" ;;
+      --codex)
+        if [[ -n "$TOOL" && "$TOOL" != "codex" ]]; then die "choose only one tool"; fi
+        TOOL="codex" ;;
+      --pi)
+        if [[ -n "$TOOL" && "$TOOL" != "pi" ]]; then die "choose only one tool"; fi
+        TOOL="pi" ;;
+      --muse)
+        if [[ -n "$TOOL" && "$TOOL" != "muse" ]]; then die "choose only one tool"; fi
+        TOOL="muse" ;;
+      -g|--global)
+        if [[ -n "$LOCATION" && "$LOCATION" != "global" ]]; then die "choose --global or --local"; fi
+        LOCATION="global" ;;
+      -l|--local)
+        if [[ -n "$LOCATION" && "$LOCATION" != "local" ]]; then die "choose --global or --local"; fi
+        LOCATION="local" ;;
+      -c|--config-dir)
+        shift
+        if [[ $# -eq 0 ]]; then die "--config-dir requires a path"; fi
+        CONFIG_DIR="$(expand_path "$1")" ;;
+      --config-dir=*)
+        CONFIG_DIR="$(expand_path "${1#*=}")"
+        if [[ -z "$CONFIG_DIR" ]]; then die "--config-dir requires a path"; fi ;;
+      --force) FORCE=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+    shift
+  done
+  if [[ -n "$CONFIG_DIR" && "$LOCATION" == "local" ]]; then
+    die "--config-dir can only be used with --global"
+  fi
+}
+
+get_global_dir() {
+  local tool="$1"
+  if [[ -n "$CONFIG_DIR" ]]; then printf '%s\n' "$CONFIG_DIR"; return; fi
+  case "$tool" in
+    claude)
+      if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+        expand_path "$CLAUDE_CONFIG_DIR"
+      else
+        printf '%s\n' "$HOME/.claude"
+      fi ;;
+    opencode)
+      if [[ -n "${OPENCODE_CONFIG_DIR:-}" ]]; then expand_path "$OPENCODE_CONFIG_DIR"
+      elif [[ -n "${OPENCODE_CONFIG:-}" ]]; then dirname "$(expand_path "$OPENCODE_CONFIG")"
+      elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then printf '%s\n' "$(expand_path "$XDG_CONFIG_HOME")/opencode"
+      else printf '%s\n' "$HOME/.config/opencode"; fi ;;
+    codex)
+      if [[ -n "${CODEX_HOME:-}" ]]; then expand_path "$CODEX_HOME"
+      else printf '%s\n' "$HOME/.codex"; fi ;;
+    pi)
+      if [[ -n "${PI_CODING_AGENT_DIR:-}" ]]; then expand_path "$PI_CODING_AGENT_DIR"
+      else printf '%s\n' "$HOME/.pi/agent"; fi ;;
+    muse)
+      if [[ -n "${MUSE_CONFIG_DIR:-}" ]]; then expand_path "$MUSE_CONFIG_DIR"
+      elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then printf '%s\n' "$(expand_path "$XDG_CONFIG_HOME")/muse"
+      else printf '%s\n' "$HOME/.config/muse"; fi ;;
+  esac
+}
+
+get_target_dir() {
+  local tool="$1" location="$2"
+  if [[ "$location" == "local" ]]; then
+    case "$tool" in
+      claude) printf '%s\n' "$PWD/.claude" ;;
+      opencode) printf '%s\n' "$PWD/.opencode" ;;
+      codex) printf '%s\n' "$PWD/.codex" ;;
+      pi) printf '%s\n' "$PWD/.pi" ;;
+      muse) printf '%s\n' "$PWD/.agents" ;;
+    esac
+    return
+  fi
+  get_global_dir "$tool"
+}
+
+prompt_tool() {
+  local answer
+  printf 'Select the tool to install:\n  1) Claude Code\n  2) OpenCode\n  3) OpenAI Codex\n  4) pi (coding agent)\n  5) Muse\nChoice [1]: '
+  read -r answer || cancelled
+  case "${answer:-1}" in
+    1) TOOL="claude" ;;
+    2) TOOL="opencode" ;;
+    3) TOOL="codex" ;;
+    4) TOOL="pi" ;;
+    5) TOOL="muse" ;;
+    *) die "invalid selection: $answer" ;;
+  esac
+}
+
+prompt_location() {
+  local global_dir answer local_dir
+  global_dir="$(get_global_dir "$TOOL")"
+  case "$TOOL" in claude) local_dir="$PWD/.claude" ;; opencode) local_dir="$PWD/.opencode" ;; codex) local_dir="$PWD/.codex" ;; pi) local_dir="$PWD/.pi" ;; muse) local_dir="$PWD/.agents" ;; esac
+  printf 'Install location:\n  1) Global (%s)\n  2) Local  (%s)\nChoice [1]: ' "$global_dir" "$local_dir"
+  read -r answer || cancelled
+  case "${answer:-1}" in
+    1) LOCATION="global" ;;
+    2) LOCATION="local" ;;
+    *) die "invalid selection: $answer" ;;
+  esac
+}
+
+ensure_context() {
+  if [[ -z "$TOOL" ]]; then
+    if is_interactive; then prompt_tool; else TOOL="claude"; fi
+  fi
+  if [[ -z "$LOCATION" ]]; then
+    if is_interactive; then prompt_location; else LOCATION="global"; fi
+  fi
+}
+
+sync_dir() {
+  [[ -n "$2" && "$2" =~ ^/.{3,}/.{1,}/.{1,} ]] || die "sync_dir: refusing unsafe destination path: ${2:-<empty>}"
+  rm -rf "$2"
+  mkdir -p "$(dirname "$2")"
+  cp -R "$1" "$2"
+}
+sync_file() { mkdir -p "$(dirname "$2")"; cp "$1" "$2"; }
+
+confirm_overwrite() {
+  local target_root="$1" existing
+  if [[ "$TOOL" == "pi" ]]; then
+    existing="$target_root/extensions/autoresearch-pi"
+  else
+    existing="$target_root/skills/autoresearch"
+  fi
+  if [[ $FORCE -eq 1 ]]; then return 0; fi
+  if [[ ! -d "$existing" ]]; then return 0; fi
+  if ! is_interactive; then return 0; fi
+  local answer
+  printf 'Existing autoresearch files found in %s. Replace? [Y/n]: ' "$target_root"
+  read -r answer || cancelled
+  case "${answer:-Y}" in
+    [yY]|[yY][eE][sS]|'') ;;
+    *) printf 'Skipped.\n'; exit 0 ;;
+  esac
+}
+
+install_claude() {
+  local t="$1" hooks_file
+  hooks_file="$t/settings.json"
+  if [[ -f "$hooks_file" ]]; then
+    node - "$hooks_file" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+let settings;
+try {
+  settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+} catch {
+  console.error('Refusing to overwrite unreadable or malformed Claude settings.');
+  process.exit(1);
+}
+if (!settings || Array.isArray(settings) || typeof settings !== 'object' ||
+    (settings.hooks !== undefined && (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== 'object'))) {
+  console.error('Refusing to overwrite malformed Claude settings.');
+  process.exit(1);
+}
+NODE
+  fi
+  mkdir -p "$t/skills" "$t/commands" "$t/hooks"
+  sync_dir "$REPO_ROOT/.claude/skills/autoresearch" "$t/skills/autoresearch"
+  if [[ -d "$REPO_ROOT/.claude/commands/autoresearch" ]]; then
+    sync_dir "$REPO_ROOT/.claude/commands/autoresearch" "$t/commands/autoresearch"
+  fi
+  if [[ -f "$REPO_ROOT/.claude/commands/autoresearch.md" ]]; then
+    sync_file "$REPO_ROOT/.claude/commands/autoresearch.md" "$t/commands/autoresearch.md"
+  fi
+  sync_dir "$REPO_ROOT/.claude/hooks/autoresearch" "$t/hooks/autoresearch"
+  node - "$hooks_file" "$t/hooks/autoresearch" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const configuredFile = process.argv[2];
+const file = fs.existsSync(configuredFile) ? fs.realpathSync(configuredFile) : configuredFile;
+const root = process.argv[3];
+let settings = {};
+if (fs.existsSync(file)) {
+  try {
+    settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    console.error('Refusing to overwrite unreadable or malformed Claude settings.');
+    process.exit(1);
+  }
+  if (!settings || Array.isArray(settings) || typeof settings !== 'object') {
+    console.error('Refusing to overwrite malformed Claude settings.');
+    process.exit(1);
+  }
+}
+const command = (name) => `bash "${root}/node-hook-runner.sh" "${root}/${name}"`;
+if (settings.hooks !== undefined && (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== 'object')) {
+  console.error('Refusing to overwrite malformed Claude hook settings.');
+  process.exit(1);
+}
+settings.hooks = settings.hooks || {};
+const merge = (event, registrations) => {
+  const existing = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+  const filtered = existing.flatMap((group) => {
+    if (!group || !Array.isArray(group.hooks)) return [group];
+    const hooks = group.hooks.filter((hook) => !JSON.stringify(hook).replace(/\\\\/g, '/').includes('/hooks/autoresearch/'));
+    return hooks.length > 0 ? [{ ...group, hooks }] : [];
+  });
+  settings.hooks[event] = [...filtered, ...registrations];
+};
+merge('PreToolUse', [{
+  matcher: 'Write|Bash|Glob|Grep|Read|Edit',
+  hooks: [
+    { type: 'command', command: command('scout-block.cjs'), timeout: 10 },
+    { type: 'command', command: command('privacy-block.cjs'), timeout: 10 },
+    { type: 'command', command: command('dangerous-cmd-block.cjs'), timeout: 10 }
+  ]
+}, {
+  matcher: 'Skill',
+  hooks: [{ type: 'command', command: command('run-marker.cjs'), timeout: 10 }]
+}]);
+merge('UserPromptSubmit', [{ hooks: [
+  { type: 'command', command: command('iteration-context.cjs'), timeout: 10 },
+  { type: 'command', command: command('dev-rules-reminder.cjs'), timeout: 10 },
+  { type: 'command', command: command('simplify-gate.cjs'), timeout: 30 }
+] }]);
+merge('SubagentStart', [{ hooks: [{ type: 'command', command: command('subagent-context.cjs'), timeout: 10 }] }]);
+merge('SessionStart', [{ hooks: [{ type: 'command', command: command('session-init.cjs'), timeout: 15 }] }]);
+merge('SessionEnd', [{ hooks: [{ type: 'command', command: command('stop-notify.cjs'), timeout: 15 }] }]);
+const temporary = `${file}.autoresearch-${process.pid}.tmp`;
+try {
+  const mode = fs.existsSync(file) ? fs.statSync(file).mode & 0o777 : 0o600;
+  fs.writeFileSync(temporary, JSON.stringify(settings, null, 2) + '\n', { mode });
+  fs.renameSync(temporary, file);
+} catch (error) {
+  try { fs.unlinkSync(temporary); } catch {}
+  throw error;
+}
+NODE
+}
+
+install_opencode() {
+  local t="$1" src
+  mkdir -p "$t/skills" "$t/commands" "$t/agents"
+  sync_dir "$REPO_ROOT/.opencode/skills/autoresearch" "$t/skills/autoresearch"
+  for src in "$REPO_ROOT"/.opencode/commands/autoresearch*.md; do
+    if [[ -f "$src" ]]; then
+      sync_file "$src" "$t/commands/$(basename "$src")"
+    fi
+  done
+  sync_file "$REPO_ROOT/.opencode/agents/docs-manager.md" "$t/agents/docs-manager.md"
+}
+
+install_codex() {
+  local t="$1"
+  mkdir -p "$t/skills"
+  sync_dir "$REPO_ROOT/.agents/skills/autoresearch" "$t/skills/autoresearch"
+}
+
+install_pi() {
+  # pi auto-discovers extensions under <config>/extensions/<name>/index.ts.
+  # We copy the whole pi-extension/ bundle (src + skills + prompts) so the
+  # extension is self-contained: guardrails + skill + 14 prompt templates.
+  local t="$1"
+  mkdir -p "$t/extensions"
+  sync_dir "$REPO_ROOT/pi-extension" "$t/extensions/autoresearch-pi"
+}
+
+install_muse() {
+  local t="$1"
+  # Codex installs from `npx skills` share .agents/skills; never replace one silently.
+  if [[ $FORCE -ne 1 ]] && grep -qF '$autoresearch' "$t/skills/autoresearch/SKILL.md" 2>/dev/null; then
+    die "$t/skills/autoresearch holds the Codex copy of autoresearch; installing Muse there would replace it. Use --global for Muse, or pass --force to replace it."
+  fi
+  mkdir -p "$t/skills"
+  sync_dir "$REPO_ROOT/.muse/skills/autoresearch" "$t/skills/autoresearch"
+}
+
+main() {
+  parse_args "$@"
+  ensure_context
+  command -v node >/dev/null 2>&1 || die "Node.js 18 or newer is required by the Autoresearch runtime"
+  local node_major
+  node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null)" \
+    || die "Node.js 18 or newer is required by the Autoresearch runtime"
+  [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 18 ]] \
+    || die "Node.js 18 or newer is required by the Autoresearch runtime"
+  local target_root
+  target_root="$(get_target_dir "$TOOL" "$LOCATION")"
+  confirm_overwrite "$target_root"
+
+  local label
+  case "$TOOL" in claude) label="Claude Code" ;; opencode) label="OpenCode" ;; codex) label="OpenAI Codex" ;; pi) label="pi (coding agent)" ;; muse) label="Muse" ;; esac
+  printf 'Installing Autoresearch for %s (%s)\nTarget: %s\n' "$label" "$LOCATION" "$target_root"
+
+  case "$TOOL" in
+    claude) install_claude "$target_root" ;;
+    opencode) install_opencode "$target_root" ;;
+    codex) install_codex "$target_root" ;;
+    pi) install_pi "$target_root" ;;
+    muse) install_muse "$target_root" ;;
+  esac
+
+  case "$TOOL" in
+    codex) printf 'Done. Use $autoresearch in Codex to start.\n' ;;
+    pi) printf 'Done. Run /autoresearch in pi to start. (Restart pi or run /reload if already open.)\n' ;;
+    muse) printf 'Done. In Muse, ask to use the autoresearch skill to start (e.g. "autoresearch plan: ...").\n' ;;
+    *) printf 'Done. Run /autoresearch to start.\n' ;;
+  esac
+}
+
+main "$@"

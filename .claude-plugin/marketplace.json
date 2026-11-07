@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "autoresearch-paper",
+  "version": "3.0.0",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+  "owner": {
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
+  },
+  "plugins": [
+    {
+      "name": "autoresearch",
+      "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+      "version": "3.0.0",
+      "author": {
+        "name": "WdBlink",
+        "url": "https://github.com/WdBlink"
+      },
+      "source": "./claude-plugin",
+      "category": "productivity"
+    }
+  ]
+}
