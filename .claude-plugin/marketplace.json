@@ -1,20 +1,20 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "autoresearch",
-  "version": "2.3.0",
-  "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
+  "name": "autoresearch-paper",
+  "version": "3.0.0",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
   "owner": {
-    "name": "Udit Goenka",
-    "url": "https://github.com/uditgoenka"
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
   },
   "plugins": [
     {
       "name": "autoresearch",
-      "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
-      "version": "2.3.0",
+      "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+      "version": "3.0.0",
       "author": {
-        "name": "Udit Goenka",
-        "url": "https://github.com/uditgoenka"
+        "name": "WdBlink",
+        "url": "https://github.com/WdBlink"
       },
       "source": "./claude-plugin",
       "category": "productivity"

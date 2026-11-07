@@ -35,8 +35,14 @@ node_modules/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+credentials.json
 .preprgate/
 baseline/
+/.worktrees/
+/.harness/
+/ctx
 
 # Paper run evidence is private and never part of metric-loop rollback.
 .paper/

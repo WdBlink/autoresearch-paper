@@ -191,7 +191,7 @@ the run. Read the request, then write only the actual judgment in that reserved
 directory. Use `deliver --decision PATH --operation-id ID`: it applies the
 issued checkpoint, finalizes, rebuilds from exported assets and verifies the
 ZIP's complete file set, CRC and bytes. Raw `apply-round` and `finalize` remain
-available. An exported runtime includes the upstream protocols it needs.
+available. An exported runtime includes the bundled protocols it needs.
 
 ## Bounded local vector responses
 

@@ -1,25 +1,25 @@
 <div align="center">
 
-# Autoresearch Guides
+# Autoresearch Paper guides
 
-**By [Udit Goenka](https://udit.co)**
-
-[![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/uditgoenka/autoresearch/releases)
+![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
 
 </div>
 
 ---
 
-Everything you need to master autonomous iteration — from first run to advanced multi-command chains. Each guide is self-contained with examples, flags, chains, and tips.
+Start with the [research workflow](../README.md) and [installation guide](getting-started.md).
+The command guides below cover auxiliary engineering work.
 
 ---
 
 ## Quick Start
 
 ```bash
-npx skills add uditgoenka/autoresearch
-/autoresearch
+git clone https://github.com/WdBlink/autoresearch-paper.git
+cd autoresearch-paper
+bash scripts/install.sh --codex --global
 ```
 
 ---
@@ -29,8 +29,8 @@ npx skills add uditgoenka/autoresearch
 | Guide | Description |
 |-------|-------------|
 | [Getting Started](getting-started.md) | Installation, first run, core concepts |
-| [/autoresearch — Orchestrator](autoresearch-orchestrator.md) | Autonomous orchestrator — type a plain-language goal, the system selects and loops the pipeline |
-| [/autoresearch](autoresearch.md) | Core autonomous loop — modify, verify, keep/discard, repeat |
+| [/autoresearch --auto](autoresearch-orchestrator.md) | Select and run an engineering pipeline against a success predicate |
+| [/autoresearch:iterate](autoresearch.md) | Optimize a metric through verified changes |
 | [/autoresearch:plan](autoresearch-plan.md) | One-shot wizard — Goal → Scope, Metric, Verify |
 | [/autoresearch:debug](autoresearch-debug.md) | Autonomous bug-hunting with scientific method |
 | [/autoresearch:fix](autoresearch-fix.md) | Error crusher — tests, types, lint, build |
@@ -56,8 +56,9 @@ npx skills add uditgoenka/autoresearch
 
 | I want to... | Use |
 |--------------|-----|
-| Give a plain-language goal, let it self-orchestrate | bare `/autoresearch <goal>` |
-| Improve test coverage / reduce bundle size / any metric | `/autoresearch` |
+| Run a research project | `/autoresearch <research question>` |
+| Orchestrate an engineering task | `/autoresearch --auto <goal>` |
+| Improve a mechanical metric | `/autoresearch:iterate` |
 | Don't know what metric to use | `/autoresearch:plan` |
 | Requirements are unclear — surface hidden constraints | `/autoresearch:probe` |
 | Run a security audit | `/autoresearch:security` |
@@ -76,13 +77,9 @@ npx skills add uditgoenka/autoresearch
 | Analyze loop results, detect plateaus | `/autoresearch:evals` |
 | Verify a change is safe to push (catch regressions) | `/autoresearch:regression` |
 | Gate, auto-fix, then ship in one chain | `/autoresearch:regression --predict --evals --fix --ship` |
-| Optimize without breaking existing tests | `/autoresearch` with `Guard: npm test` |
+| Optimize without breaking existing tests | `/autoresearch:iterate` with `Guard: npm test` |
 | Bound any looping command | Add `Iterations: N` inline |
 
 ---
 
-<div align="center">
-
-**Built by [Udit Goenka](https://udit.co)** | [GitHub](https://github.com/uditgoenka/autoresearch) | [Follow @iuditg](https://x.com/iuditg)
-
-</div>
+[Autoresearch Paper repository](https://github.com/WdBlink/autoresearch-paper)

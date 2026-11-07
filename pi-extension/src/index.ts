@@ -2,9 +2,9 @@
 //
 // Ports the Claude Code autoresearch hooks (safety guardrails + iteration
 // context injection) to pi's extension event system, and contributes the
-// autoresearch skill + 14 command prompt templates via resources_discover.
+// autoresearch skill + 15 command prompt templates via resources_discover.
 //
-// Install:   pi install git:github.com/uditgoenka/autoresearch
+// Install:   pi install git:github.com/WdBlink/autoresearch-paper
 //   (the repo-root package.json points pi at this extension)
 // Try:       pi -e ./pi-extension
 //

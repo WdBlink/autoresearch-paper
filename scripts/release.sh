@@ -20,7 +20,8 @@ done
 
 TAG="v$VERSION"
 BRANCH="release/$VERSION"
-OWNER="uditgoenka"
+REPOSITORY="wdblink/autoresearch-paper"
+OWNER="${REPOSITORY%%/*}"
 
 die() { printf 'Error: %s\n' "$1" >&2; exit 1; }
 replace_line() {
@@ -32,21 +33,21 @@ replace_line() {
 [[ -f claude-plugin/.claude-plugin/plugin.json ]] || die "run from the repository root"
 command -v gh >/dev/null 2>&1 || die "gh CLI not found"
 [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty"
-[[ "$(git branch --show-current)" == master ]] || die "must run from master"
-[[ "$(git config user.name)" == "$OWNER" ]] || die "Git author must be $OWNER"
+[[ "$(git branch --show-current)" == main ]] || die "must run from main"
+[[ "$(git config user.name | tr '[:upper:]' '[:lower:]')" == "$OWNER" ]] || die "Git author must be $OWNER"
 
-REMOTE_URL="$(git remote get-url origin)"
-case "$REMOTE_URL" in
-  https://github.com/$OWNER/*|git@github.com:$OWNER/*|ssh://git@github.com/$OWNER/*) ;;
-  *) die "origin must belong to $OWNER" ;;
+REMOTE_URL="$(git remote get-url origin | tr '[:upper:]' '[:lower:]')"
+case "${REMOTE_URL%.git}" in
+  "https://github.com/$REPOSITORY"|"git@github.com:$REPOSITORY"|"ssh://git@github.com/$REPOSITORY") ;;
+  *) die "origin must be $REPOSITORY" ;;
 esac
-[[ "$(gh api user --jq .login)" == "$OWNER" ]] || die "GitHub account must be $OWNER"
+[[ "$(gh api user --jq .login | tr '[:upper:]' '[:lower:]')" == "$OWNER" ]] || die "GitHub account must be $OWNER"
 
 for helper in scripts/orchestrate.sh scripts/score-regression.sh; do
   [[ -x "$helper" ]] || die "missing executable runtime helper: $helper"
 done
 
-git pull --ff-only origin master --quiet
+git pull --ff-only origin main --quiet
 
 # Refuse pre-existing generated drift before creating a release branch.
 bash scripts/transform.sh >/dev/null
@@ -111,7 +112,7 @@ done
 git add -A
 git commit -m "chore(release): prepare $TAG for explicit publication" \
   -m "Release preparation aligns versions, regenerates every distribution, and records a green local release gate. Merge, tag creation, and publication remain separate owner actions." \
-  -m "Constraint: All release artifacts must be created by uditgoenka" \
+  -m "Constraint: All release artifacts must be created by $OWNER" \
   -m "Confidence: high" \
   -m "Scope-risk: moderate" \
   -m "Directive: Do not merge, tag, or publish from release preparation automation" \
@@ -127,7 +128,7 @@ fi
 
 PR_TITLE="${TITLE:-Release $TAG}"
 [[ ${#PR_TITLE} -le 70 ]] || PR_TITLE="Release $TAG"
-PR_URL="$(gh pr create --base master --head "$BRANCH" --title "$PR_TITLE" --body "$(cat <<EOF
+PR_URL="$(gh pr create --base main --head "$BRANCH" --title "$PR_TITLE" --body "$(cat <<EOF
 ## Release $TAG
 
 **Version bump:** \`$CURRENT\` → \`$VERSION\`

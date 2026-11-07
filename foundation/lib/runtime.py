@@ -1,4 +1,4 @@
-"""Paper handoffs for the upstream Autoresearch host. No model or remote executor."""
+"""Research-to-paper state and evidence handoffs for the host."""
 import contextlib
 import copy
 import fcntl
@@ -644,7 +644,7 @@ class Controller:
             if not protocol.is_file():
                 protocol = self.package.parent / '.claude/commands' / ('autoresearch.md' if name == 'autoresearch.md' else 'autoresearch/' + name)
             if not protocol.is_file():
-                raise Refusal('Upstream stage protocol missing from installation')
+                raise Refusal('Bundled stage protocol missing from installation')
             from .writing import guidance
             prose = guidance(self.package, writing_cases) if stage in {'write','review'} else None
             production_steps = {
@@ -1501,7 +1501,7 @@ class Controller:
                             else:
                                 origin = self.package.parent / '.claude/commands/autoresearch' / ('iterate.md' if name == 'autoresearch.md' else name)
                         if not origin.is_file():
-                            raise Refusal('Export runtime lacks its upstream protocol: ' + name)
+                            raise Refusal('Export runtime lacks its bundled protocol: ' + name)
                         target = temp / 'software/upstream' / name
                         target.parent.mkdir(exist_ok=True)
                         shutil.copyfile(origin, target)

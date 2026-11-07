@@ -1,6 +1,6 @@
-# 用上游 Autoresearch 执行论文工作
+# 用 Autoresearch Paper 完成研究与论文
 
-本分支以完整上游源码为基础。`/autoresearch` 或 `$autoresearch` 默认完成科研全流程，
+`/autoresearch` 或 `$autoresearch` 进入科研全流程，
 写作在文献、实验/证据和图表之后；`/autoresearch:iterate` 是辅助经典循环。
 `foundation/` 是科研源码，`.claude/commands/autoresearch.md` 是主协议，
 `scripts/transform.sh` 是各平台副本的生成入口。内部 `paper/` 是兼容分发路径，
@@ -8,13 +8,12 @@
 
 ## 安装与入口
 
-先在仓库运行 `bash scripts/transform.sh`，再使用上游 installer，例如：
+在仓库运行安装脚本。以下命令安装到指定的 Codex 测试目录。
 
 ```sh
 bash scripts/install.sh --codex --global --config-dir /absolute/test-config --force
 ```
 
-这是自定义测试目录示例；本任务没有更改当前安装或任何全局模型配置。
 安装后的论文程序是 `skills/autoresearch/paper/scripts/research.py`。
 仓库入口为 `python3 scripts/research.py --run /absolute/private-run --help`。
 完整交接需要 Python 3.10+、TeX、Poppler；PDF 统计图需要 Matplotlib。
@@ -29,7 +28,7 @@ bash scripts/install.sh --codex --global --config-dir /absolute/test-config --fo
 实际已有的人类批准后运行 `approve`。此接口不代替真实批准，也不伪造旧控制器签名。
 
 `context` 按 intake→venue→plan→literature→experiment→figures→write→review→delivery
-返回对应知识全文、上游协议、当前输入 hash 和逐项义务。宿主实际执行研究、阅读和
+返回对应知识全文、随包分发的协议、当前输入 hash 和逐项义务。宿主实际执行研究、阅读和
 独立评审，确定性程序检查可判定的内容；参考正文不会变成操作权限。
 完整字段、命令及适用性见 [`packets.md`](../foundation/references/packets.md)，
 实验/图表/写作的具体数值接口见 [`science-packets.md`](../foundation/references/science-packets.md)。
@@ -59,7 +58,7 @@ PDF，逐图、逐表、逐面板记录问题、主张、证据、布局借鉴�
 设计覆盖形成图表计划；官方硬页数、含 references/appendix 的口径另行保存。
 
 每轮先 `begin-round`，工作后 `prepare-round` → 宿主真实判断 → `apply-round`。
-默认 15 轮/30 分钟、最多五次实验轮、五个大文件；综述实验 N/A 不计实验轮。
+计划阶段通过用户输入工具确认预算。`budget` 默认为 `{}`。30 分钟提示保存检查点后继续工作。
 原计划与当前计划差异需要真实 R6 记录。停滞、发现修订、待处理效果和最新 checkpoint
 均在同一个控制器中；`recover` 保留导出后的新记录，不能用旧导出倒退状态。
 `draft-preview` 产生带 DRAFT 水印和缺项/阻塞诊断的预览，不触发最终交付。
@@ -72,7 +71,6 @@ python3 -m unittest discover -s foundation/tests -p 'test_*.py' -v
 python3 foundation/vendor/deli-local/run-tests.py
 python3 foundation/tests/run_fixture.py --run /absolute/new-software-fixture --undecided
 python3 foundation/tests/run_fixture.py --run /absolute/new-survey-fixture --undecided --survey
-python3 scripts/verify-baseline.py
 ```
 
 fixture 的 venue、样本、文献和研究问题明确标为合成。它真实运行固定本地 CPU 程序，
@@ -85,7 +83,7 @@ checkout，运行安装副本的同一 fixture，检查自包含分发。
 核心反例包括材料未读/错误 span、假录用依据、模板错用、事后改计划、漏实验和分母、
 holdout 选型、未知效果、统计/图像篡改、数值或分母漂移、删负例、漏交项、陈旧/错绑、
 两份稿件错配、注释伪插入、返工死路、不相关证据对账，以及 Git 晋升越过 Scope。
-完整上游 shell suites 按现有协议验证，原样 helper 的 4 个旧 checkpoint 集成用例
+工程命令和安装使用 `tests/` 下的 shell 套件验证。原样 helper 的 4 个旧 checkpoint 集成用例
 明确不适用于新单账本，其他 105 项运行；新账本另有真实恢复故障注入。
 
 ## 实质边界

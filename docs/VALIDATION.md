@@ -6,7 +6,6 @@ Node v26.8.1、Matplotlib 3.11.0、TeX Live 2026 / pdfTeX 1.40.29。
 
 | 检查 | 结果 |
 | --- | --- |
-| 完整上游 tree | 固定 `7bddd056dfd0b0ded8360588d8101b1ecb5c0baa`；342 路径齐全，315 原样，27 明确补丁，无缺失/模式变化/未声明补丁 |
 | 科研扩展 | `foundation/tests` 120 项通过；实际PDF采样、两类端到端、独立安装、逐项要求、引用、返工及恢复故障注入 |
 | 用户本地原样 helpers | 109 项中105通过、4项旧 checkpoint 集成明确跳过；未启动第二个状态机 |
 | 上游 orchestrator | 391/391 |

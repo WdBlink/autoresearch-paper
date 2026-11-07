@@ -21,7 +21,7 @@ The preparation script stops after the PR is opened. It does not merge, tag, or 
 
 | Gate | Verified by |
 |------|-------------|
-| Identity and workspace | clean tree, `master`, `gh`, `uditgoenka` Git author, `uditgoenka` GitHub login |
+| Identity and workspace | clean tree, `main`, `gh`, and the `WdBlink` owner account |
 | Transform cleanliness | `bash scripts/transform.sh`, then `git diff --exit-code` and `git status --porcelain` |
 | Version alignment | `claude-plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.claude/skills/autoresearch/SKILL.md`, `README.md`, `guide/README.md`, and the generated `SKILL.md` mirrors |
 | Release suites | `bash tests/test-hooks.sh`, `bash tests/test-pi.sh`, `bash tests/test-orchestrator.sh`, `bash tests/test-regression.sh`, `bash tests/test-maintenance.sh` |
@@ -32,9 +32,9 @@ The preparation script stops after the PR is opened. It does not merge, tag, or 
 
 Before running the script, verify:
 
-- [ ] `git config user.name` is `uditgoenka`
-- [ ] `gh api user --jq .login` is `uditgoenka`
-- [ ] The working tree is clean and on `master`
+- [ ] `git config user.name` and `gh api user --jq .login` match `WdBlink` without regard to case
+- [ ] `origin` points to `WdBlink/autoresearch-paper`
+- [ ] The working tree is clean and on `main`
 - [ ] `scripts/orchestrate.sh` and `scripts/score-regression.sh` are executable in every installed bundle
 - [ ] `bash tests/test-hooks.sh`
 - [ ] `bash tests/test-pi.sh`
@@ -69,7 +69,7 @@ If an exact-release smoke check fails after tagging, leave the existing tag immu
 | Issue | Fix |
 |-------|-----|
 | "Working tree is dirty" | Commit or stash changes first |
-| "Must be on master branch" | `git checkout master` |
+| "must run from main" | `git switch main` |
 | "gh CLI not found" | Install from https://cli.github.com |
 | PR merge conflicts | Resolve on the PR, then re-run merge step manually |
 | Forgot to update docs | Edit on the PR branch, push, then merge |

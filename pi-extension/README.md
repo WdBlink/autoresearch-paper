@@ -1,12 +1,9 @@
-# Autoresearch for pi
+# Autoresearch Paper for pi
 
-Autonomous goal-directed iteration for [pi](https://github.com/earendil-works/pi-coding-agent) — a port of the Claude Code autoresearch plugin to pi's extension system.
-
-One metric, constrained scope, fast verification, automatic rollback, git as memory. Works on **any** domain — code, content, marketing, sales, DevOps — anything with a measurable metric.
-
-**Core loop:** Modify → Verify → Keep/Discard → Repeat.
-
-This package keeps the same spirit as the [Claude Code](../claude-plugin) and [OpenCode](../.opencode) integrations: the 14 commands are markdown protocols (here exposed as pi **prompt templates** + a **skill**), and the safety guardrails are ported from the Claude hooks to pi's **extension events**.
+This extension installs the Autoresearch Paper skill and its commands in
+[pi](https://github.com/earendil-works/pi-coding-agent). The main workflow covers
+research, manuscript review, and delivery. The extension also registers pi
+events for the engineering loop's safety checks.
 
 ---
 
@@ -33,7 +30,7 @@ pi-extension/
 │       ├── simplify-gate.ts         # blocks/warns shipping verbs with too many LOC
 │       └── stop-notify.ts           # terminal notification + webhook on shutdown
 ├── skills/autoresearch/      # SKILL.md + references + orchestrator scripts
-└── prompts/                  # 14 command prompt templates (/autoresearch, /autoresearch_debug, …)
+└── prompts/                  # 15 command prompt templates (/autoresearch, /autoresearch_debug, …)
 ```
 
 ## Hook → event mapping
@@ -60,11 +57,12 @@ The skill and prompt templates are contributed **only** via the extension's `res
 
 ## Commands
 
-The 14 autoresearch commands are exposed as pi **prompt templates** (markdown protocols, invoked via `/name`) and the dispatcher is a pi **skill** (`/skill:autoresearch`):
+Invoke a command as a pi prompt template or use `/skill:autoresearch`.
 
 | Command | Does | Default Iterations |
 |---|---|---|
-| `/autoresearch` | Iterate against a metric: modify → verify → keep/discard | 25 |
+| `/autoresearch` | Run the research and paper workflow | Research plan |
+| `/autoresearch_iterate` | Iterate against a metric | 25 |
 | `/autoresearch_plan` | Convert a goal into validated Scope, Metric, Verify config | N/A |
 | `/autoresearch_debug` | Hunt bugs: hypothesize → test → falsify → repeat | 15 |
 | `/autoresearch_fix` | Crush errors one-by-one until zero remain | 20 |
@@ -84,7 +82,7 @@ The 14 autoresearch commands are exposed as pi **prompt templates** (markdown pr
 ### From this repo (git)
 
 ```bash
-pi install git:github.com/uditgoenka/autoresearch
+pi install git:github.com/WdBlink/autoresearch-paper
 ```
 
 The root `package.json` points pi at this extension, so nothing else needs to be set up.
@@ -106,7 +104,7 @@ cp -r pi-extension ~/.pi/agent/extensions/autoresearch-pi
 ## Usage
 
 ```
-/autoresearch
+/autoresearch_iterate
 Goal: Increase test coverage from 72% to 90%
 Scope: src/**/*.test.ts, src/**/*.ts
 Metric: coverage % (higher is better)

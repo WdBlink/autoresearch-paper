@@ -2,12 +2,6 @@
   "schema_version": 1,
   "captured_at": "2026-11-03T15:49:27.152915+00:00",
   "scope": "Knowledge integration for the research-first Autoresearch workflow, with paper writing as its evidence-dependent later stage",
-  "upstream_autoresearch": {
-    "repository": "https://github.com/uditgoenka/autoresearch",
-    "revision": "7bddd056dfd0b0ded8360588d8101b1ecb5c0baa",
-    "license": "MIT; retain upstream LICENSE and copyright",
-    "layout": "Upstream files form the repository root; foundation supplies the default research workflow and later writing stages; the general loop remains an auxiliary tool."
-  },
   "attribution_policy": {
     "deli_public": "Deli upstream protocol has no standard license identified in the local PROVENANCE. No full original protocol or HTML snapshot copied; independent method synthesis only.",
     "deli_local": "User-local additions and their actual source hashes are identified separately from the public Deli protocol. The six local helper/test sources retain their original hashes; the adapted venue_profile.py is marked copied_verbatim=false with its destination hash and adaptation, while the remaining five stay verbatim; knowledge files are independent method synthesis. The checkpoint ledger is not copied. The two user-local academic-prose guides are also copied with exact hashes; the writing/review contexts load the full principles and chosen E01–E14 cases progressively.",

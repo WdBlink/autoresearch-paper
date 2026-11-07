@@ -1,12 +1,16 @@
 # Autoresearch Paper
 
-![version](https://img.shields.io/badge/version-2.3.0-blue)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
+  <img alt="Autoresearch Paper" src=".github/logo-light.svg" width="440">
+</picture>
 
-A research-to-paper Skill developed on the complete
-[uditgoenka/autoresearch](https://github.com/uditgoenka/autoresearch) v2.3.0 source.
-The main invocation is `$autoresearch <research question>` in Codex or
-`/autoresearch <research question>` in Claude Code. The whole Skill performs the
-research workflow. Manuscript writing is its late `write` stage.
+![version](https://img.shields.io/badge/version-3.0.0-blue)
+
+Autoresearch Paper is an independent skill for conducting research and producing
+a manuscript with verified evidence. Start with `$autoresearch <research question>`
+in Codex or `/autoresearch <research question>` in Claude Code. The same workflow
+carries the project through experiments, writing, independent review, and delivery.
 
 ## Workflow
 
@@ -36,19 +40,17 @@ prompt followed by continued available work. See the
 [question/answer contract](foundation/references/user-input.md) and
 [budget/exit contract](foundation/references/budget.md).
 
-## Run and inspect
+## Install and run
 
 ```sh
-bash scripts/transform.sh
-bash scripts/install.sh --codex --global --config-dir /absolute/test-config --force
-python3 scripts/research.py --run /absolute/private-run --help
-bash scripts/test-paper.sh
+git clone https://github.com/WdBlink/autoresearch-paper.git
+cd autoresearch-paper
+bash scripts/install.sh --codex --global
 ```
 
-The installer example uses an explicit test configuration. No model or remote
-compute starts during install. The installed main controller is
-`skills/autoresearch/paper/scripts/research.py`; `paper/` is a bundled implementation
-folder, not a second Skill or a paper-only product entry.
+Start a new Codex session and invoke `$autoresearch` with your research question
+and materials. The installed controller is `skills/autoresearch/paper/scripts/research.py`.
+See the [installation guide](guide/getting-started.md) for other hosts and local installs.
 
 Use `context` for the actual stage knowledge and task contract. Scriptable steps
 include `tool --name venue-compare`, `venue-design-template`, `venue-calibrate`,
@@ -59,26 +61,26 @@ same controller store. Full fields are in
 [venue packets](foundation/references/venue-packets.md), and
 [science packets](foundation/references/science-packets.md).
 
-## Upstream tools retained
+## Auxiliary engineering commands
 
-Use `$autoresearch iterate` explicitly for the original metric loop.
+Use `$autoresearch iterate` for the classic metric loop.
 Plan/debug/fix/probe/reason/predict/scenario/improve/learn/evals/regression and
-security/ship remain bounded auxiliary protocols. Predicate orchestration,
-hooks, rollback and fork-and-flush retain their upstream mechanisms. Contexts
-fork from the best commit, while the frozen evaluator and research ledger remain
-outside the editable scope. [Original upstream guide](guide/upstream-readme.md).
+security/ship support specific engineering tasks. Use `$autoresearch --auto` for
+predicate orchestration. The frozen evaluator and research ledger stay outside the
+scope of Git rollback. See the [command guides](guide/README.md).
 
 ## Evidence and ownership
 
 [Deli parity audit](docs/DELI_PARITY_AUDIT.md) distinguishes actual migrated
 checks, host judgment and intentionally inapplicable historical heuristics.
-[Source provenance](foundation/provenance.json) pins user-local Deli additions,
-PaperFlow changes and Wiki methods. Unlicensed third-party Deli originals are
-not republished or relicensed. The complete upstream MIT license is retained.
+[Source provenance](foundation/provenance.json) records the Deli, PaperFlow, and
+Wiki materials used to develop the workflow. The [MIT license](LICENSE) includes
+the applicable copyright notices.
 
 Offline fixtures exercise real PDF measurements, eight generated venue sample
 PDFs, statistics, TeX builds, citation/claim bindings, itemized review interfaces,
 recovery and export. They are software tests, not real papers or actual model
-reviews. The numerical adapter currently supports paired independent cases and
-mean/SD/SE/exploratory normal CI; unsupported protocols fail explicitly. Existing
-runs stay pinned to their implementation; an upgrade does not hot-migrate them.
+reviews. The statistical tools support paired independent cases and a bounded
+local response protocol. See the [science packets](foundation/references/science-packets.md)
+for their assumptions and the [runtime contract](foundation/references/runtime-contract.md)
+for run versioning.

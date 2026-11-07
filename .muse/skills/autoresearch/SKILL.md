@@ -6,7 +6,7 @@ metadata:
   research-workflow: "3"
 ---
 
-# Autoresearch — Research to Paper
+# Autoresearch Paper
 
 The whole Skill carries a research project from materials and open questions to
 verified evidence and a paper. Writing is the late `write` stage, after literature,
@@ -95,7 +95,7 @@ For a predicate-bearing engineering orchestration task, read
 `--auto` selects this auxiliary orchestration protocol. A bare natural-language
 research goal always enters the research workflow.
 
-## Keep the upstream research mechanisms
+## Run bounded engineering work
 
 The classic loop and orchestrator retain their existing limits, command screening,
 hooks and rollback. `references/fork-and-flush.md` supplies fresh-context rounds

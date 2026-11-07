@@ -1,4 +1,4 @@
-"""Fresh-context requests and Git isolation for the upstream fork-and-flush protocol.
+"""Fresh-context requests and Git isolation for the fork-and-flush protocol.
 
 The host owns agents and research approval. This module creates worktrees and
 checks selection artifacts; it never merges into an authoritative paper run.

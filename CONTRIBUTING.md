@@ -1,4 +1,4 @@
-# Contributing to Autoresearch
+# Contribute to Autoresearch Paper
 
 Whether you're fixing a typo, adding examples, creating a new sub-command, or improving the loop protocol — this guide will get you up and running.
 
@@ -8,8 +8,8 @@ Autoresearch is Markdown files that Claude Code, OpenCode, Codex, pi, and Muse d
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/uditgoenka/autoresearch.git
-cd autoresearch
+git clone https://github.com/WdBlink/autoresearch-paper.git
+cd autoresearch-paper
 
 # 2. Install via guided installer
 ./scripts/install.sh --claude --global   # Claude Code
@@ -36,23 +36,24 @@ The canonical source is `.claude/`. After making changes, run the transform to s
 ./scripts/transform.sh --muse       # Muse only
 ```
 
-## Repository Structure (v2.2.3)
+## Repository structure
 
 ```
-autoresearch/
+autoresearch-paper/
 ├── .claude/                                       ← CANONICAL SOURCE — edit here first
 │   ├── skills/autoresearch/
 │   │   ├── SKILL.md                               ← Thin routing table
 │   │   └── references/                            ← Shared routing and review references
 │   └── commands/
-│       ├── autoresearch.md                        ← Core loop (self-contained, ~110 lines)
-│       └── autoresearch/                          ← 13 subcommand files (self-contained)
+│       ├── autoresearch.md                        ← Research workflow
+│       └── autoresearch/                          ← Auxiliary commands
+├── foundation/                                    ← Research controller, stage contracts, and tests
 ├── .opencode/                                     ← OpenCode port (generated via transform.sh)
 ├── .agents/ + plugins/                            ← Codex port (generated via transform.sh)
 ├── pi-extension/                                  ← pi (coding agent) extension (generated via transform.sh)
 │   ├── src/                                       ← Guardrails ported from Claude hooks → pi events
 │   ├── skills/autoresearch/                       ← Skill + references + scripts
-│   └── prompts/                                   ← 14 command prompt templates
+│   └── prompts/                                   ← 15 command prompt templates
 ├── claude-plugin/                                 ← Distribution package (Claude Code plugin install)
 ├── scripts/
 │   ├── install.sh                                 ← Guided installer (4 platforms)
@@ -61,7 +62,7 @@ autoresearch/
 │   └── release.md                                 ← Release checklist
 ├── guide/                                         ← Guides — one per command + advanced patterns
 ├── docs/                                          ← Project docs (architecture, changelog, standards)
-├── COMPARISON.md                                  ← Karpathy vs Claude Autoresearch
+├── CHANGELOG.md                                   ← Project release history
 └── CONTRIBUTING.md                                ← You are here
 ```
 
@@ -69,8 +70,9 @@ autoresearch/
 
 | File | Purpose | Edit when... |
 |------|---------|-------------|
-| `.claude/skills/autoresearch/SKILL.md` | Thin routing table — subcommand list, defaults, universal flags | Adding subcommands, changing defaults |
-| `.claude/commands/autoresearch.md` | Core loop — self-contained instructions (~110 lines) | Changing loop behavior |
+| `.claude/skills/autoresearch/SKILL.md` | Skill entry and routing | Changing the entry or adding commands |
+| `.claude/commands/autoresearch.md` | Main research workflow | Changing stage instructions |
+| `foundation/` | Research controller, evidence checks, and stage contracts | Changing research validation or delivery |
 | `.claude/commands/autoresearch/*.md` | Subcommand files — each self-contained with full instructions | Modifying any subcommand |
 | `references/security-checklist.md` | STRIDE + OWASP checklist (loaded by security command) | Adding security checks |
 | `references/predict-personas.md` | 5 expert personas (loaded by predict command) | Adding/modifying personas |
@@ -126,7 +128,7 @@ Only create a reference in `references/` if shared by multiple commands. Single-
 ./scripts/transform.sh   # sync to OpenCode + Codex + pi + Muse
 ```
 
-Update: README.md (commands table), guide/ (new guide file), COMPARISON.md (subcommand count).
+Update the [command guides](guide/README.md) for new commands.
 
 ## Commit Messages
 
@@ -143,9 +145,9 @@ Update: README.md (commands table), guide/ (new guide file), COMPARISON.md (subc
 ## Pull Request Guidelines
 
 1. **One PR = one feature.** Don't bundle unrelated changes.
-2. **Branch from `master`.** Target `master` as base.
+2. **Branch from `main`.** Target `main` as the base.
 3. **Run `scripts/transform.sh`** after any changes to `.claude/`.
-4. **Update docs** — README, guide, COMPARISON as needed.
+4. **Update the relevant documentation.**
 5. **Don't bump the version.** Maintainers handle via `scripts/release.sh`.
 
 ## Testing
@@ -161,6 +163,7 @@ The repo includes shell-based verification for the generated distributions and h
 For maintainer workflows, the canonical checks are:
 
 - `bash scripts/transform.sh` — regenerate platform distributions and bundled runtime helpers
+- `bash scripts/test-paper.sh` to verify the research workflow and bundled research helpers
 - `bash tests/test-maintenance.sh` — transform idempotence and release-prep guards
 - `bash tests/test-hooks.sh` — Claude hook contracts and fail-open behavior
 - `bash tests/test-pi.sh` — pi extension guardrail contracts (ported hooks) and TypeScript type-check
@@ -170,18 +173,14 @@ For maintainer workflows, the canonical checks are:
 Maintainers use `scripts/release.sh`. See `scripts/release.md` for details.
 
 ```bash
-./scripts/release.sh 2.2.3 --title "Release 2.2.3"
+./scripts/release.sh 3.0.1 --title "Release 3.0.1"
 ```
 
 Contributors don't need to bump versions.
 
-## Getting Help
+## Report issues
 
-- **Questions?** Open an [issue](https://github.com/uditgoenka/autoresearch/issues)
-- **Ideas?** Open an issue with `[Idea]` prefix
-- **Discussion?** Tag [@uditgoenka](https://github.com/uditgoenka) in your PR
-
-Thanks for contributing!
+Use the [Autoresearch Paper issue tracker](https://github.com/WdBlink/autoresearch-paper/issues).
 
 ## Hook Development
 

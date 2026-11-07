@@ -1,9 +1,7 @@
 # 本地科研知识迁移矩阵
 
-本分支以 `uditgoenka/autoresearch@7bddd056dfd0b0ded8360588d8101b1ecb5c0baa`
-的完整仓库为根目录基础。`foundation/` 实现默认的完整科研流程，经过现有
-transform/install 路径分发到各宿主 Skill 的内部 `paper/` 包；它不是 paper 子 Skill。旧 autoresearch-paper
-代码保留在原分支与 Git 历史，本分支不以旧运行时加 third_party 快照充当重建。
+`foundation/` 实现完整的科研流程。生成脚本将它分发到各宿主 `autoresearch` Skill
+的内部 `paper/` 包。写作由同一入口协调，位于实验、证据和图表之后。
 
 ## 盘点口径与来源身份
 
@@ -29,7 +27,7 @@ Deli Skill、较新 PaperFlow 根目录、LLM-Wiki 根目录；文件 hash 以�
 
 ## 逐项迁移
 
-`Controller.context` 实际返回当前阶段知识全文、知识 hash、上游命令协议、
+`Controller.context` 返回当前阶段知识全文、知识 hash、随包分发的命令协议、
 批准 Brief、已接收输入 hash、要求及动作合同。它不只返回文件名。
 所有阶段知识均在 `foundation/references/knowledge/`，由宿主执行领域判断，
 由 `planning.validate`、`science.validate` 和控制器检查可机械验证的约束。
@@ -53,9 +51,9 @@ Deli Skill、较新 PaperFlow 根目录、LLM-Wiki 根目录；文件 hash 以�
 | K15 G1–G5 与 weakness routing | D `paper-writing.md` / `review.md` 方法及本地适配，P review/finalizer | `review.md` → `Controller.check_reviews`，按缺陷回 literature/experiment/figures/write | 最终要求各适用门及 R6 证据；fixture 按阶段与逐项合同检查后再 finalizer | 已接线；历史模拟分数不是外部接受，未知/未检查不能 pass |
 | K16 旧知识的适用性修正 | D `codex-runtime.md` / `figures.md` / `structure.md` / academic examples | `venue.md`、`figures.md`、`write.md`；venue 预算替固定数量、真实统计单位替统一 mean±std、保真替自动 hedge | venue/science/prose 负例与 knowledge 加载 | 已加载；不照搬 50 页综述配额、必须凑 unresolved 或主观分数标尺 |
 | K17 资源、成本与隐私 | P Skill/protocol/feasibility，D 本地 runtime 适配 | `intake.md`、`experiment.md`、`delivery.md`；实际授权/设备/unknown usage、私有材料范围和发布边界 | fixture 标 model_calls=0、remote_jobs=0；intake resources 结构检查；授权仍由真实宿主提供 | 已加载；无全局模型配置/凭证迁移，无云服务或后台研究启用 |
-| U01 上游小入口与子命令 | 完整 MIT 上游 revision，所有 342 文件为基础 | 根目录 `.claude` 为 canonical，`autoresearch.md` 默认研究、`iterate.md` 经典循环，`scripts/transform.sh` / `sync-paper.py` 分发 | upstream 与 extension install/transform tests；各副本从 canonical 生成 | 已适配；并非旧工程的外挂快照 |
-| U02 hooks/rollback/两类循环 | 上游 hooks、metric core、`orchestrate.sh` | 原子命令继续使用原协议；paper context 同时提供 plan/core/reason；论文 ledger 保留独立权限边界 | upstream test-hooks/test-orchestrator；论文工作不以 keep 授予 acceptance | 已保留；非 Claude 宿主的 hooks 能力按实际上游宿主适配披露 |
-| U03 fork-and-flush | 上游 `fork-and-flush.md` 与 plateau verdict | `exploration.trigger/request/create_worktrees/select/promote`，从最佳 commit fresh contexts 分叉、择优 | `test_exploration` 固定/early schedule、真实隔离 worktrees 与最佳 commit promotion | 已接线机械 seam；宿主创建/继续 fresh-context agent，离线测试不证明真实模型表现 |
+| U01 主入口与辅助命令 | `.claude/commands/` | `autoresearch.md` 默认研究，`iterate.md` 处理经典循环，`scripts/transform.sh` / `sync-paper.py` 分发 | 安装与生成一致性测试 | 已接入各宿主 |
+| U02 hooks、回滚和两类循环 | `.claude/hooks/`、`iterate.md`、`orchestrate.sh` | `context` 提供 plan/core/reason 协议，科研账本保持独立权限边界 | `test-hooks`、`test-orchestrator` | hooks 按各宿主实际支持的接口执行 |
+| U03 fork-and-flush | `fork-and-flush.md` 与停滞判定 | `exploration.trigger/request/create_worktrees/select/promote`，从最佳 commit 分叉、择优 | `test_exploration` 固定和提前调度、隔离工作树与最佳 commit 晋升 | 宿主负责继续执行新上下文 |
 
 ## 验证材料与科学边界
 

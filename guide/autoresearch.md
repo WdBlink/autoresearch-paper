@@ -1,4 +1,4 @@
-# /autoresearch — The Autonomous Loop
+# /autoresearch:iterate
 
 ## What It Does
 
@@ -9,7 +9,7 @@
 ## Full Syntax
 
 ```
-/autoresearch
+/autoresearch:iterate
 Goal:       <what you want to improve>
 Scope:      <file globs Claude can modify>
 Metric:     <what number to track> (<direction>)
@@ -62,7 +62,7 @@ Iterations: <N | unlimited — default: 25>
 ### Increase test coverage (bounded)
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 20
 Goal: Increase test coverage from 72% to 90%
 Scope: src/**/*.test.ts, src/**/*.ts
@@ -73,7 +73,7 @@ Verify: npm test -- --coverage | grep "All files"
 ### Reduce bundle size
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 15
 Goal: Reduce production bundle size below 200KB
 Scope: src/**/*.tsx, src/**/*.ts
@@ -85,7 +85,7 @@ Guard: npm test
 ### Eliminate TypeScript `any` types
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 25
 Goal: Eliminate all TypeScript `any` types
 Scope: src/**/*.ts
@@ -97,7 +97,7 @@ Guard: tsc --noEmit
 ### API performance (p95 latency)
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 20
 Goal: API response time under 100ms (p95)
 Scope: src/api/**/*.ts, src/services/**/*.ts
@@ -109,7 +109,7 @@ Guard: npm test
 ### pytest coverage (Python)
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 30
 Goal: Increase pytest coverage from 68% to 90%
 Scope: tests/**/*.py, app/**/*.py
@@ -120,7 +120,7 @@ Verify: pytest --cov=app --cov-report=term-missing 2>&1 | grep "TOTAL" | awk '{p
 ### Go test coverage
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 25
 Goal: Increase test coverage to 85%
 Scope: **/*.go
@@ -131,7 +131,7 @@ Verify: go test ./... -coverprofile=cover.out && go tool cover -func=cover.out |
 ### ML training loss
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: unlimited
 Goal: Reduce validation loss (val_bpb)
 Scope: train.py, model.py
@@ -142,7 +142,7 @@ Verify: uv run train.py --epochs 1 2>&1 | grep "val_bpb" | tail -1 | awk '{print
 ### SEO content optimization
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 25
 Goal: Maximize SEO score for target keywords
 Scope: content/blog/*.md
@@ -153,7 +153,7 @@ Verify: node scripts/seo-score.js --file content/blog/target-post.md
 ### With evals checkpoint every 5 iterations
 
 ```
-/autoresearch
+/autoresearch:iterate
 Iterations: 25
 Goal: Reduce lint errors to zero
 Scope: src/**/*.ts
@@ -218,7 +218,7 @@ no `keep`. The paper found plateau-triggered rounds fire too late: small gains k
 At matched budget it scored 0.78 against 0.47 for a single run and 0.54 for best-of-4.
 
 ```
-/autoresearch
+/autoresearch:iterate
 Goal: Reduce p95 latency
 Metric: p95 ms (lower is better)
 Verify: ./bench.sh | tail -1

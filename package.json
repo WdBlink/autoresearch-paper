@@ -1,8 +1,10 @@
 {
-  "name": "autoresearch",
+  "name": "autoresearch-paper",
   "private": true,
-  "description": "Repository root manifest so `pi install git:github.com/uditgoenka/autoresearch` loads the pi extension.",
+  "description": "Autoresearch Paper skill and pi integration.",
   "pi": {
-    "extensions": ["./pi-extension/src/index.ts"]
+    "extensions": [
+      "./pi-extension/src/index.ts"
+    ]
   }
 }

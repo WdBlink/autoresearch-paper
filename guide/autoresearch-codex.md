@@ -1,14 +1,15 @@
-# Autoresearch for Codex
+# Autoresearch Paper for Codex
 
-Codex distribution of autoresearch. Same 14 commands, same flags, same output contracts as the Claude Code version. Entry point: `$autoresearch <command>`.
+Start a research run with `$autoresearch <research question>`. Use
+`$autoresearch <command>` for auxiliary engineering work.
 
 ---
 
 ## Install
 
 ```bash
-git clone https://github.com/uditgoenka/autoresearch.git
-cd autoresearch
+git clone https://github.com/WdBlink/autoresearch-paper.git
+cd autoresearch-paper
 ./scripts/install.sh --codex --global
 ```
 
@@ -33,15 +34,16 @@ Codex uses `$autoresearch` prefix:
 | `/autoresearch:evals` | `$autoresearch evals` |
 | `/autoresearch:ship` | `$autoresearch ship` |
 
-All 14 commands follow the same pattern: `$autoresearch <command> [flags]`.
+Auxiliary commands accept flags after the command name.
 
 ---
 
-## All 14 Commands
+## Commands
 
 | Command | Default Iterations | Purpose |
 |---------|-------------------|---------|
-| `$autoresearch` | 25 | Core metric optimization loop |
+| `$autoresearch` | Research plan | Research, write, review, and deliver a paper |
+| `$autoresearch iterate` | 25 | Core metric optimization loop |
 | `$autoresearch plan` | one-shot | Structured planning wizard |
 | `$autoresearch debug` | 15 | Root cause investigation |
 | `$autoresearch fix` | 20 | Root-cause-first repair |
@@ -63,7 +65,7 @@ All 14 commands follow the same pattern: `$autoresearch <command> [flags]`.
 ### Core loop
 
 ```
-$autoresearch
+$autoresearch iterate
 Iterations: 20
 Goal: Reduce bundle size below 200KB
 Scope: src/**/*.ts

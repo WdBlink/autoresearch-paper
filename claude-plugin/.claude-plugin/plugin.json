@@ -1,14 +1,14 @@
 {
   "name": "autoresearch",
-  "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
-  "version": "2.3.0",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+  "version": "3.0.0",
   "author": {
-    "name": "Udit Goenka",
-    "url": "https://github.com/uditgoenka"
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
   },
-  "repository": "https://github.com/uditgoenka/autoresearch",
+  "repository": "https://github.com/WdBlink/autoresearch-paper",
   "license": "MIT",
-  "homepage": "https://github.com/uditgoenka/autoresearch",
+  "homepage": "https://github.com/WdBlink/autoresearch-paper",
   "keywords": [
     "autonomous",
     "iteration",

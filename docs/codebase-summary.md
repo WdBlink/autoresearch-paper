@@ -35,7 +35,7 @@ Autoresearch v2.3.0 ships as a modular, multi-platform autonomous iteration fram
 | `scripts/transform.sh` | Canonical transform that generates all platform distributions from `.claude/` source |
 | `scripts/install.sh` | Guided interactive installer |
 | `README.md` | Project README with installation, usage, FAQ |
-| `COMPARISON.md` | Karpathy's autoresearch vs Claude Autoresearch |
+| `foundation/` | Research controller, evidence contracts, and tests |
 | `CONTRIBUTING.md` | Contribution guidelines |
 
 ## Subcommand Registry

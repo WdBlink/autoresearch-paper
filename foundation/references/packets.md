@@ -224,7 +224,7 @@ This is internal artifact verification, not an external acceptance or submission
 After a real final checkpoint judgment, `deliver --decision PATH --operation-id
 ID` performs checkpoint application and finalization together. Export verification
 also checks ZIP file membership, CRC and byte hashes; the producing runtime
-contains its required upstream protocols.
+contains its required bundled protocols.
 
 ## Rounds and recovery
 
@@ -273,7 +273,7 @@ attempts or change the Brief. Old-format runs cannot be resumed here.
 
 ## Fresh contexts and Git exploration
 
-`fork-trigger --config JSON` evaluates upstream schedule/early/plateau limits.
+`fork-trigger --config JSON` evaluates schedule, early trigger, and plateau limits.
 `fork-plan --config JSON` creates files-only branch contexts and distinct Advisor
 assignment slots. `fork-create --repo CLEAN_REPO --plan JSON --destination DIR`
 creates actual detached worktrees at the best pinned commit. Keep the paper run

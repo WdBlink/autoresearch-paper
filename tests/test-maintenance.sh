@@ -98,9 +98,9 @@ make_fake_tools() {
 printf 'git %s\n' "$*" >> "$FAKE_CALL_LOG"
 case "$1 $2" in
   "status --porcelain") exit 0 ;;
-  "branch --show-current") echo master ;;
-  "config user.name") echo "${FAKE_GIT_USER:-uditgoenka}" ;;
-  "remote get-url") echo "https://github.com/${FAKE_REMOTE_OWNER:-uditgoenka}/autoresearch.git" ;;
+  "branch --show-current") echo main ;;
+  "config user.name") echo "${FAKE_GIT_USER:-wdblink}" ;;
+  "remote get-url") echo "https://github.com/${FAKE_REMOTE_OWNER:-WdBlink}/${FAKE_REMOTE_REPO:-autoresearch-paper}.git" ;;
   "tag -l") exit 0 ;;
   "ls-remote --tags") exit 0 ;;
   "describe --tags") echo v2.2.1 ;;
@@ -114,8 +114,8 @@ EOF
   cat > "$bin/gh" <<'EOF'
 #!/bin/bash
 printf 'gh %s\n' "$*" >> "$FAKE_CALL_LOG"
-if [[ "$1 $2" == "api user" ]]; then echo "${FAKE_GH_USER:-uditgoenka}"; exit 0; fi
-if [[ "$1 $2" == "pr create" ]]; then echo 'https://github.com/uditgoenka/autoresearch/pull/999'; exit 0; fi
+if [[ "$1 $2" == "api user" ]]; then echo "${FAKE_GH_USER:-WdBlink}"; exit 0; fi
+if [[ "$1 $2" == "pr create" ]]; then echo 'https://github.com/WdBlink/autoresearch-paper/pull/999'; exit 0; fi
 exit 0
 EOF
   cat > "$bin/bash" <<'EOF'
@@ -163,13 +163,16 @@ assert_refused_before_publish() {
 run_release_case malformed-version 2.2 RELEASE_OUT=1
 assert_refused_before_publish "malformed version"
 
-run_release_case wrong-git-user 2.2.2 FAKE_GIT_USER=udit-fs
+run_release_case wrong-git-user 2.2.2 FAKE_GIT_USER=other-user
 assert_refused_before_publish "wrong Git author"
 
-run_release_case wrong-remote-owner 2.2.2 FAKE_REMOTE_OWNER=udit-fs
+run_release_case wrong-remote-owner 2.2.2 FAKE_REMOTE_OWNER=other-user
 assert_refused_before_publish "wrong origin owner"
 
-run_release_case wrong-gh-user 2.2.2 FAKE_GH_USER=udit-fs
+run_release_case wrong-remote-repo 2.2.2 FAKE_REMOTE_REPO=other-repo
+assert_refused_before_publish "wrong origin repository"
+
+run_release_case wrong-gh-user 2.2.2 FAKE_GH_USER=other-user
 assert_refused_before_publish "wrong GitHub account"
 
 run_release_case stale-transform 2.2.2 FAKE_TRANSFORM_DRIFT=1
@@ -195,7 +198,8 @@ assert_refused_before_publish "missing runtime helper"
 run_release_case success 9.9.9 FAKE_RUN_REAL_TRANSFORM=1
 [[ "$RELEASE_CODE" -eq 0 ]] && pass "green release preparation succeeds" || fail "green release preparation succeeds"
 assert_contains 'git push' "$RELEASE_CALLS" "green release preparation pushes its branch"
-assert_contains 'gh pr create' "$RELEASE_CALLS" "green release preparation opens a PR"
+assert_contains 'git pull --ff-only origin main' "$RELEASE_CALLS" "green release preparation updates main"
+assert_contains 'gh pr create --base main' "$RELEASE_CALLS" "green release preparation targets main"
 assert_contains 'bash scripts/transform.sh' "$RELEASE_CALLS" "green release preparation invokes the canonical transform"
 assert_not_contains 'gh pr merge\|gh release create\|git tag -a' "$RELEASE_CALLS" "release preparation stops before merge, tag, and publication"
 

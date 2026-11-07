@@ -5,9 +5,8 @@ description: Research brief to evidence-bound experiments, figures and an intern
 
 # Research to paper
 
-This is the main research workflow. It uses the complete
-Autoresearch base; its classic and orchestrator protocols, helpers, hooks,
-keep/discard and fresh-context exploration remain available.
+This is the main Autoresearch Paper workflow. The classic iteration loop and
+predicate orchestrator support bounded engineering work within a research task.
 
 Resolve `paper/` relative to the installed autoresearch skill. Run commands with
 Python 3.10+ through `paper/scripts/research.py`; the repository shortcut is
@@ -37,7 +36,7 @@ launch the historical autoresearch-paper Harness or a second research scheduler.
    human approval or an extra confirmation for an already authorized routine action.
    Venue selection, initial plan budget and budget increases still require their
    concrete user answers. Do not treat delegation as a reply to those questions.
-4. Run `context`. It returns the current stage knowledge, upstream protocol,
+4. Run `context`. It returns the current stage knowledge, bundled protocol,
    frozen input hashes, itemized obligations and typed action contracts.
    Actually read this returned context. Perform that stage's task with the
    authorized host tools and return its versioned packet and artifacts.
@@ -153,11 +152,11 @@ background scheduler is implied by an active checkpoint.
 
 ## Iterate, recover and escape a plateau
 
-During method work use the upstream classic loop with the frozen metric,
+During method work use the classic loop with the frozen metric,
 verification command and allowed code scope. Keep the run's `.paper/` state and
 frozen evaluator outside Git rollback. Never optimize held-out test data or
 turn a working-metric keep into scientific acceptance. For open-ended planning,
-use the upstream orchestrator or reason/probe protocols; subjective judgments
+use the bundled orchestrator or reason/probe protocols; subjective judgments
 are not fabricated mechanical metrics. The paper controller remains the sole
 paper-state owner.
 

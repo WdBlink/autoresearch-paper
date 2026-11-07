@@ -1,4 +1,4 @@
-# /autoresearch — Autonomous Orchestrator Mode
+# /autoresearch --auto
 
 Type a plain-language goal. The orchestrator classifies it, selects a pipeline, and loops across subcommands until the goal is verifiably met — no manual chaining, no babysitting iteration counts.
 
@@ -20,7 +20,7 @@ It is a **meta-loop over the existing 14 commands** — it never edits code itse
 ## Quick Start
 
 ```
-/autoresearch help me fix the login bug
+/autoresearch --auto help me fix the login bug
 ```
 
 The agent:
@@ -37,17 +37,13 @@ The agent:
 
 ## Mode Detection
 
-The root `/autoresearch` entry point selects a mode automatically based on what you type:
+Select the command that matches the work.
 
 | Input | Mode | Behavior |
 |-------|------|----------|
-| `Metric:` or `Verify:` present | Classic loop | Unchanged from existing behavior |
-| Free-form natural-language goal | Orchestrator | Classifies → selects pipeline → loops |
-| Nothing (bare invocation) | Setup wizard | Interactive setup as before |
-| `--classic` flag | Classic loop | Force classic regardless of input |
-| `--auto` flag | Orchestrator | Force orchestrator regardless of input |
-
-The detected mode is always printed in a banner — routing is never silent.
+| `/autoresearch <research question>` | Research workflow | Develop research evidence and a paper |
+| `/autoresearch:iterate` or `/autoresearch --classic` | Classic loop | Optimize a metric against a verification command |
+| `/autoresearch --auto <goal>` | Orchestrator | Select and run a pipeline against a success predicate |
 
 ---
 
@@ -192,7 +188,7 @@ Known-good commands (parser pipes like `curl | jq`, normal `find`, non-recursive
 Prints the derived config and planned pipeline without executing anything. Use it to review before committing compute:
 
 ```
-/autoresearch help me fix the login bug --dry-run
+/autoresearch --auto help me fix the login bug --dry-run
 ```
 
 Output includes: detected archetype, mode, predicate command + expected result, starting pipeline, projected cycle budget.
@@ -216,7 +212,7 @@ Manual chains still work exactly as before. The orchestrator auto-selects chains
 When the orchestrator completes, it writes a final `handoff.json` so its output can feed downstream commands if needed.
 
 ```
-/autoresearch help me fix the login bug
+/autoresearch --auto help me fix the login bug
 # orchestrator runs: debug → fix → regression
 # same result as manually chaining: /autoresearch:debug --fix → /autoresearch:regression
 ```
@@ -243,7 +239,7 @@ Each subcommand hop produces its own output directory as normal.
 ### Fix a bug autonomously
 
 ```
-/autoresearch help me fix the login bug
+/autoresearch --auto help me fix the login bug
 ```
 
 Classifies as `fix-broken`. Derives predicate: `npm test` → exit 0 (0 failing). Confirms once. Runs: debug → fix → regression. Stops when predicate is met or on Plateau.
@@ -251,7 +247,7 @@ Classifies as `fix-broken`. Derives predicate: `npm test` → exit 0 (0 failing)
 ### Build a feature TDD-first
 
 ```
-/autoresearch help me build the checkout flow
+/autoresearch --auto help me build the checkout flow
 Scope: src/checkout/**
 ```
 
@@ -260,7 +256,7 @@ Classifies as `build-feature`. Derives predicate: acceptance tests green. Runs T
 ### Single-pass: what to build next
 
 ```
-/autoresearch what should we build next for enterprise customers?
+/autoresearch --auto what should we build next for enterprise customers?
 ```
 
 Classifies as `what-to-build`. Single-pass dispatch to `/autoresearch:improve`. No loop. Emits research findings and PRDs. Report, done.
@@ -268,7 +264,7 @@ Classifies as `what-to-build`. Single-pass dispatch to `/autoresearch:improve`. 
 ### Preview before committing compute
 
 ```
-/autoresearch make this shippable --dry-run
+/autoresearch --auto make this shippable --dry-run
 ```
 
 Prints: archetype `ship-ready`, predicate `npm test && tsc --noEmit` → exit 0, pipeline `regression → fix → ship`, projected 15–30 cycles. No execution.
@@ -276,7 +272,7 @@ Prints: archetype `ship-ready`, predicate `npm test && tsc --noEmit` → exit 0,
 ### Override cycle ceiling
 
 ```
-/autoresearch harden the auth module
+/autoresearch --auto harden the auth module
 --max-cycles 20
 ```
 

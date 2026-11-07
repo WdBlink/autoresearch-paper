@@ -1,13 +1,13 @@
 {
   "name": "autoresearch",
-  "version": "2.3.0-codex.0",
-  "description": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
+  "version": "3.0.0-codex.0",
+  "description": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
   "author": {
-    "name": "Udit Goenka",
-    "url": "https://github.com/uditgoenka"
+    "name": "WdBlink",
+    "url": "https://github.com/WdBlink"
   },
-  "homepage": "https://github.com/uditgoenka/autoresearch",
-  "repository": "https://github.com/uditgoenka/autoresearch",
+  "homepage": "https://github.com/WdBlink/autoresearch-paper",
+  "repository": "https://github.com/WdBlink/autoresearch-paper",
   "license": "MIT",
   "keywords": [
     "autoresearch",
@@ -20,18 +20,16 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Autoresearch \u00b7 Research to Paper",
+    "displayName": "Autoresearch Paper",
     "shortDescription": "A complete research-to-paper workflow.",
-    "longDescription": "15 commands: research main, iterate, plan, debug, fix, security, ship, scenario, predict, learn, reason, probe, improve, evals, regression.",
-    "developerName": "Udit Goenka",
+    "longDescription": "Research-to-paper workflow with 15 commands for research, iteration, and regression checks.",
+    "developerName": "WdBlink",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/uditgoenka/autoresearch",
-    "privacyPolicyURL": "https://github.com/uditgoenka/autoresearch/blob/main/LICENSE",
-    "termsOfServiceURL": "https://github.com/uditgoenka/autoresearch/blob/main/LICENSE",
+    "websiteURL": "https://github.com/WdBlink/autoresearch-paper",
     "defaultPrompt": [
       "$autoresearch Start from my research question and materials"
     ],
